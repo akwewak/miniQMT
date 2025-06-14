@@ -199,7 +199,7 @@ TRADE_TIME = {
 
 def is_trade_time():
     """判断当前是否为交易时间"""
-    if DEBUG_SIMU_STOCK_DATA:
+    if DEBUG_SIMU_STOCK_DATA or (ENABLE_SIMULATION_MODE and not ENABLE_AUTO_TRADING):
         return True
 
     now = datetime.now()
