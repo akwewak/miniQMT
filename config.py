@@ -102,7 +102,8 @@ STOP_LOSS_RATIO = -0.07  # 固定止损比例：成本价下跌7%触发止损
 # 动态止盈配置
 ENABLE_DYNAMIC_STOP_PROFIT = True  # 启用动态止盈功能
 INITIAL_TAKE_PROFIT_RATIO = 0.05   # 首次止盈触发阈值：盈利5%时触发
-INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE = 0.5  # 首次止盈卖出比例：50%（半仓）
+INITIAL_TAKE_PROFIT_PULLBACK_RATIO = 0.005  # 回撤比例：0.5%（可配置）
+INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE = 0.6  # 首次止盈卖出比例：50%（半仓）
 
 # 分级动态止盈设置（已触发首次止盈后的动态止盈位）
 # 格式：(最高盈利比例阈值, 止盈位系数)
@@ -199,7 +200,7 @@ TRADE_TIME = {
 
 def is_trade_time():
     """判断当前是否为交易时间"""
-    if DEBUG_SIMU_STOCK_DATA or (ENABLE_SIMULATION_MODE and not ENABLE_AUTO_TRADING):
+    if DEBUG_SIMU_STOCK_DATA or ENABLE_SIMULATION_MODE:
         return True
 
     now = datetime.now()

@@ -100,7 +100,9 @@ class PositionManager:
             open_date TIMESTAMP,
             profit_triggered BOOLEAN DEFAULT FALSE,
             highest_price REAL,
-            stop_loss_price REAL                      
+            stop_loss_price REAL,
+            profit_breakout_triggered BOOLEAN DEFAULT FALSE,
+            breakout_highest_price REAL                                
         )
         ''')
         self.memory_conn.commit()
@@ -332,16 +334,18 @@ class PositionManager:
                     profit_triggered = row['profit_triggered']
                     highest_price = row['highest_price']
                     stop_loss_price = row['stop_loss_price']
+                    profit_breakout_triggered = row['profit_breakout_triggered']
+                    breakout_highest_price = row['breakout_highest_price']
                     
                     # 查询数据库中的对应记录
                     cursor = self.conn.cursor()
-                    cursor.execute("SELECT stock_name, open_date, profit_triggered, highest_price, stop_loss_price FROM positions WHERE stock_code=?", (stock_code,))
+                    cursor.execute("SELECT stock_name, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price FROM positions WHERE stock_code=?", (stock_code,))
                     db_row = cursor.fetchone()
 
                     if db_row:
-                        db_stock_name, db_open_date, db_profit_triggered, db_highest_price, db_stop_loss_price = db_row
+                        db_stock_name, db_open_date, db_profit_triggered, db_highest_price, db_stop_loss_price, db_profit_breakout_triggered, db_breakout_highest_price = db_row
                         # 比较字段是否不同
-                        if (db_stock_name != stock_name) or (db_open_date != open_date) or (db_profit_triggered != profit_triggered) or (db_highest_price != highest_price) or (db_stop_loss_price != stop_loss_price):
+                        if (db_stock_name != stock_name) or (db_open_date != open_date) or (db_profit_triggered != profit_triggered) or (db_highest_price != highest_price) or (db_stop_loss_price != stop_loss_price) or (db_profit_breakout_triggered != profit_breakout_triggered) or (db_breakout_highest_price != breakout_highest_price):
                             # 如果内存数据库中的 open_date 与 SQLite 数据库中的不一致，则使用 SQLite 数据库中的值
                             if db_open_date != open_date:
                                 open_date = db_open_date
@@ -349,17 +353,17 @@ class PositionManager:
                             # 更新数据库，确保所有字段都得到更新
                             cursor.execute("""
                                 UPDATE positions 
-                                SET stock_name=?, open_date=?, profit_triggered=?, highest_price=?, stop_loss_price=?, last_update=? 
+                                SET stock_name=?, open_date=?, profit_triggered=?, highest_price=?, stop_loss_price=?, profit_breakout_triggered=?, breakout_highest_price=?, last_update=? 
                                 WHERE stock_code=?
-                            """, (stock_name, open_date, profit_triggered, highest_price, stop_loss_price, now, stock_code))
+                            """, (stock_name, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now, stock_code))
                             logger.info(f"更新内存数据库的 {stock_code} 到sql数据库")
                     else:
                         # 插入新记录，使用当前日期作为 open_date
                         current_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         cursor.execute("""
-                            INSERT INTO positions (stock_code, stock_name, volume, available, cost_price, open_date, profit_triggered, highest_price, stop_loss_price, last_update) 
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (stock_code, stock_name, volume, available, cost_price, current_date, profit_triggered, highest_price, stop_loss_price, now))
+                            INSERT INTO positions (stock_code, stock_name, volume, available, cost_price, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, last_update) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (stock_code, stock_name, volume, available, cost_price, current_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now))
                         
                         # 插入新记录后，立即从数据库读取 open_date，以确保内存数据库与数据库一致
                         cursor.execute("SELECT open_date FROM positions WHERE stock_code=?", (stock_code,))
@@ -461,7 +465,7 @@ class PositionManager:
                     if not self.positions_cache.empty:
                         # 确保数值列为数值类型
                         numeric_columns = ['volume', 'available', 'cost_price', 'current_price', 
-                                            'market_value', 'profit_ratio', 'highest_price', 'stop_loss_price']
+                                            'market_value', 'profit_ratio', 'highest_price', 'stop_loss_price','breakout_highest_price']
                         for col in numeric_columns:
                             if col in self.positions_cache.columns:
                                 # 转换为数值，无效值替换为0
@@ -470,6 +474,10 @@ class PositionManager:
                         # 确保布尔列为布尔类型
                         if 'profit_triggered' in self.positions_cache.columns:
                             self.positions_cache['profit_triggered'] = self.positions_cache['profit_triggered'].fillna(False)
+
+                        # 确保布尔列为布尔类型
+                        if 'profit_breakout_triggered' in self.positions_cache.columns:
+                            self.positions_cache['profit_breakout_triggered'] = self.positions_cache['profit_breakout_triggered'].fillna(False)    
                     
                     self.last_position_update_time = current_time
                     logger.debug(f"更新持仓缓存，共 {len(self.positions_cache)} 条记录")
@@ -501,7 +509,7 @@ class PositionManager:
             position = position_row.iloc[0].to_dict()
             
             # 确保数值字段转换为浮点数
-            numeric_fields = ['volume', 'available', 'cost_price', 'current_price', 'market_value', 'profit_ratio', 'highest_price', 'stop_loss_price']
+            numeric_fields = ['volume', 'available', 'cost_price', 'current_price', 'market_value', 'profit_ratio', 'highest_price', 'stop_loss_price','breakout_highest_price']
             for field in numeric_fields:
                 if field in position and position[field] is not None:
                     try:
@@ -1301,18 +1309,46 @@ class PositionManager:
             # 计算利润率
             profit_ratio = (current_price - cost_price) / cost_price
             
-            # 6. 首次止盈检查（盈利达到设定阈值卖出半仓）
+            # 6. 首次止盈检查（增加回撤条件）
             if not profit_triggered:
-                if profit_ratio >= config.INITIAL_TAKE_PROFIT_RATIO:
-                    logger.info(f"{stock_code} 触发初次止盈，当前盈利: {profit_ratio:.2%}, "
-                            f"初次止盈阈值: {config.INITIAL_TAKE_PROFIT_RATIO:.2%}")
-                    return 'take_profit_half', {
-                        'current_price': current_price,
-                        'cost_price': cost_price,
-                        'profit_ratio': profit_ratio,
-                        'volume': position['volume'],
-                        'sell_ratio': config.INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE
-                    }
+                # 检查是否已突破初始止盈阈值
+                profit_breakout_triggered = position.get('profit_breakout_triggered', False)
+                breakout_highest_price = float(position.get('breakout_highest_price', 0))
+                
+                if not profit_breakout_triggered:
+                    # 首次突破5%盈利阈值
+                    if profit_ratio >= config.INITIAL_TAKE_PROFIT_RATIO:
+                        logger.info(f"{stock_code} 首次突破止盈阈值 {config.INITIAL_TAKE_PROFIT_RATIO:.2%}，"
+                                f"当前盈利: {profit_ratio:.2%}，开始监控回撤")
+                        
+                        # 标记突破状态并记录当前价格作为突破后最高价
+                        self._mark_profit_breakout(stock_code, current_price)
+                        return None, None  # 不立即执行交易，继续监控
+                else:
+                    # 已突破阈值，监控回撤条件
+                    # 更新突破后最高价
+                    if current_price > breakout_highest_price:
+                        breakout_highest_price = current_price
+                        self._update_breakout_highest_price(stock_code, current_price)
+                        logger.debug(f"{stock_code} 更新突破后最高价: {current_price:.2f}")
+                    
+                    # 检查回撤条件
+                    if breakout_highest_price > 0:
+                        pullback_ratio = (breakout_highest_price - current_price) / breakout_highest_price
+                        
+                        if pullback_ratio >= config.INITIAL_TAKE_PROFIT_PULLBACK_RATIO:
+                            logger.info(f"{stock_code} 触发回撤止盈，突破后最高价: {breakout_highest_price:.2f}, "
+                                    f"当前价格: {current_price:.2f}, 回撤: {pullback_ratio:.2%}")
+                            
+                            return 'take_profit_half', {
+                                'current_price': current_price,
+                                'cost_price': cost_price,
+                                'profit_ratio': profit_ratio,
+                                'volume': position['volume'],
+                                'sell_ratio': config.INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE,
+                                'breakout_highest_price': breakout_highest_price,
+                                'pullback_ratio': pullback_ratio
+                            }
             
             # 7. 动态止盈检查（已触发首次止盈后）- 优化版本
             if profit_triggered and highest_price > 0:
@@ -1920,6 +1956,53 @@ class PositionManager:
         except Exception as e:
             logger.error(f"计算 {stock_code} 开仓以来最高价时出错: {str(e)}")
             return current_price
+
+        
+    def _mark_profit_breakout(self, stock_code, current_price):
+        """标记已突破盈利阈值 - 修正版本"""
+        try:
+            # 更新内存数据库
+            cursor = self.memory_conn.cursor()
+            cursor.execute("""
+                UPDATE positions 
+                SET profit_breakout_triggered = ?, breakout_highest_price = ?
+                WHERE stock_code = ?
+            """, (True, current_price, stock_code))
+            self.memory_conn.commit()
+            
+            if cursor.rowcount > 0:
+                logger.debug(f"{stock_code} 标记突破状态成功")
+                return True
+            else:
+                logger.warning(f"{stock_code} 标记突破状态失败，未找到记录")
+                return False
+                    
+        except Exception as e:
+            logger.error(f"标记 {stock_code} 突破状态失败: {str(e)}")
+            return False
+
+    def _update_breakout_highest_price(self, stock_code, new_highest_price):
+        """更新突破后最高价 - 修正版本"""
+        try:
+            # 更新内存数据库
+            cursor = self.memory_conn.cursor()
+            cursor.execute("""
+                UPDATE positions 
+                SET breakout_highest_price = ?
+                WHERE stock_code = ?
+            """, (new_highest_price, stock_code))
+            self.memory_conn.commit()
+            
+            if cursor.rowcount > 0:
+                logger.debug(f"{stock_code} 更新突破后最高价成功: {new_highest_price:.2f}")
+                return True
+            else:
+                logger.warning(f"{stock_code} 更新突破后最高价失败，未找到记录")
+                return False
+                    
+        except Exception as e:
+            logger.error(f"更新 {stock_code} 突破后最高价失败: {str(e)}")
+            return False
 
     def mark_profit_triggered(self, stock_code):
         """标记股票已触发首次止盈"""

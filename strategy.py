@@ -301,12 +301,16 @@ class TradingStrategy:
             total_volume = signal_info['volume']
             current_price = signal_info['current_price']
             sell_ratio = signal_info['sell_ratio']
-            
+            breakout_highest_price = signal_info.get('breakout_highest_price', 0)
+            pullback_ratio = signal_info.get('pullback_ratio', 0)
+
             # 计算卖出数量
             sell_volume = int(total_volume * sell_ratio / 100) * 100
             sell_volume = max(sell_volume, 100)  # 至少100股
             
             logger.info(f"执行 {stock_code} 首次止盈，卖出半仓，数量: {sell_volume}, 价格: {current_price:.2f}")
+            if breakout_highest_price > 0:
+                logger.info(f"  - 突破后最高价: {breakout_highest_price:.2f}, 回撤幅度: {pullback_ratio:.2%}")            
             
             # 检查是否为模拟交易模式
             if hasattr(config, 'ENABLE_SIMULATION_MODE') and config.ENABLE_SIMULATION_MODE:
@@ -409,6 +413,7 @@ class TradingStrategy:
         except Exception as e:
             logger.error(f"执行 {stock_code} 动态全仓止盈信号时出错: {str(e)}")
             return False
+
 
     # ========== 向后兼容的旧版本接口 ==========
     
@@ -743,7 +748,7 @@ class TradingStrategy:
                     logger.info("交易策略执行完成")
                 
                 # 等待下一次策略执行
-                for _ in range(30):  # 每30s执行一次策略
+                for _ in range(10):  # 每10s执行一次策略
                     if self.stop_flag:
                         break
                     time.sleep(1)
