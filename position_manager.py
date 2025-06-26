@@ -350,6 +350,9 @@ class PositionManager:
                             if db_open_date != open_date:
                                 open_date = db_open_date
                                 row['open_date'] = open_date  # 更新内存数据库中的 open_date
+
+                            if db_profit_triggered != profit_triggered:
+                                logger.info(f"---内存数据库的 {stock_code} 的profit_triggered与sqlite不一致---")   
                             # 更新数据库，确保所有字段都得到更新
                             cursor.execute("""
                                 UPDATE positions 
@@ -657,6 +660,10 @@ class PositionManager:
                 # 更新持仓
                 if open_date is None:
                     open_date = result[0]  # 获取已有的open_date
+                # 🔑 添加：保护profit_triggered状态
+                existing_profit_triggered = result[1] if result[1] is not None else False
+                final_profit_triggered = p_profit_triggered if p_profit_triggered == True else existing_profit_triggered
+            
                 old_db_highest_price = float(result[2]) if result[2] is not None else None # from DB
                 if final_highest_price is None: # if not passed or calculated yet
                     final_highest_price = max(old_db_highest_price, final_current_price) if old_db_highest_price is not None else final_current_price
@@ -664,13 +671,13 @@ class PositionManager:
                 # 修复：如果最高价发生变化，强制重新计算止损价格
                 if old_db_highest_price != final_highest_price:
                     logger.info(f"{stock_code} 最高价变化：{old_db_highest_price} -> {final_highest_price}，重新计算止损价格")
-                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, profit_triggered)
+                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
                     final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
                 elif final_stop_loss_price is None:
-                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, profit_triggered)
+                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
                     final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
                 else:
-                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, profit_triggered)
+                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
                     if calculated_slp is not None:
                         final_stop_loss_price = min(final_stop_loss_price, calculated_slp)
                         final_stop_loss_price = round(final_stop_loss_price, 2)
@@ -681,10 +688,10 @@ class PositionManager:
                         profit_ratio=?, last_update=?, highest_price=?, stop_loss_price=?, profit_triggered=?, stock_name=?
                     WHERE stock_code=?
                 """, (int(p_volume), final_cost_price, final_current_price, p_market_value, int(p_available), 
-                    p_profit_ratio, now, final_highest_price, final_stop_loss_price, profit_triggered, stock_name, stock_code))
+                    p_profit_ratio, now, final_highest_price, final_stop_loss_price, final_profit_triggered, stock_name, stock_code))
 
-                if profit_triggered != result[1]:
-                    logger.info(f"更新 {stock_code} 持仓: 首次止盈触发: 从 {result[1]} 到 {profit_triggered}")
+                if final_profit_triggered != result[1]:
+                    logger.info(f"更新 {stock_code} 持仓: 首次止盈触发: 从 {result[1]} 到 {final_profit_triggered}")
                 elif final_highest_price != (float(result[2]) if result[2] is not None else None):
                     logger.info(f"更新 {stock_code} 持仓: 最高价: 从 {result[2]} 到 {final_highest_price}")
                 elif final_stop_loss_price != (float(result[3]) if result[3] is not None else None):
@@ -1364,7 +1371,7 @@ class PositionManager:
                         cost_price, highest_price
                     )
                     
-                    logger.info(f"{stock_code} 触发动态止盈，当前价格: {current_price:.2f}, "
+                    logger.info(f"{stock_code} 触发动态全仓止盈，当前价格: {current_price:.2f}, "
                             f"止盈位: {dynamic_take_profit_price:.2f}, 最高价: {highest_price:.2f}, "
                             f"最高达到区间: {matched_level:.1%}（系数{take_profit_coefficient})")
                             
@@ -2051,11 +2058,11 @@ class PositionManager:
                 all_latest_data = {}
                 
                 # 批量获取所有股票的最新行情（如果交易时间）
-                if config.is_trade_time():
-                    for stock_code in stock_codes:
-                        latest_data = self.data_manager.get_latest_data(stock_code)
-                        if latest_data:
-                            all_latest_data[stock_code] = latest_data
+                # if config.is_trade_time():
+                for stock_code in stock_codes:
+                    latest_data = self.data_manager.get_latest_data(stock_code)
+                    if latest_data:
+                        all_latest_data[stock_code] = latest_data
                 
                 # 计算涨跌幅
                 change_percentages = {}
