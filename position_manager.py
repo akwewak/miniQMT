@@ -665,8 +665,8 @@ class PositionManager:
                 final_profit_triggered = p_profit_triggered if p_profit_triggered == True else existing_profit_triggered
             
                 old_db_highest_price = float(result[2]) if result[2] is not None else None # from DB
-                if final_highest_price is None: # if not passed or calculated yet
-                    final_highest_price = max(old_db_highest_price, final_current_price) if old_db_highest_price is not None else final_current_price
+                # if final_highest_price is None: # if not passed or calculated yet
+                final_highest_price = max(old_db_highest_price, final_current_price) if old_db_highest_price is not None else final_current_price
                 
                 # 修复：如果最高价发生变化，强制重新计算止损价格
                 if old_db_highest_price != final_highest_price:
