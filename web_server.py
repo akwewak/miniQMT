@@ -415,185 +415,185 @@ def stop_monitor():
             'message': f"停止监控失败: {str(e)}"
         }), 500
 
-@app.route('/api/data_sources/status', methods=['GET'])
-def get_data_sources_status():
-    """获取数据源状态"""
-    try:
-        # 添加更详细的错误处理
-        try:
-            from realtime_data_manager import get_realtime_data_manager
-            manager = get_realtime_data_manager()
-        except ImportError as e:
-            logger.error(f"导入realtime_data_manager失败: {str(e)}")
-            return jsonify({
-                'status': 'error',
-                'message': f"数据管理器模块导入失败: {str(e)}"
-            }), 500
-        except Exception as e:
-            logger.error(f"初始化数据管理器失败: {str(e)}")
-            return jsonify({
-                'status': 'error',
-                'message': f"数据管理器初始化失败: {str(e)}"
-            }), 500
+# @app.route('/api/data_sources/status', methods=['GET'])
+# def get_data_sources_status():
+#     """获取数据源状态"""
+#     try:
+#         # 添加更详细的错误处理
+#         try:
+#             from realtime_data_manager import get_realtime_data_manager
+#             manager = get_realtime_data_manager()
+#         except ImportError as e:
+#             logger.error(f"导入realtime_data_manager失败: {str(e)}")
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': f"数据管理器模块导入失败: {str(e)}"
+#             }), 500
+#         except Exception as e:
+#             logger.error(f"初始化数据管理器失败: {str(e)}")
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': f"数据管理器初始化失败: {str(e)}"
+#             }), 500
         
-        status = manager.get_source_status()
+#         status = manager.get_source_status()
         
-        return jsonify({
-            'status': 'success',
-            'data': status,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        })
-    except Exception as e:
-        logger.error(f"获取数据源状态时出错: {str(e)}")
-        return jsonify({
-            'status': 'error',
-            'message': f"获取数据源状态失败: {str(e)}"
-        }), 500
+#         return jsonify({
+#             'status': 'success',
+#             'data': status,
+#             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+#         })
+#     except Exception as e:
+#         logger.error(f"获取数据源状态时出错: {str(e)}")
+#         return jsonify({
+#             'status': 'error',
+#             'message': f"获取数据源状态失败: {str(e)}"
+#         }), 500
 
-@app.route('/api/data_sources/switch', methods=['POST'])
-def switch_data_source():
-    """手动切换数据源"""
-    try:
-        data = request.json
-        if not data:
-            return jsonify({
-                'status': 'error',
-                'message': '请求数据不能为空'
-            }), 400
+# @app.route('/api/data_sources/switch', methods=['POST'])
+# def switch_data_source():
+#     """手动切换数据源"""
+#     try:
+#         data = request.json
+#         if not data:
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': '请求数据不能为空'
+#             }), 400
             
-        source_name = data.get('source_name')
-        if not source_name:
-            return jsonify({
-                'status': 'error',
-                'message': '缺少source_name参数'
-            }), 400
+#         source_name = data.get('source_name')
+#         if not source_name:
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': '缺少source_name参数'
+#             }), 400
         
-        # 数据源名称映射
-        source_mapping = {
-            'MootdxSource': 'Mootdx',
-            'XtQuantSource': 'XtQuant',
-            'Mootdx': 'Mootdx',
-            'XtQuant': 'XtQuant'
-        }
+#         # 数据源名称映射
+#         source_mapping = {
+#             'MootdxSource': 'Mootdx',
+#             'XtQuantSource': 'XtQuant',
+#             'Mootdx': 'Mootdx',
+#             'XtQuant': 'XtQuant'
+#         }
         
-        actual_source_name = source_mapping.get(source_name, source_name)
+#         actual_source_name = source_mapping.get(source_name, source_name)
         
-        try:
-            from realtime_data_manager import get_realtime_data_manager
-            manager = get_realtime_data_manager()
-        except Exception as e:
-            return jsonify({
-                'status': 'error',
-                'message': f'数据管理器初始化失败: {str(e)}'
-            }), 500
+#         try:
+#             from realtime_data_manager import get_realtime_data_manager
+#             manager = get_realtime_data_manager()
+#         except Exception as e:
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': f'数据管理器初始化失败: {str(e)}'
+#             }), 500
         
-        # 使用新的切换方法
-        if manager.switch_to_source(actual_source_name):
-            return jsonify({
-                'status': 'success',
-                'message': f"已切换到数据源: {actual_source_name}",
-                'current_source': actual_source_name
-            })
-        else:
-            return jsonify({
-                'status': 'error',
-                'message': f"无法切换到数据源: {actual_source_name}，请检查数据源名称是否正确"
-            }), 400
+#         # 使用新的切换方法
+#         if manager.switch_to_source(actual_source_name):
+#             return jsonify({
+#                 'status': 'success',
+#                 'message': f"已切换到数据源: {actual_source_name}",
+#                 'current_source': actual_source_name
+#             })
+#         else:
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': f"无法切换到数据源: {actual_source_name}，请检查数据源名称是否正确"
+#             }), 400
         
-    except Exception as e:
-        logger.error(f"切换数据源时出错: {str(e)}")
-        return jsonify({
-            'status': 'error',
-            'message': f"切换数据源失败: {str(e)}"
-        }), 500
+#     except Exception as e:
+#         logger.error(f"切换数据源时出错: {str(e)}")
+#         return jsonify({
+#             'status': 'error',
+#             'message': f"切换数据源失败: {str(e)}"
+#         }), 500
 
-@app.route('/api/realtime/quote/<stock_code>', methods=['GET'])
-def get_realtime_quote(stock_code):
-    """获取单只股票的实时行情"""
-    try:
-        # 直接从实时数据管理器获取数据
-        from realtime_data_manager import get_realtime_data_manager
-        manager = get_realtime_data_manager()
+# @app.route('/api/realtime/quote/<stock_code>', methods=['GET'])
+# def get_realtime_quote(stock_code):
+#     """获取单只股票的实时行情"""
+#     try:
+#         # 直接从实时数据管理器获取数据
+#         from realtime_data_manager import get_realtime_data_manager
+#         manager = get_realtime_data_manager()
         
-        start_time = time.time()
-        data = manager.get_realtime_data(stock_code)
-        end_time = time.time()
+#         start_time = time.time()
+#         data = manager.get_realtime_data(stock_code)
+#         end_time = time.time()
         
-        if data:
-            data['response_time_ms'] = round((end_time - start_time) * 1000, 2)
-            return jsonify({
-                'status': 'success',
-                'data': data,
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
-        else:
-            return jsonify({
-                'status': 'error',
-                'message': f'无法获取{stock_code}的实时数据'
-            }), 404
+#         if data:
+#             data['response_time_ms'] = round((end_time - start_time) * 1000, 2)
+#             return jsonify({
+#                 'status': 'success',
+#                 'data': data,
+#                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+#             })
+#         else:
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': f'无法获取{stock_code}的实时数据'
+#             }), 404
             
-    except Exception as e:
-        logger.error(f"获取实时行情时出错: {str(e)}")
-        return jsonify({
-            'status': 'error',
-            'message': f'获取实时行情失败: {str(e)}'
-        }), 500
+#     except Exception as e:
+#         logger.error(f"获取实时行情时出错: {str(e)}")
+#         return jsonify({
+#             'status': 'error',
+#             'message': f'获取实时行情失败: {str(e)}'
+#         }), 500
 
-@app.route('/api/realtime/test/<stock_code>', methods=['GET'])
-def test_all_sources(stock_code):
-    """测试所有数据源获取指定股票数据"""
-    try:
-        from realtime_data_manager import get_realtime_data_manager
-        manager = get_realtime_data_manager()
+# @app.route('/api/realtime/test/<stock_code>', methods=['GET'])
+# def test_all_sources(stock_code):
+#     """测试所有数据源获取指定股票数据"""
+#     try:
+#         from realtime_data_manager import get_realtime_data_manager
+#         manager = get_realtime_data_manager()
         
-        results = {}
+#         results = {}
         
-        # 测试每个数据源
-        for source in manager.data_sources:
-            start_time = time.time()
-            try:
-                data = source.get_data(stock_code)
-                end_time = time.time()
+#         # 测试每个数据源
+#         for source in manager.data_sources:
+#             start_time = time.time()
+#             try:
+#                 data = source.get_data(stock_code)
+#                 end_time = time.time()
                 
-                if data:
-                    results[source.name] = {
-                        'success': True,
-                        'data': data,
-                        'response_time_ms': round((end_time - start_time) * 1000, 2),
-                        'error_count': source.error_count,
-                        'is_healthy': source.is_healthy
-                    }
-                else:
-                    results[source.name] = {
-                        'success': False,
-                        'error': '无数据返回',
-                        'response_time_ms': round((end_time - start_time) * 1000, 2),
-                        'error_count': source.error_count,
-                        'is_healthy': source.is_healthy
-                    }
-            except Exception as e:
-                end_time = time.time()
-                results[source.name] = {
-                    'success': False,
-                    'error': str(e),
-                    'response_time_ms': round((end_time - start_time) * 1000, 2),
-                    'error_count': source.error_count,
-                    'is_healthy': source.is_healthy
-                }
+#                 if data:
+#                     results[source.name] = {
+#                         'success': True,
+#                         'data': data,
+#                         'response_time_ms': round((end_time - start_time) * 1000, 2),
+#                         'error_count': source.error_count,
+#                         'is_healthy': source.is_healthy
+#                     }
+#                 else:
+#                     results[source.name] = {
+#                         'success': False,
+#                         'error': '无数据返回',
+#                         'response_time_ms': round((end_time - start_time) * 1000, 2),
+#                         'error_count': source.error_count,
+#                         'is_healthy': source.is_healthy
+#                     }
+#             except Exception as e:
+#                 end_time = time.time()
+#                 results[source.name] = {
+#                     'success': False,
+#                     'error': str(e),
+#                     'response_time_ms': round((end_time - start_time) * 1000, 2),
+#                     'error_count': source.error_count,
+#                     'is_healthy': source.is_healthy
+#                 }
         
-        return jsonify({
-            'status': 'success',
-            'stock_code': stock_code,
-            'results': results,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        })
+#         return jsonify({
+#             'status': 'success',
+#             'stock_code': stock_code,
+#             'results': results,
+#             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+#         })
         
-    except Exception as e:
-        logger.error(f"测试所有数据源时出错: {str(e)}")
-        return jsonify({
-            'status': 'error',
-            'message': f'测试失败: {str(e)}'
-        }), 500
+#     except Exception as e:
+#         logger.error(f"测试所有数据源时出错: {str(e)}")
+#         return jsonify({
+#             'status': 'error',
+#             'message': f'测试失败: {str(e)}'
+#         }), 500
 
 
 @app.route('/api/debug/status', methods=['GET'])
