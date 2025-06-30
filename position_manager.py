@@ -685,8 +685,7 @@ class PositionManager:
                 else:
                     calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
                     if calculated_slp is not None:
-                        final_stop_loss_price = min(final_stop_loss_price, calculated_slp)
-                        final_stop_loss_price = round(final_stop_loss_price, 2)
+                        final_stop_loss_price = round(calculated_slp, 2)
             
                 cursor.execute("""
                     UPDATE positions 
@@ -857,18 +856,19 @@ class PositionManager:
                 
                 if highest_price > current_highest_price:
                     # 更新持仓"最高价"信息
-                    self.update_position(
-                        stock_code=stock_code,
-                        volume=position['volume'],
-                        cost_price=position['cost_price'],
-                        current_price=position['current_price'],
-                        profit_triggered=position['profit_triggered'],
-                        highest_price=highest_price,
-                        open_date=position['open_date'],
-                        stop_loss_price=position['stop_loss_price']
-                        )
-                    logger.info(f"更新 {stock_code} 的最高价为 {highest_price:.2f}")                    
-
+                    cursor = self.memory_conn.cursor()
+                    cursor.execute("""
+                        UPDATE positions 
+                        SET highest_price = ?, last_update = ?
+                        WHERE stock_code = ?
+                    """, (
+                        round(highest_price, 2),
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        stock_code
+                    ))
+                    self.memory_conn.commit()
+                    logger.info(f"更新 {stock_code} 的最高价为 {highest_price:.2f}")    
+               
         except Exception as e:
             logger.error(f"更新所有持仓的最高价时出错: {str(e)}")
 
