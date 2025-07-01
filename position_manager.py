@@ -296,89 +296,134 @@ class PositionManager:
                 logger.debug("非交易时间，跳过内存数据库到SQLite的同步")
                 return
 
-            # 获取内存数据库中的所有股票代码
-            # memory_positions = pd.read_sql_query("SELECT stock_code, stock_name, open_date, profit_triggered, highest_price, stop_loss_price FROM positions", self.memory_conn)
-            memory_positions = pd.read_sql_query("SELECT * FROM positions", self.memory_conn)
-            memory_stock_codes = set(memory_positions['stock_code'].tolist()) if not memory_positions.empty else set()
-            
-            # 获取SQLite数据库中的所有股票代码
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT stock_code FROM positions")
-            sqlite_stock_codes = {row[0] for row in cursor.fetchall() if row[0] is not None}
-            
-            # 删除SQLite中存在但内存数据库中不存在的记录
-            stocks_to_delete = sqlite_stock_codes - memory_stock_codes
-            if stocks_to_delete:
-                deleted_count = 0
-                for stock_code in stocks_to_delete:
-                    try:
-                        cursor.execute("DELETE FROM positions WHERE stock_code=?", (stock_code,))
-                        if cursor.rowcount > 0:
-                            deleted_count += 1
-                            logger.info(f"从SQLite删除持仓记录: {stock_code}")
-                    except Exception as e:
-                        logger.error(f"删除SQLite中的 {stock_code} 记录时出错: {str(e)}")
+            # 使用独立的数据库连接避免事务冲突
+            sync_db_conn = sqlite3.connect(config.DB_PATH)
+            sync_db_conn.execute("PRAGMA busy_timeout = 30000")  # 设置30秒超时
+
+            try:
+                # 获取内存数据库中的所有股票代码
+                # memory_positions = pd.read_sql_query("SELECT stock_code, stock_name, open_date, profit_triggered, highest_price, stop_loss_price FROM positions", self.memory_conn)
+                memory_positions = pd.read_sql_query("SELECT * FROM positions", self.memory_conn)
+                memory_stock_codes = set(memory_positions['stock_code'].tolist()) if not memory_positions.empty else set()
                 
-                if deleted_count > 0:
-                    logger.info(f"SQLite同步：删除了 {deleted_count} 个过期的持仓记录")
-
-            if not memory_positions.empty:
-                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                for _, row in memory_positions.iterrows():
-                    stock_code = row['stock_code']
-                    stock_name = row['stock_name']
-                    volume = row['volume']
-                    available = row['available']
-                    cost_price = row['cost_price']
-                    open_date = row['open_date']
-                    profit_triggered = row['profit_triggered']
-                    highest_price = row['highest_price']
-                    stop_loss_price = row['stop_loss_price']
-                    profit_breakout_triggered = row['profit_breakout_triggered']
-                    breakout_highest_price = row['breakout_highest_price']
+                # 获取SQLite数据库中的所有股票代码
+                cursor = sync_db_conn.cursor()
+                cursor.execute("SELECT stock_code FROM positions")
+                sqlite_stock_codes = {row[0] for row in cursor.fetchall() if row[0] is not None}
+                
+                # 删除SQLite中存在但内存数据库中不存在的记录
+                stocks_to_delete = sqlite_stock_codes - memory_stock_codes
+                if stocks_to_delete:
+                    deleted_count = 0
+                    for stock_code in stocks_to_delete:
+                        try:
+                            cursor.execute("DELETE FROM positions WHERE stock_code=?", (stock_code,))
+                            if cursor.rowcount > 0:
+                                deleted_count += 1
+                                logger.info(f"从SQLite删除持仓记录: {stock_code}")
+                        except Exception as e:
+                            logger.error(f"删除SQLite中的 {stock_code} 记录时出错: {str(e)}")
                     
-                    # 查询数据库中的对应记录
-                    cursor = self.conn.cursor()
-                    cursor.execute("SELECT stock_name, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price FROM positions WHERE stock_code=?", (stock_code,))
-                    db_row = cursor.fetchone()
+                    if deleted_count > 0:
+                        logger.info(f"SQLite同步：删除了 {deleted_count} 个过期的持仓记录")
 
-                    if db_row:
-                        db_stock_name, db_open_date, db_profit_triggered, db_highest_price, db_stop_loss_price, db_profit_breakout_triggered, db_breakout_highest_price = db_row
-                        # 比较字段是否不同
-                        if (db_stock_name != stock_name) or (db_open_date != open_date) or (db_profit_triggered != profit_triggered) or (db_highest_price != highest_price) or (db_stop_loss_price != stop_loss_price) or (db_profit_breakout_triggered != profit_breakout_triggered) or (db_breakout_highest_price != breakout_highest_price):
-                            # 如果内存数据库中的 open_date 与 SQLite 数据库中的不一致，则使用 SQLite 数据库中的值
-                            if db_open_date != open_date:
-                                open_date = db_open_date
-                                row['open_date'] = open_date  # 更新内存数据库中的 open_date
+                if not memory_positions.empty:
+                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    update_count = 0
+                    insert_count = 0
 
-                            if db_profit_triggered != profit_triggered:
-                                logger.info(f"---内存数据库的 {stock_code} 的profit_triggered与sqlite不一致---")   
-                            # 更新数据库，确保所有字段都得到更新
-                            cursor.execute("""
-                                UPDATE positions 
-                                SET stock_name=?, open_date=?, profit_triggered=?, highest_price=?, stop_loss_price=?, profit_breakout_triggered=?, breakout_highest_price=?, last_update=? 
-                                WHERE stock_code=?
-                            """, (stock_name, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now, stock_code))
-                            logger.info(f"更新内存数据库的 {stock_code} 到sql数据库")
-                    else:
-                        # 插入新记录，使用当前日期作为 open_date
-                        current_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        cursor.execute("""
-                            INSERT INTO positions (stock_code, stock_name, volume, available, cost_price, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, last_update) 
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (stock_code, stock_name, volume, available, cost_price, current_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now))
+                    for _, row in memory_positions.iterrows():
+                        stock_code = row['stock_code']
+                        stock_name = row['stock_name']
+                        volume = row['volume']
+                        available = row['available']
+                        cost_price = row['cost_price']
+                        open_date = row['open_date']
+                        profit_triggered = row['profit_triggered']
+                        highest_price = row['highest_price']
+                        stop_loss_price = row['stop_loss_price']
+                        profit_breakout_triggered = row['profit_breakout_triggered']
+                        breakout_highest_price = row['breakout_highest_price']
                         
-                        # 插入新记录后，立即从数据库读取 open_date，以确保内存数据库与数据库一致
-                        cursor.execute("SELECT open_date FROM positions WHERE stock_code=?", (stock_code,))
-                        open_date = cursor.fetchone()[0]
-                        row['open_date'] = open_date  # 更新内存数据库中的 open_date
-                        logger.info(f"在数据库中插入新的 {stock_code} 记录，使用当前日期 {current_date} 作为 open_date")
+                        # 查询数据库中的对应记录
+                        cursor.execute("SELECT stock_name, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price FROM positions WHERE stock_code=?", (stock_code,))
+                        db_row = cursor.fetchone()
+
+                        if db_row:
+                            db_stock_name, db_open_date, db_profit_triggered, db_highest_price, db_stop_loss_price, db_profit_breakout_triggered, db_breakout_highest_price = db_row
+                            # 比较字段是否不同
+                            if (db_stock_name != stock_name) or (db_open_date != open_date) or (db_profit_triggered != profit_triggered) or (db_highest_price != highest_price) or (db_stop_loss_price != stop_loss_price) or (db_profit_breakout_triggered != profit_breakout_triggered) or (db_breakout_highest_price != breakout_highest_price):
+                                # 如果内存数据库中的 open_date 与 SQLite 数据库中的不一致，则使用 SQLite 数据库中的值
+                                if db_open_date != open_date:
+                                    open_date = db_open_date
+                                    # row['open_date'] = open_date  # 更新内存数据库中的 open_date
+                                    memory_cursor = self.memory_conn.cursor()
+                                    memory_cursor.execute("UPDATE positions SET open_date=? WHERE stock_code=?", (open_date, stock_code))
+                                    self.memory_conn.commit()
+
+                                if db_profit_triggered != profit_triggered:
+                                    logger.info(f"---内存数据库的 {stock_code} 的profit_triggered与sqlite不一致---")   
+                                # 更新数据库，确保所有字段都得到更新
+                                cursor.execute("""
+                                    UPDATE positions 
+                                    SET stock_name=?, open_date=?, profit_triggered=?, highest_price=?, stop_loss_price=?, profit_breakout_triggered=?, breakout_highest_price=?, last_update=? 
+                                    WHERE stock_code=?
+                                """, (stock_name, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now, stock_code))
+                                update_count += 1
+                                logger.debug(f"更新SQLite记录: {stock_code}, 最高价:{highest_price}, 止损价:{stop_loss_price}")
+                        else:
+                            # 插入新记录，使用当前日期作为 open_date
+                            current_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            cursor.execute("""
+                                INSERT INTO positions (stock_code, stock_name, volume, available, cost_price, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, last_update) 
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (stock_code, stock_name, volume, available, cost_price, current_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now))
+                            
+                            insert_count += 1
+                            # 插入新记录后，立即从数据库读取 open_date，以确保内存数据库与数据库一致
+                            cursor.execute("SELECT open_date FROM positions WHERE stock_code=?", (stock_code,))
+                            db_open_date = cursor.fetchone()[0]
+                            memory_cursor = self.memory_conn.cursor()
+                            memory_cursor.execute("UPDATE positions SET open_date=? WHERE stock_code=?", (db_open_date, stock_code))
+                            self.memory_conn.commit()
+                            logger.info(f"插入新的SQLite记录: {stock_code}, 使用日期: {current_date}")
 
 
-                self.conn.commit()
+                    sync_db_conn.commit()
+                    if update_count > 0 or insert_count > 0:
+                        logger.info(f"SQLite同步完成: 更新{update_count}条, 插入{insert_count}条记录")
+
+            except Exception as e:
+                logger.error(f"独立连接同步失败: {str(e)}")
+                sync_db_conn.rollback()
+                raise
+            finally:
+                sync_db_conn.close()            
+
         except Exception as e:
             logger.error(f"内存数据库数据同步到数据库时出错: {str(e)}")
-            self.conn.rollback()
+            # 添加重试机制
+            if not hasattr(self, '_sync_retry_count'):
+                self._sync_retry_count = 0
+            
+            self._sync_retry_count += 1
+            if self._sync_retry_count <= 2:  # 最多重试2次
+                logger.info(f"安排第 {self._sync_retry_count} 次同步重试，5秒后执行")
+                threading.Timer(5.0, self._retry_sync).start()
+            else:
+                logger.error("同步重试次数已达上限，重置计数器")
+                self._sync_retry_count = 0
+
+    def _retry_sync(self):
+        """重试同步"""
+        try:
+            logger.info("执行同步重试")
+            self._sync_memory_to_db()
+            # 重试成功，重置计数器
+            self._sync_retry_count = 0
+            logger.info("同步重试成功")
+        except Exception as e:
+            logger.error(f"同步重试失败: {str(e)}")
 
     def start_sync_thread(self):
         """启动定时同步线程"""

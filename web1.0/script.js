@@ -616,15 +616,15 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log("Updating config form:", config);
         if (!config) return;
         elements.singleBuyAmount.value = config.singleBuyAmount ?? '35000';
-        elements.firstProfitSell.value = config.firstProfitSell ?? '5.00';
+        elements.firstProfitSell.value = config.firstProfitSell ? parseFloat(config.firstProfitSell).toFixed(2) : '5.00';
         elements.firstProfitSellEnabled.checked = config.firstProfitSellEnabled ?? true;
         elements.stockGainSellPencent.value = config.stockGainSellPencent ?? '60.00';
         elements.firstProfitSellPencent.checked = config.firstProfitSellPencent ?? true;
         elements.allowBuy.checked = config.allowBuy ?? true;
         elements.allowSell.checked = config.allowSell ?? true;
-        elements.stopLossBuy.value = config.stopLossBuy ?? '5.00';
+        elements.stopLossBuy.value = config.stopLossBuy ? parseFloat(config.stopLossBuy).toFixed(2) : '5.00';
         elements.stopLossBuyEnabled.checked = config.stopLossBuyEnabled ?? true;
-        elements.stockStopLoss.value = config.stockStopLoss ?? '7.00';
+        elements.stockStopLoss.value = config.stockStopLoss ? parseFloat(config.stockStopLoss).toFixed(2) : '7.00';
         elements.StopLossEnabled.checked = config.StopLossEnabled ?? true;
         elements.singleStockMaxPosition.value = config.singleStockMaxPosition ?? '70000';
         elements.totalMaxPosition.value = config.totalMaxPosition ?? '400000';

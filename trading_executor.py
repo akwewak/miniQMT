@@ -876,7 +876,12 @@ class TradingExecutor:
                     volume = int(amount / price / 100) * 100  # 向下取整到100的整数倍
                     if volume == 0 and amount > 0:
                         volume = 100  # 确保至少买入100股
-                
+
+                # 确保volume是整数类型 
+                if volume is not None:
+                    volume = int(float(volume))  # 转换为整数
+                    logger.info(f"买入数量类型转换: {volume} (类型: {type(volume)})")
+
                 if volume <= 0:
                     logger.error(f"买入数量必须大于0: {volume}")
                     return None
@@ -1081,7 +1086,12 @@ class TradingExecutor:
                     if volume <= 0:
                         logger.error(f"计算的卖出数量必须大于0: {volume}")
                         return None
-                
+                    
+                # 确保volume是整数类型
+                if volume is not None:
+                    volume = int(float(volume))  # 转换为整数
+                    logger.info(f"卖出数量类型转换: {volume} (类型: {type(volume)})") 
+
                 if volume <= 0:
                     logger.error(f"卖出数量必须大于0: {volume}")
                     return None
