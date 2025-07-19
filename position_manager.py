@@ -1297,6 +1297,109 @@ class PositionManager:
             logger.error(f"计算止损价格时出错: {str(e)}")
             return 0.0  # 出错时返回0作为止损价
 
+
+    def check_add_position_signal(self, stock_code):
+        """
+        检查补仓信号 - 使用web页面现有参数
+        启用开关：stopLossBuyEnabled
+        补仓阈值：stopLossBuy（通过BUY_GRID_LEVELS[1]获取）
+        
+        参数:
+        stock_code (str): 股票代码
+        
+        返回:
+        tuple: (信号类型, 详细信息) - ('add_position', {...}) 或 (None, None)
+        """
+        try:
+            # 检查补仓功能是否启用（使用web页面的stopLossBuyEnabled）
+            stop_loss_buy_enabled = getattr(config, 'ENABLE_STOP_LOSS_BUY', True)
+            if not stop_loss_buy_enabled:
+                logger.debug(f"{stock_code} 补仓功能已关闭")
+                return None, None
+                
+            # 获取持仓数据
+            position = self.get_position(stock_code)
+            if not position:
+                logger.debug(f"未持有 {stock_code}，无需检查补仓信号")
+                return None, None
+            
+            # 获取最新行情数据
+            latest_quote = self.data_manager.get_latest_data(stock_code)
+            if not latest_quote:
+                latest_quote = {'lastPrice': position.get('current_price', 0)}
+            
+            # 数据验证和转换
+            try:
+                current_price = float(latest_quote.get('lastPrice', 0)) if latest_quote else 0
+                if current_price <= 0:
+                    current_price = float(position.get('current_price', 0))
+                
+                cost_price = float(position.get('cost_price', 0))
+                current_value = float(position.get('market_value', 0))
+                profit_triggered = bool(position.get('profit_triggered', False))
+                
+                if cost_price <= 0 or current_price <= 0:
+                    logger.debug(f"{stock_code} 价格数据无效")
+                    return None, None
+                    
+            except (TypeError, ValueError) as e:
+                logger.error(f"补仓信号检查 - 价格数据转换错误 {stock_code}: {e}")
+                return None, None
+
+            # 如果已触发过首次止盈，不再补仓（保护已获得的收益）
+            if profit_triggered:
+                logger.debug(f"{stock_code} 已触发首次止盈，不再执行补仓策略")
+                return None, None
+
+            # 计算价格下跌比例
+            price_drop_ratio = (cost_price - current_price) / cost_price
+            
+            # 从配置获取补仓跌幅阈值（使用web页面的stopLossBuy参数）
+            add_position_threshold = 1 - config.BUY_GRID_LEVELS[1]  # 由stopLossBuy参数控制
+            
+            # 检查是否达到止损线（如果下跌超过止损比例且无法补仓，应该止损而非补仓）
+            stop_loss_threshold = abs(config.STOP_LOSS_RATIO)
+            
+            # 优先级判断：
+            # 1. 如果下跌幅度达到补仓条件，且还有补仓空间 → 补仓
+            # 2. 如果下跌幅度达到止损条件，且无补仓空间 → 让止损逻辑处理
+            
+            if price_drop_ratio >= add_position_threshold:
+                # 检查是否还有补仓空间
+                remaining_space = config.MAX_POSITION_VALUE - current_value
+                min_add_amount = 1000  # 最小补仓金额
+                
+                if remaining_space >= min_add_amount:
+                    # 还有补仓空间，执行补仓
+                    add_amount = min(config.POSITION_UNIT, remaining_space)
+                    
+                    logger.info(f"{stock_code} 触发补仓条件：成本价={cost_price:.2f}, 当前价={current_price:.2f}, "
+                            f"下跌={price_drop_ratio:.2%}, 补仓阈值={add_position_threshold:.2%}, "
+                            f"补仓金额={add_amount:.0f}")
+                    
+                    return 'add_position', {
+                        'stock_code': stock_code,
+                        'current_price': current_price,
+                        'cost_price': cost_price,
+                        'add_amount': add_amount,
+                        'price_drop_ratio': price_drop_ratio,
+                        'threshold': add_position_threshold,
+                        'current_value': current_value,
+                        'remaining_space': remaining_space,
+                        'reason': 'price_drop_add_position'
+                    }
+                else:
+                    # 无补仓空间且已达到补仓条件，记录日志但不执行补仓
+                    # 让后续的止损逻辑来处理
+                    logger.warning(f"{stock_code} 达到补仓条件但无补仓空间：下跌={price_drop_ratio:.2%}, "
+                                f"剩余空间={remaining_space:.0f}, 将由止损逻辑处理")
+            
+            return None, None
+            
+        except Exception as e:
+            logger.error(f"检查 {stock_code} 补仓信号时出错: {str(e)}")
+            return None, None
+
     # ========== 新增：统一的止盈止损检查逻辑 ==========
     
     def check_trading_signals(self, stock_code):

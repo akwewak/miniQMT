@@ -241,7 +241,7 @@ def get_config():
             "allowBuy": getattr(config, 'ENABLE_ALLOW_BUY', True),
             "allowSell": getattr(config, 'ENABLE_ALLOW_SELL', True),
             "stopLossBuy": abs(config.BUY_GRID_LEVELS[1] - 1) * 100,
-            "stopLossBuyEnabled": True,
+            "stopLossBuyEnabled": getattr(config, 'ENABLE_STOP_LOSS_BUY', True),  
             "stockStopLoss": abs(config.STOP_LOSS_RATIO) * 100,
             "StopLossEnabled": True,
             "singleStockMaxPosition": config.MAX_POSITION_VALUE,
@@ -350,6 +350,14 @@ def save_config():
                 
                 logger.warning(f"交易模式切换: {'模拟交易' if new_simulation_mode else '实盘交易'}")
         
+        # 新增：处理补仓功能开关
+        if "stopLossBuyEnabled" in config_data:
+            old_stop_loss_buy = getattr(config, 'ENABLE_STOP_LOSS_BUY', True)
+            new_stop_loss_buy = bool(config_data["stopLossBuyEnabled"])
+            setattr(config, 'ENABLE_STOP_LOSS_BUY', new_stop_loss_buy)
+            logger.info(f"补仓功能开关: {old_stop_loss_buy} -> {new_stop_loss_buy}")
+
+
         logger.info(f"配置已更新: {config_data}")
         
         return jsonify({
