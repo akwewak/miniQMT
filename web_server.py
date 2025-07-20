@@ -735,6 +735,21 @@ def import_data():
             'message': f"导入数据失败: {str(e)}"
         }), 500
 
+@app.route('/api/initialize_positions', methods=['POST'])
+def api_initialize_positions():
+    """初始化持仓数据的API端点"""
+    try:
+        result = position_manager.initialize_all_positions_data()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"API调用初始化持仓数据失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': f'操作失败: {str(e)}',
+            'updated_count': 0
+        }), 500
+
 @app.route('/api/holdings/init', methods=['POST'])
 def init_holdings():
     """初始化持仓数据"""
@@ -797,31 +812,28 @@ def init_holdings():
         
         # 初始化持仓数据
         # 这里需要实现初始化持仓的逻辑
-        # 可以通过查询交易接口获取实际持仓
-        
         # 假设我们直接从交易执行器获取持仓
-        positions = trading_executor.get_stock_positions()
+        # positions = trading_executor.get_stock_positions()
         
-        # 清空已有持仓数据
-        # cursor = data_manager.conn.cursor()
-        # cursor.execute("DELETE FROM positions")
-        # data_manager.conn.commit()
+        # # 导入最新持仓
+        # for pos in positions:
+        #     # 假设position_manager有一个update_position方法
+        #     position_manager.update_position(
+        #         stock_code=pos['stock_code'],
+        #         volume=pos['volume'],
+        #         cost_price=pos['cost_price'],
+        #         current_price=pos['current_price']
+        #     )
+
+        # return jsonify({
+        #     'status': 'success',
+        #     'message': '持仓数据初始化成功',
+        #     'count': len(positions)
+        # })        
         
-        # 导入最新持仓
-        for pos in positions:
-            # 假设position_manager有一个update_position方法
-            position_manager.update_position(
-                stock_code=pos['stock_code'],
-                volume=pos['volume'],
-                cost_price=pos['cost_price'],
-                current_price=pos['current_price']
-            )
-        
-        return jsonify({
-            'status': 'success',
-            'message': '持仓数据初始化成功',
-            'count': len(positions)
-        })
+        result = position_manager.initialize_all_positions_data()
+        return jsonify(result)
+
     except Exception as e:
         logger.error(f"初始化持仓数据时出错: {str(e)}")
         return jsonify({

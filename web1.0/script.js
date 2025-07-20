@@ -3,7 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Configuration ---
     let API_BASE_URL = ''; // 将根据用户配置的IP和端口动态设置
-    const API_ENDPOINTS = {
+    const ORIGINAL_API_ENDPOINTS = {
         // --- GET Endpoints ---
         getConfig: `/api/config`,
         getStatus: `/api/status`,
@@ -25,6 +25,8 @@ document.addEventListener('DOMContentLoaded', () => {
         executeBuy: `/api/actions/execute_buy`,
         updateHoldingParams: `/api/holdings/update`
     };
+    // 工作用的API端点对象
+    let API_ENDPOINTS = { ...ORIGINAL_API_ENDPOINTS };
 
     // 轮询设置
     let POLLING_INTERVAL = 5000; // 默认5秒
@@ -554,8 +556,12 @@ document.addEventListener('DOMContentLoaded', () => {
         API_BASE_URL = `http://${ip}:${port}`;
         
         // 更新所有API端点
-        for (let key in API_ENDPOINTS) {
-            API_ENDPOINTS[key] = `${API_BASE_URL}${API_ENDPOINTS[key]}`;
+        // for (let key in API_ENDPOINTS) {
+        //     API_ENDPOINTS[key] = `${API_BASE_URL}${API_ENDPOINTS[key]}`;
+        // }
+        API_ENDPOINTS = {};
+        for (let key in ORIGINAL_API_ENDPOINTS) {
+            API_ENDPOINTS[key] = `${API_BASE_URL}${ORIGINAL_API_ENDPOINTS[key]}`;
         }
         console.log("API Base URL updated:", API_BASE_URL);
     }

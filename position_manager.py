@@ -2165,6 +2165,78 @@ class PositionManager:
             logger.error(f"更新 {stock_code} 突破后最高价失败: {str(e)}")
             return False
 
+
+    def initialize_all_positions_data(self):
+        """
+        初始化所有持仓数据 - 重新计算"买后最高"和"动态止损"
+        复用现有逻辑，支持实盘和模拟交易
+        """
+        try:
+            logger.info("开始初始化所有持仓数据...")
+            
+            # 1. 获取所有持仓（复用现有方法）
+            positions = self.get_all_positions()
+            if positions.empty:
+                logger.info("没有持仓数据需要初始化")
+                return {
+                    'success': True, 
+                    'message': '没有持仓数据需要初始化', 
+                    'updated_count': 0
+                }
+            
+            logger.info(f"找到 {len(positions)} 只股票需要初始化")
+            
+            refresh_count = 0
+            error_count = 0
+            
+            # 2. 逐个更新每只股票（复用现有的刷新逻辑）
+            for _, position in positions.iterrows():
+                stock_code = position['stock_code']
+                if stock_code is None:
+                    continue
+                    
+                try:
+                    # 直接使用现有的单股票刷新方法
+                    success = self._refresh_single_position_full_data(stock_code, position)
+                    if success:
+                        refresh_count += 1
+                        logger.debug(f"初始化 {stock_code} 成功")
+                    else:
+                        error_count += 1
+                        logger.warning(f"初始化 {stock_code} 失败")
+                        
+                except Exception as e:
+                    error_count += 1
+                    logger.error(f"初始化 {stock_code} 时出错: {str(e)}")
+                    continue
+            
+            # 3. 强制触发版本更新（复用现有机制）
+            self._increment_data_version()
+            
+            # 4. 清理缓存
+            self.positions_cache = None
+            
+            success_message = f"持仓数据初始化完成！成功更新 {refresh_count} 只股票"
+            if error_count > 0:
+                success_message += f"，{error_count} 只股票处理失败"
+            
+            logger.info(success_message)
+            
+            return {
+                'success': True,
+                'message': success_message,
+                'updated_count': refresh_count,
+                'error_count': error_count
+            }
+            
+        except Exception as e:
+            logger.error(f"初始化持仓数据时发生错误: {str(e)}")
+            return {
+                'success': False,
+                'message': f'初始化失败: {str(e)}',
+                'updated_count': 0
+            }
+
     def mark_profit_triggered(self, stock_code):
         """标记股票已触发首次止盈"""
         try:
