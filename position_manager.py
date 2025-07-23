@@ -542,30 +542,185 @@ class PositionManager:
             return pd.DataFrame()  # 出错时返回空DataFrame
     
     def get_position(self, stock_code):
-        """获取指定股票的持仓"""
+        """
+        获取指定股票的持仓 - 修复版本：基于get_all_positions从QMT接口获取最新持仓
+        🔑 关键修复：使用字典映射避免字段索引依赖
+        """
         try:
-            # 从缓存获取所有持仓
+            if not stock_code:
+                return None
+                
+            # 🔑 关键修复：从QMT接口获取所有最新持仓
             all_positions = self.get_all_positions()
             
-            # 从缓存中筛选指定股票
-            position_row = all_positions[all_positions['stock_code'] == stock_code]
-            
-            if position_row.empty:
+            if all_positions is None or all_positions.empty:
+                logger.debug(f"{stock_code} 未找到任何持仓")
                 return None
             
-            # 转换为字典
-            position = position_row.iloc[0].to_dict()
+            # 🔑 标准化股票代码进行匹配（处理带后缀的情况）
+            stock_code_simple = stock_code.split('.')[0] if '.' in stock_code else stock_code
             
-            # 确保数值字段转换为浮点数
-            numeric_fields = ['volume', 'available', 'cost_price', 'current_price', 'market_value', 'profit_ratio', 'highest_price', 'stop_loss_price','breakout_highest_price']
+            # 🔑 从QMT持仓数据中筛选指定股票（避免字段索引依赖）
+            position_row = None
+            
+            # 检查可能的股票代码字段名
+            possible_code_fields = ['stock_code', '证券代码', 'code']
+            code_field = None
+            
+            for field in possible_code_fields:
+                if field in all_positions.columns:
+                    code_field = field
+                    break
+            
+            if code_field is None:
+                logger.error(f"持仓数据中未找到股票代码字段，可用字段: {list(all_positions.columns)}")
+                return None
+            
+            # 筛选指定股票
+            for _, row in all_positions.iterrows():
+                row_stock_code = str(row[code_field])
+                row_stock_code_simple = row_stock_code.split('.')[0] if '.' in row_stock_code else row_stock_code
+                
+                if row_stock_code_simple == stock_code_simple:
+                    position_row = row
+                    break
+            
+            if position_row is None:
+                logger.debug(f"{stock_code} 在持仓中未找到")
+                return None
+            
+            # 🔑 字段映射：将QMT中文字段名映射到标准英文字段名
+            field_mapping = {
+                # QMT接口字段名 -> 标准字段名
+                '证券代码': 'stock_code',
+                '证券名称': 'stock_name', 
+                '股票余额': 'volume',
+                '可用余额': 'available',
+                '成本价': 'cost_price',
+                '参考成本价': 'cost_price',
+                '平均建仓成本': 'cost_price',
+                '市值': 'market_value',
+                '市价': 'current_price',
+                '盈亏': 'profit_loss',
+                '盈亏比(%)': 'profit_ratio',
+                
+                # 如果已经是英文字段名，保持不变
+                'stock_code': 'stock_code',
+                'stock_name': 'stock_name',
+                'volume': 'volume',
+                'available': 'available', 
+                'cost_price': 'cost_price',
+                'current_price': 'current_price',
+                'market_value': 'market_value',
+                'profit_ratio': 'profit_ratio',
+                'highest_price': 'highest_price',
+                'stop_loss_price': 'stop_loss_price',
+                'profit_triggered': 'profit_triggered',
+                'open_date': 'open_date',
+                'profit_breakout_triggered': 'profit_breakout_triggered',
+                'breakout_highest_price': 'breakout_highest_price',
+                'last_update': 'last_update'
+            }
+            
+            # 🔑 构建标准化的持仓字典
+            position_dict = {}
+            
+            # 映射已有字段
+            for original_field, standard_field in field_mapping.items():
+                if original_field in position_row.index and position_row[original_field] is not None:
+                    position_dict[standard_field] = position_row[original_field]
+            
+            # 🔑 确保基础字段存在，添加默认值
+            if 'stock_code' not in position_dict:
+                position_dict['stock_code'] = stock_code
+                
+            if 'stock_name' not in position_dict:
+                position_dict['stock_name'] = stock_code
+                
+            # 🔑 计算缺失的字段
+            try:
+                volume = float(position_dict.get('volume', 0))
+                market_value = float(position_dict.get('market_value', 0))
+                cost_price = float(position_dict.get('cost_price', 0))
+                
+                # 计算当前价格（如果缺失）
+                if 'current_price' not in position_dict and volume > 0 and market_value > 0:
+                    position_dict['current_price'] = round(market_value / volume, 2)
+                
+                # 计算盈亏比例（如果缺失）
+                if 'profit_ratio' not in position_dict and cost_price > 0:
+                    current_price = float(position_dict.get('current_price', cost_price))
+                    position_dict['profit_ratio'] = round(100 * (current_price - cost_price) / cost_price, 2)
+                    
+            except (ValueError, TypeError, ZeroDivisionError):
+                pass  # 计算失败时保持原值
+            
+            # 🔑 为策略字段添加默认值（这些字段通常不在QMT接口中）
+            strategy_defaults = {
+                'highest_price': position_dict.get('current_price', position_dict.get('cost_price', 0)),
+                'stop_loss_price': 0.0,
+                'profit_triggered': False,
+                'profit_breakout_triggered': False,
+                'breakout_highest_price': 0.0,
+                'open_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            for field, default_value in strategy_defaults.items():
+                if field not in position_dict:
+                    position_dict[field] = default_value
+            
+            # 🔑 数据类型安全转换
+            # 数值字段
+            numeric_fields = ['volume', 'available', 'cost_price', 'current_price', 'market_value', 
+                            'profit_ratio', 'highest_price', 'stop_loss_price', 'breakout_highest_price']
+            
             for field in numeric_fields:
-                if field in position and position[field] is not None:
+                if field in position_dict and position_dict[field] is not None:
                     try:
-                        position[field] = float(position[field])
-                    except ValueError:
-                        position[field] = 0.0
+                        position_dict[field] = float(position_dict[field])
+                    except (ValueError, TypeError):
+                        logger.warning(f"{stock_code} 字段 {field} 转换失败: {position_dict[field]}")
+                        position_dict[field] = 0.0
             
-            return position
+            # 整数字段
+            integer_fields = ['volume', 'available']
+            for field in integer_fields:
+                if field in position_dict:
+                    try:
+                        position_dict[field] = int(float(position_dict[field]))
+                    except (ValueError, TypeError):
+                        position_dict[field] = 0
+            
+            # 布尔字段
+            boolean_fields = ['profit_triggered', 'profit_breakout_triggered']
+            for field in boolean_fields:
+                if field in position_dict:
+                    if isinstance(position_dict[field], str):
+                        position_dict[field] = position_dict[field].lower() in ['true', '1', 't', 'y', 'yes']
+                    else:
+                        position_dict[field] = bool(position_dict[field]) if position_dict[field] is not None else False
+            
+            # 🔑 数据合理性验证
+            cost_price = position_dict.get('cost_price', 0)
+            if cost_price > 0:
+                # 验证最高价
+                highest_price = position_dict.get('highest_price', 0)
+                current_price = position_dict.get('current_price', cost_price)
+                
+                if highest_price <= 0 or highest_price > cost_price * 20 or highest_price < cost_price * 0.1:
+                    logger.warning(f"{stock_code} 最高价数据异常: {highest_price}，修正为当前价格")
+                    position_dict['highest_price'] = max(cost_price, current_price)
+                
+                # 验证止损价
+                stop_loss_price = position_dict.get('stop_loss_price', 0)
+                if stop_loss_price > cost_price * 2 or stop_loss_price < cost_price * 0.3:
+                    logger.warning(f"{stock_code} 止损价数据异常: {stop_loss_price}，重置为0")
+                    position_dict['stop_loss_price'] = 0.0
+            
+            logger.debug(f"获取 {stock_code} 持仓成功: 数量={position_dict.get('volume', 0)}, 成本价={position_dict.get('cost_price', 0):.2f}")
+            return position_dict
+            
         except Exception as e:
             logger.error(f"获取 {stock_code} 的持仓信息时出错: {str(e)}")
             return None
@@ -601,9 +756,13 @@ class PositionManager:
         except Exception as e:
             logger.error(f"更新出错 {self.stock_positions_file}: {str(e)}")
 
-    def update_position(self, stock_code, volume, cost_price, available=None, market_value=None, current_price=None, profit_triggered=False, highest_price=None, open_date=None, stop_loss_price=None, stock_name=None):
-        """更新持仓信息"""
-        # Convert inputs to appropriate numeric types at the beginning
+    def update_position(self, stock_code, volume, cost_price, current_price=None, 
+                   profit_ratio=None, market_value=None, available=None, open_date=None, 
+                   profit_triggered=None, highest_price=None, stop_loss_price=None,
+                   stock_name=None):
+        """
+        更新持仓信息 - 最小修改版本：仅将位置索引改为字典访问
+        """
         try:
             # 确保stock_code有效
             if stock_code is None or stock_code == "":
@@ -619,161 +778,136 @@ class PositionManager:
                 except Exception as e:
                     logger.warning(f"获取股票 {stock_code} 名称时出错: {str(e)}")
                     stock_name = stock_code  # 如果无法获取名称，使用代码代替
-        
 
-            # volume is typically int, but float conversion is safer for general arithmetic
-            p_volume = int(float(volume)) if volume is not None else 0
-            p_cost_price = float(cost_price) if cost_price is not None else 0.0
-
-            # current_price can be None if it needs to be fetched
-            p_current_price = float(current_price) if current_price is not None else None
-
-            # available defaults to volume if not provided
-            p_available = int(float(available)) if available is not None else p_volume
-            
-            # highest_price and stop_loss_price can be None
-            p_highest_price = float(highest_price) if highest_price is not None else None
-            p_stop_loss_price = float(stop_loss_price) if stop_loss_price is not None else None
-
+            # 数据预处理和验证
+            p_volume = int(volume) if volume is not None else 0
+            final_cost_price = float(cost_price) if cost_price is not None else 0.0
+            final_current_price = float(current_price) if current_price is not None else final_cost_price
+            final_highest_price = float(current_price) if current_price is not None else final_cost_price
+            p_market_value = float(market_value) if market_value is not None else (p_volume * final_current_price)
+            p_available = int(available) if available is not None else p_volume
+            p_profit_ratio = float(profit_ratio) if profit_ratio is not None else (
+                round(100 * (final_current_price - final_cost_price) / final_cost_price, 2) if final_cost_price > 0 else 0.0
+            )
             # profit_triggered 布尔值转换
             if isinstance(profit_triggered, str):
                 p_profit_triggered = profit_triggered.lower() in ['true', '1', 't', 'y', 'yes']
             else:
                 p_profit_triggered = bool(profit_triggered)
+                
+            p_profit_triggered = bool(profit_triggered) if profit_triggered is not None else False
 
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error converting inputs for {stock_code} to float: {e}. volume='{volume}', cost_price='{cost_price}', current_price='{current_price}'")
-            self.memory_conn.rollback() # Ensure rollback on early error
-            return False
-
-        try:
-            # 如果当前价格为None，获取最新行情
-            if p_current_price is None:
-                # 获取最新数据
-                latest_data = self.data_manager.get_latest_data(stock_code)
-                if latest_data and isinstance(latest_data, dict) and 'lastPrice' in latest_data and latest_data['lastPrice'] is not None:
-                    p_current_price = float(latest_data['lastPrice'])
-                else:
-                    logger.debug(f"未能获取 {stock_code} 的最新价格，使用成本价")
-                    p_current_price = p_cost_price
-            
-            # Ensure p_current_price is a float, default to cost_price if it's still None
-            if p_current_price is None:
-                p_current_price = p_cost_price if p_cost_price is not None else 0.0
-                    
-            # 计算市值和收益率
-            # Use the converted variables (p_volume, p_current_price, p_cost_price)
-            p_market_value = round(p_volume * p_current_price, 2)
-            
-            # 防止除零错误
-            if p_cost_price > 0:
-                p_profit_ratio = round(100 * (p_current_price - p_cost_price) / p_cost_price, 2)
-            else:
-                p_profit_ratio = 0.0
-            
-            # Round the final values before storing or using in DB operations
-            final_cost_price = round(p_cost_price, 2)
-            final_current_price = round(p_current_price, 2)
-            
-            # 处理最高价
-            if p_highest_price is not None:
-                final_highest_price = round(p_highest_price, 2)
-            else:
-                final_highest_price = final_current_price  # 默认使用当前价格
-            
-            # 处理止损价格
-            if p_stop_loss_price is not None:
-                final_stop_loss_price = round(p_stop_loss_price, 2)
-            else:
-                # 计算默认止损价格
-                calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, p_profit_triggered)
-                final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
             
             # 获取当前时间
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # 处理open_date
-            if open_date is None:
-                open_date = now
-            
-            # 检查是否已有持仓记录
+
             cursor = self.memory_conn.cursor()
-            cursor.execute("SELECT open_date, profit_triggered, highest_price, stop_loss_price FROM positions WHERE stock_code=?", (stock_code,))
-            result = cursor.fetchone()
             
-            if result:
-                # 更新持仓
-                if open_date is None:
-                    open_date = result[0]  # 获取已有的open_date
-                # 🔑 添加：保护profit_triggered状态
-                existing_profit_triggered = result[1] if result[1] is not None else False
-                final_profit_triggered = p_profit_triggered if p_profit_triggered == True else existing_profit_triggered
+            # 【关键修改】设置row_factory为字典模式，然后立即恢复
+            original_row_factory = self.memory_conn.row_factory
+            self.memory_conn.row_factory = sqlite3.Row
             
+            try:
+                # 【关键修改】使用字典查询替代位置索引
+                dict_cursor = self.memory_conn.cursor()
+                dict_cursor.execute("SELECT open_date, profit_triggered, highest_price, stop_loss_price FROM positions WHERE stock_code=?", (stock_code,))
+                result_row = dict_cursor.fetchone()
+                              
+                if result_row:
+                    # 更新持仓 - 【关键修改】使用字典访问替代位置索引
+                    if open_date is None:
+                        open_date = result_row['open_date']  # 替代 result[0]
+                    
+                    # 保护profit_triggered状态 - 【关键修改】
+                    existing_profit_triggered = bool(result_row['profit_triggered']) if result_row['profit_triggered'] is not None else False  # 替代 result[1]
+                    final_profit_triggered = p_profit_triggered if p_profit_triggered == True else existing_profit_triggered
+                    
+                    # 更新最高价 - 【关键修改】增加异常处理
+                    try:
+                        old_db_highest_price = float(result_row['highest_price']) if result_row['highest_price'] is not None else None  # 替代 result[2]
+                    except (ValueError, TypeError):
+                        logger.warning(f"{stock_code} 数据库中的最高价数据异常，重置为None")
+                        old_db_highest_price = None
+                    
+                    if old_db_highest_price is not None and old_db_highest_price > 0:
+                        final_highest_price = max(old_db_highest_price, final_current_price)
+                    else:
+                        final_highest_price = max(final_cost_price, final_current_price)
+                    
+                    # 【修复变量赋值逻辑】先处理传入的stop_loss_price参数
+                    if stop_loss_price is not None:
+                        final_stop_loss_price = round(float(stop_loss_price), 2)
+                    else:
+                        final_stop_loss_price = None
+                    
+                    # 如果最高价发生变化，强制重新计算止损价格
+                    if old_db_highest_price != final_highest_price:
+                        logger.info(f"{stock_code} 最高价变化：{old_db_highest_price} -> {final_highest_price}，重新计算止损价格")
+                        calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
+                        final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
+                    elif final_stop_loss_price is None:
+                        # 如果没有传入止损价且最高价没变化，则重新计算
+                        calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
+                        final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
+                    
+                    
+                    # 使用普通cursor执行更新（保持原有UPDATE语句不变）
+                    cursor.execute("""
+                        UPDATE positions 
+                        SET volume=?, cost_price=?, current_price=?, market_value=?, available=?,
+                            profit_ratio=?, last_update=?, highest_price=?, stop_loss_price=?, profit_triggered=?, stock_name=?
+                        WHERE stock_code=?
+                    """, (int(p_volume), final_cost_price, final_current_price, p_market_value, int(p_available), 
+                        p_profit_ratio, now, final_highest_price, final_stop_loss_price, final_profit_triggered, stock_name, stock_code))
 
-                # 更新最高价
-                # if final_highest_price is None: # if not passed or calculated yet
-                #   final_highest_price = max(old_db_highest_price, final_current_price) if old_db_highest_price is not None else final_current_price
-                old_db_highest_price = float(result[2]) if result[2] is not None else None # from DB
-                if old_db_highest_price is not None:
-                    final_highest_price = max(old_db_highest_price, final_current_price)
+                    # 【关键修改】使用字典访问记录变化
+                    if final_profit_triggered != existing_profit_triggered:
+                        logger.info(f"更新 {stock_code} 持仓: 首次止盈触发: 从 {existing_profit_triggered} 到 {final_profit_triggered}")
+                    elif abs(final_highest_price - (old_db_highest_price or 0)) > 0.01:
+                        logger.info(f"更新 {stock_code} 持仓: 最高价: 从 {old_db_highest_price} 到 {final_highest_price}")
+                    elif final_stop_loss_price != (float(result_row['stop_loss_price']) if result_row['stop_loss_price'] is not None else None):  # 替代 result[3]
+                        logger.info(f"更新 {stock_code} 持仓: 止损价: 从 {result_row['stop_loss_price']} 到 {final_stop_loss_price}")
+
                 else:
-                    final_highest_price = max(final_cost_price, final_current_price)
-                
-                # 修复：如果最高价发生变化，强制重新计算止损价格
-                if old_db_highest_price != final_highest_price:
-                    logger.info(f"{stock_code} 最高价变化：{old_db_highest_price} -> {final_highest_price}，重新计算止损价格")
-                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
+                    # 新增持仓（保持原有逻辑不变）
+                    if open_date is None:
+                        open_date = now  # 新建仓时记录当前时间为open_date
+                    profit_triggered = False
+                    if final_highest_price is None:
+                        final_highest_price = final_current_price
+                    # 计算止损价格
+                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, profit_triggered)
                     final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
-                elif final_stop_loss_price is None:
-                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
-                    final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
-                else:
-                    calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
-                    if calculated_slp is not None:
-                        final_stop_loss_price = round(calculated_slp, 2)
-            
-                cursor.execute("""
-                    UPDATE positions 
-                    SET volume=?, cost_price=?, current_price=?, market_value=?, available=?,
-                        profit_ratio=?, last_update=?, highest_price=?, stop_loss_price=?, profit_triggered=?, stock_name=?
-                    WHERE stock_code=?
-                """, (int(p_volume), final_cost_price, final_current_price, p_market_value, int(p_available), 
-                    p_profit_ratio, now, final_highest_price, final_stop_loss_price, final_profit_triggered, stock_name, stock_code))
+                    
+                    if stock_name is None:
+                        stock_name = stock_code
 
-                if final_profit_triggered != result[1]:
-                    logger.info(f"更新 {stock_code} 持仓: 首次止盈触发: 从 {result[1]} 到 {final_profit_triggered}")
-                elif final_highest_price != (float(result[2]) if result[2] is not None else None):
-                    logger.info(f"更新 {stock_code} 持仓: 最高价: 从 {result[2]} 到 {final_highest_price}")
-                elif final_stop_loss_price != (float(result[3]) if result[3] is not None else None):
-                    logger.info(f"更新 {stock_code} 持仓: 止损价: 从 {result[3]} 到 {final_stop_loss_price}")
+                    cursor.execute("""
+                        INSERT INTO positions 
+                        (stock_code, stock_name, volume, cost_price, current_price, market_value, available, profit_ratio, last_update, open_date, profit_triggered, highest_price, stop_loss_price)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (stock_code, stock_name, int(p_volume), final_cost_price, final_current_price, p_market_value, 
+                        int(p_available), p_profit_ratio, now, open_date, profit_triggered, final_highest_price, final_stop_loss_price))
+                    
+                    logger.info(f"新增 {stock_code} 持仓: 数量={p_volume}, 成本价={final_cost_price}, 最高价={final_highest_price}, 止损价={final_stop_loss_price}")
 
-            else:
-                # 新增持仓
-                if open_date is None:
-                    open_date = now  # 新建仓时记录当前时间为open_date
-                profit_triggered = False
-                if final_highest_price is None:
-                    final_highest_price = final_current_price
-                # 计算止损价格
-                calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, profit_triggered)
-                final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
-
-                cursor.execute("""
-                    INSERT INTO positions 
-                    (stock_code, stock_name, volume, cost_price, current_price, market_value, available, profit_ratio, last_update, open_date, profit_triggered, highest_price, stop_loss_price)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (stock_code, stock_name, int(p_volume), final_cost_price, final_current_price, p_market_value, 
-                    int(p_available), p_profit_ratio, now, open_date, profit_triggered, final_highest_price, final_stop_loss_price))
+            finally:
+                # 【关键修改】确保恢复原始row_factory
+                self.memory_conn.row_factory = original_row_factory
             
             self.memory_conn.commit()
-
-            # 触发持仓数据版本更新
-            self._increment_data_version()
-            return True
             
+            # 强制触发版本更新（保持原有逻辑）
+            self._increment_data_version()
+            
+            return True
+
         except Exception as e:
             logger.error(f"更新 {stock_code} 持仓Error: {str(e)}")
-            self.memory_conn.rollback()
+            try:
+                self.memory_conn.rollback()
+            except:
+                pass
             return False
 
     def remove_position(self, stock_code):
@@ -1404,21 +1538,15 @@ class PositionManager:
     
     def check_trading_signals(self, stock_code):
         """
-        统一检查止盈止损信号 - 优化版本
+        检查交易信号 - 修复字段映射错乱版本
         
         参数:
         stock_code (str): 股票代码
         
         返回:
-        tuple: (信号类型, 详细信息)
-        信号类型: 'stop_loss', 'take_profit_half', 'take_profit_full', None
+        tuple: (信号类型, 详细信息) - ('stop_loss'/'take_profit_half'/'take_profit_full', {...}) 或 (None, None)
         """
         try:
-            # 检查是否启用止盈止损功能
-            if not config.ENABLE_DYNAMIC_STOP_PROFIT:
-                logger.debug(f"{stock_code} 止盈止损功能已关闭，跳过信号检查")
-                return None, None
-
             # 1. 获取持仓数据
             position = self.get_position(stock_code)
             if not position:
@@ -1430,7 +1558,7 @@ class PositionManager:
             if not latest_quote:
                 latest_quote = {'lastPrice': position.get('current_price', 0)}
             
-            # 3. 数据类型转换和验证
+            # 3. 🔑 安全的数据类型转换和验证
             try:
                 current_price = float(latest_quote.get('lastPrice', 0)) if latest_quote else 0
                 if current_price <= 0:
@@ -1441,27 +1569,64 @@ class PositionManager:
                 highest_price = float(position.get('highest_price', 0))
                 stop_loss_price = float(position.get('stop_loss_price', 0))
                 
-                # 基础数据验证
-                if cost_price <= 0 or current_price <= 0:
-                    logger.debug(f"{stock_code} 价格数据无效: cost_price={cost_price}, current_price={current_price}")
+                # 🔑 基础数据验证
+                if cost_price <= 0:
+                    logger.error(f"{stock_code} 成本价无效: {cost_price}")
                     return None, None
                     
+                if current_price <= 0:
+                    logger.warning(f"{stock_code} 当前价格无效: {current_price}，使用成本价")
+                    current_price = cost_price
+                    
+                # 🔑 关键验证：检查数据是否存在字段错乱
+                if highest_price <= 0:
+                    logger.warning(f"{stock_code} 最高价无效: {highest_price}，使用当前价格")
+                    highest_price = max(cost_price, current_price)
+                elif highest_price > cost_price * 20:  # 最高价超过成本价20倍，明显异常
+                    logger.error(f"{stock_code} 最高价数据异常: {highest_price} > {cost_price} * 20，可能存在字段错乱")
+                    highest_price = max(cost_price, current_price)
+                elif highest_price < cost_price * 0.1:  # 最高价低于成本价10%，明显异常
+                    logger.error(f"{stock_code} 最高价数据异常: {highest_price} < {cost_price} * 0.1，可能存在字段错乱")
+                    highest_price = max(cost_price, current_price)
+                    
             except (TypeError, ValueError) as e:
-                logger.error(f"价格数据类型转换错误 - {stock_code}: {e}")
+                logger.error(f"{stock_code} 价格数据类型转换错误: {e}")
                 return None, None
 
             # 4. 优先检查止损条件（最高优先级）
             if not profit_triggered:
-                fixed_stop_loss_price = cost_price * (1 + config.STOP_LOSS_RATIO)
-                if fixed_stop_loss_price > 0 and current_price <= fixed_stop_loss_price:
-                    logger.warning(f"{stock_code} 触发固定止损，当前价格: {current_price:.2f}, 止损价格: {fixed_stop_loss_price:.2f}")
-                    return 'stop_loss', {
-                        'current_price': current_price,
-                        'stop_loss_price': fixed_stop_loss_price,
-                        'cost_price': cost_price,
-                        'volume': position['volume'],
-                         'reason': 'protect_capital'  # 标识这是保护本金的止损
-                    }
+                # 🔑 使用安全计算的固定止损价格
+                try:
+                    stop_loss_ratio = getattr(config, 'STOP_LOSS_RATIO', -0.07)
+                    safe_stop_loss_price = cost_price * (1 + stop_loss_ratio)
+                    
+                    # 如果数据库中的止损价格异常，使用安全计算的值
+                    if stop_loss_price <= 0 or stop_loss_price > cost_price * 1.5 or stop_loss_price < cost_price * 0.5:
+                        logger.warning(f"{stock_code} 数据库止损价异常: {stop_loss_price}，使用安全计算值: {safe_stop_loss_price:.2f}")
+                        stop_loss_price = safe_stop_loss_price
+                    
+                    if current_price <= stop_loss_price:
+                        # 🔑 最后验证：确保这是合理的止损
+                        loss_ratio = (cost_price - current_price) / cost_price
+                        expected_loss_ratio = abs(stop_loss_ratio)
+                        
+                        # 允许一定的误差范围
+                        if loss_ratio >= expected_loss_ratio * 0.5:  # 至少达到预期止损的50%
+                            logger.warning(f"{stock_code} 触发固定止损，当前价格: {current_price:.2f}, 止损价格: {stop_loss_price:.2f}")
+                            return 'stop_loss', {
+                                'current_price': current_price,
+                                'stop_loss_price': stop_loss_price,
+                                'cost_price': cost_price,
+                                'volume': position['volume'],
+                                'reason': 'validated_stop_loss'
+                            }
+                        else:
+                            logger.warning(f"🚨 {stock_code} 止损信号异常，亏损比例不符合预期: 实际{loss_ratio:.2%} vs 预期{expected_loss_ratio:.2%}")
+                            return None, None
+                            
+                except Exception as stop_calc_error:
+                    logger.error(f"{stock_code} 止损计算出错: {stop_calc_error}")
+                    return None, None
             
             # 5. 检查止盈逻辑（如果启用动态止盈功能）
             if not config.ENABLE_DYNAMIC_STOP_PROFIT:
@@ -1511,37 +1676,113 @@ class PositionManager:
                                 'pullback_ratio': pullback_ratio
                             }
             
-            # 7. 动态止盈检查（已触发首次止盈后）- 优化版本
+            # 7. 动态止盈检查（已触发首次止盈后）
             if profit_triggered and highest_price > 0:
-                # 直接调用calculate_stop_loss_price获取动态止盈位
-                dynamic_take_profit_price = self.calculate_stop_loss_price(
-                    cost_price, highest_price, profit_triggered
-                )
-                
-                # 如果当前价格跌破动态止盈位，触发止盈
-                if current_price <= dynamic_take_profit_price:
-                    # 获取匹配的级别信息（用于日志）
-                    matched_level, take_profit_coefficient = self._get_profit_level_info(
-                        cost_price, highest_price
+                # 🔑 使用安全计算的动态止盈价格
+                try:
+                    dynamic_take_profit_price = self.calculate_stop_loss_price(
+                        cost_price, highest_price, profit_triggered
                     )
                     
-                    logger.info(f"{stock_code} 触发动态全仓止盈，当前价格: {current_price:.2f}, "
-                            f"止盈位: {dynamic_take_profit_price:.2f}, 最高价: {highest_price:.2f}, "
-                            f"最高达到区间: {matched_level:.1%}（系数{take_profit_coefficient})")
-                            
-                    return 'take_profit_full', {
-                        'current_price': current_price,
-                        'dynamic_take_profit_price': dynamic_take_profit_price,
-                        'highest_price': highest_price,
-                        'matched_level': matched_level,
-                        'volume': position['volume']
-                    }
+                    # 验证动态止盈价格的合理性
+                    if dynamic_take_profit_price <= 0 or dynamic_take_profit_price > highest_price * 1.1:
+                        logger.error(f"{stock_code} 动态止盈价格异常: {dynamic_take_profit_price}，跳过检查")
+                        return None, None
+                    
+                    # 如果当前价格跌破动态止盈位，触发止盈
+                    if current_price <= dynamic_take_profit_price:
+                        # 获取匹配的级别信息（用于日志）
+                        matched_level, take_profit_coefficient = self._get_profit_level_info(
+                            cost_price, highest_price
+                        )
+                        
+                        logger.info(f"{stock_code} 触发动态全仓止盈，当前价格: {current_price:.2f}, "
+                                f"止盈位: {dynamic_take_profit_price:.2f}, 最高价: {highest_price:.2f}, "
+                                f"最高达到区间: {matched_level:.1%}（系数{take_profit_coefficient})")
+                                
+                        return 'take_profit_full', {
+                            'current_price': current_price,
+                            'dynamic_take_profit_price': dynamic_take_profit_price,
+                            'highest_price': highest_price,
+                            'matched_level': matched_level,
+                            'volume': position['volume']
+                        }
+                        
+                except Exception as dynamic_calc_error:
+                    logger.error(f"{stock_code} 动态止盈计算出错: {dynamic_calc_error}")
+                    return None, None
             
             return None, None
             
         except Exception as e:
             logger.error(f"检查 {stock_code} 的交易信号时出错: {str(e)}")
             return None, None
+
+
+    def validate_trading_signal(self, stock_code, signal_type, signal_info):
+        """
+        交易信号最后验证 - 防止异常信号执行
+        
+        参数:
+        stock_code (str): 股票代码
+        signal_type (str): 信号类型
+        signal_info (dict): 信号详细信息
+        
+        返回:
+        bool: 是否通过验证
+        """
+        try:
+            if signal_type == 'stop_loss':
+                current_price = signal_info.get('current_price', 0)
+                stop_loss_price = signal_info.get('stop_loss_price', 0)
+                cost_price = signal_info.get('cost_price', 0)
+                
+                # 🔑 基础数据验证
+                if current_price <= 0 or cost_price <= 0 or stop_loss_price <= 0:
+                    logger.error(f"🚨 {stock_code} 止损信号数据包含无效值，拒绝执行")
+                    logger.error(f"   current_price={current_price}, cost_price={cost_price}, stop_loss_price={stop_loss_price}")
+                    return False
+                
+                # 🔑 价格比例检查 - 防止字段错乱导致的异常
+                stop_ratio = stop_loss_price / cost_price
+                if stop_ratio > 1.5 or stop_ratio < 0.5:
+                    logger.error(f"🚨 {stock_code} 止损价比例异常 {stop_ratio:.3f}，疑似字段错乱，拒绝执行")
+                    return False
+                
+                # 🔑 亏损比例检查
+                loss_ratio = (cost_price - current_price) / cost_price
+                if loss_ratio < 0.02:  # 亏损小于2%
+                    logger.error(f"🚨 {stock_code} 亏损比例过小 {loss_ratio:.2%}，可能是误触发，拒绝执行")
+                    return False
+                
+                # 🔑 异常值检查
+                if current_price > cost_price * 10 or stop_loss_price > cost_price * 10:
+                    logger.error(f"🚨 {stock_code} 价格数据异常，疑似单位错误，拒绝执行")
+                    logger.error(f"   current_price={current_price}, stop_loss_price={stop_loss_price}, cost_price={cost_price}")
+                    return False
+                
+                logger.info(f"✅ {stock_code} 止损信号验证通过: 亏损{loss_ratio:.2%}, 止损比例{stop_ratio:.3f}")
+                
+            elif signal_type in ['take_profit_half', 'take_profit_full']:
+                current_price = signal_info.get('current_price', 0)
+                cost_price = signal_info.get('cost_price', 0)
+                
+                if current_price <= 0 or cost_price <= 0:
+                    logger.error(f"🚨 {stock_code} 止盈信号数据无效，拒绝执行")
+                    return False
+                
+                # 确保是盈利状态
+                if current_price <= cost_price:
+                    logger.error(f"🚨 {stock_code} 止盈信号但当前亏损，拒绝执行")
+                    return False
+                
+                logger.info(f"✅ {stock_code} 止盈信号验证通过")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"🚨 {stock_code} 信号验证失败: {e}")
+            return False
 
     def _get_profit_level_info(self, cost_price, highest_price):
         """获取当前匹配的止盈级别信息"""

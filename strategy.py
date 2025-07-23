@@ -180,6 +180,11 @@ class TradingStrategy:
     def execute_trading_signal_direct(self, stock_code, signal_type, signal_info):
         """直接执行指定的交易信号"""
         try:
+                    # 🔑 添加统一信号验证
+            if not self.position_manager.validate_trading_signal(stock_code, signal_type, signal_info):
+                logger.error(f"🚨 {stock_code} {signal_type} 信号验证失败，拒绝执行")
+                return False
+        
             if signal_type == 'stop_loss':
                 return self._execute_stop_loss_signal(stock_code, signal_info)
             elif signal_type == 'take_profit_half':
@@ -303,6 +308,12 @@ class TradingStrategy:
         bool: 是否执行成功
         """
         try:
+
+            # 🔑 添加信号验证 - 在执行前进行最后防护
+            if not self.position_manager.validate_trading_signal(stock_code, 'stop_loss', signal_info):
+                logger.error(f"🚨 {stock_code} 止损信号验证失败，拒绝执行")
+                return False
+        
             volume = signal_info['volume']
             current_price = signal_info['current_price']
             
@@ -349,6 +360,12 @@ class TradingStrategy:
         bool: 是否执行成功
         """
         try:
+            # 🔑 添加信号验证
+            if not self.position_manager.validate_trading_signal(stock_code, 'take_profit_half', signal_info):
+                logger.error(f"🚨 {stock_code} 首次止盈信号验证失败，拒绝执行")
+                return False
+
+
             total_volume = signal_info['volume']
             current_price = signal_info['current_price']
             sell_ratio = signal_info['sell_ratio']
@@ -423,6 +440,11 @@ class TradingStrategy:
         bool: 是否执行成功
         """
         try:
+            # 🔑 添加信号验证
+            if not self.position_manager.validate_trading_signal(stock_code, 'take_profit_full', signal_info):
+                logger.error(f"🚨 {stock_code} 动态止盈信号验证失败，拒绝执行")
+                return False
+
             volume = signal_info['volume']
             current_price = signal_info['current_price']
             dynamic_take_profit_price = signal_info['dynamic_take_profit_price']
