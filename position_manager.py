@@ -780,8 +780,13 @@ class PositionManager:
                     stock_name = stock_code  # 如果无法获取名称，使用代码代替
 
             # 数据预处理和验证
-            p_volume = int(volume) if volume is not None else 0
-            final_cost_price = float(cost_price) if cost_price is not None else 0.0
+            p_volume = int(float(volume)) if volume is not None else 0
+            final_cost_price = float(cost_price) if cost_price is not None and cost_price > 0 else 0.01
+
+            # if p_volume <= 0 or final_cost_price <= 0:
+            #     logger.error(f"跳过 {stock_code} 无效数据: volume={volume}, cost_price={cost_price}")
+            #     return False
+
             final_current_price = float(current_price) if current_price is not None else final_cost_price
             final_highest_price = float(current_price) if current_price is not None else final_cost_price
             p_market_value = float(market_value) if market_value is not None else (p_volume * final_current_price)
@@ -1378,6 +1383,7 @@ class PositionManager:
         try:
             # 确保输入都是有效的数值
             if cost_price is None or cost_price <= 0:
+                logger.warning(f"成本价无效: {cost_price}, 使用最小止损价")
                 return 0.0  # 如果成本价无效，返回0作为止损价
                 
             if highest_price is None or highest_price <= 0:
@@ -1705,7 +1711,8 @@ class PositionManager:
                             'dynamic_take_profit_price': dynamic_take_profit_price,
                             'highest_price': highest_price,
                             'matched_level': matched_level,
-                            'volume': position['volume']
+                            'volume': position['volume'],
+                            'cost_price': cost_price
                         }
                         
                 except Exception as dynamic_calc_error:
