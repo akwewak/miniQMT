@@ -93,6 +93,7 @@ class PositionManager:
             volume REAL,
             available REAL,           
             cost_price REAL,
+            base_cost_price REAL,
             current_price REAL,
             market_value REAL,
             profit_ratio REAL,
@@ -276,6 +277,11 @@ class PositionManager:
                 if 'stock_name' not in db_positions.columns:
                     db_positions['stock_name'] = db_positions['stock_code']  # 使用股票代码作为默认名称
                     logger.warning("SQLite数据库中缺少stock_name字段，使用股票代码作为默认值")
+
+                # 确保base_cost_price字段存在，如果不存在则使用cost_price
+                if 'base_cost_price' not in db_positions.columns:
+                    db_positions['base_cost_price'] = db_positions['cost_price']
+                    logger.warning("SQLite数据库中缺少base_cost_price字段，使用cost_price作为默认值")
 
                 db_positions.to_sql("positions", self.memory_conn, if_exists="replace", index=False)
                 self.memory_conn.commit()
@@ -759,7 +765,7 @@ class PositionManager:
     def update_position(self, stock_code, volume, cost_price, current_price=None, 
                    profit_ratio=None, market_value=None, available=None, open_date=None, 
                    profit_triggered=None, highest_price=None, stop_loss_price=None,
-                   stock_name=None):
+                   stock_name=None,base_cost_price=None):
         """
         更新持仓信息 - 最小修改版本：仅将位置索引改为字典访问
         """
@@ -782,7 +788,7 @@ class PositionManager:
             # 数据预处理和验证
             p_volume = int(float(volume)) if volume is not None else 0
             final_cost_price = float(cost_price) if cost_price is not None and cost_price > 0 else 0.01
-
+            p_base_cost_price = float(base_cost_price) if base_cost_price is not None else None
             # if p_volume <= 0 or final_cost_price <= 0:
             #     logger.error(f"跳过 {stock_code} 无效数据: volume={volume}, cost_price={cost_price}")
             #     return False
@@ -880,6 +886,9 @@ class PositionManager:
                     profit_triggered = False
                     if final_highest_price is None:
                         final_highest_price = final_current_price
+                    if p_base_cost_price is None:
+                        p_base_cost_price = final_cost_price
+
                     # 计算止损价格
                     calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, profit_triggered)
                     final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
@@ -889,9 +898,9 @@ class PositionManager:
 
                     cursor.execute("""
                         INSERT INTO positions 
-                        (stock_code, stock_name, volume, cost_price, current_price, market_value, available, profit_ratio, last_update, open_date, profit_triggered, highest_price, stop_loss_price)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (stock_code, stock_name, int(p_volume), final_cost_price, final_current_price, p_market_value, 
+                        (stock_code, stock_name, volume, cost_price, base_cost_price, current_price, market_value, available, profit_ratio, last_update, open_date, profit_triggered, highest_price, stop_loss_price)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (stock_code, stock_name, int(p_volume), final_cost_price, p_base_cost_price, final_current_price, p_market_value, 
                         int(p_available), p_profit_ratio, now, open_date, profit_triggered, final_highest_price, final_stop_loss_price))
                     
                     logger.info(f"新增 {stock_code} 持仓: 数量={p_volume}, 成本价={final_cost_price}, 最高价={final_highest_price}, 止损价={final_stop_loss_price}")

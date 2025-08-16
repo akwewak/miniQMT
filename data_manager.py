@@ -149,6 +149,7 @@ class DataManager:
             volume INTEGER,
             available REAL,           
             cost_price REAL,
+            base_cost_price REAL,
             current_price REAL,
             market_value REAL,
             profit_ratio REAL,
