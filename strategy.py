@@ -211,6 +211,14 @@ class TradingStrategy:
         bool: 是否执行成功
         """
         try:
+            # 冷却期检查
+            cool_key = f"add_position_{stock_code}"
+            if cool_key in getattr(self, 'last_trade_time', {}):
+                last_time = self.last_trade_time[cool_key]
+                if (datetime.now() - last_time).total_seconds() < 120:  # 2分钟冷却期
+                    logger.debug(f"{stock_code} 补仓信号在冷却期内，跳过")
+                    return False   
+                         
             add_amount = add_position_info['add_amount']
             current_price = add_position_info['current_price']
             
@@ -240,8 +248,14 @@ class TradingStrategy:
                 
                 # 使用金额买入方式
                 order_id = self.trading_executor.buy_stock(
-                    stock_code, amount=add_amount, price_type=0, strategy='add_position'
+                    stock_code, amount=add_amount, price_type=5, strategy='add_position'
                 )
+
+                if not hasattr(self, 'last_trade_time'):
+                    self.last_trade_time = {}
+                self.last_trade_time[cool_key] = datetime.now()
+                logger.info(f"{stock_code} 补仓成功，设置2分钟冷却期")
+
                 return order_id is not None
             
             return False

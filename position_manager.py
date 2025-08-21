@@ -821,7 +821,7 @@ class PositionManager:
             try:
                 # 【关键修改】使用字典查询替代位置索引
                 dict_cursor = self.memory_conn.cursor()
-                dict_cursor.execute("SELECT open_date, profit_triggered, highest_price, stop_loss_price FROM positions WHERE stock_code=?", (stock_code,))
+                dict_cursor.execute("SELECT open_date, profit_triggered, highest_price, cost_price, stop_loss_price FROM positions WHERE stock_code=?", (stock_code,))
                 result_row = dict_cursor.fetchone()
                               
                 if result_row:
@@ -851,11 +851,21 @@ class PositionManager:
                     else:
                         final_stop_loss_price = None
                     
+                    # 获取数据库中的旧成本价
+                    old_db_cost_price = float(result_row['cost_price']) if result_row['cost_price'] is not None else None
+
                     # 如果最高价发生变化，强制重新计算止损价格
                     if old_db_highest_price != final_highest_price:
                         logger.info(f"{stock_code} 最高价变化：{old_db_highest_price} -> {final_highest_price}，重新计算止损价格")
                         calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
                         final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
+
+                    # 🔑 如果成本价发生变化（补仓摊薄），也强制重新计算止损价格
+                    elif old_db_cost_price is not None and abs(old_db_cost_price - final_cost_price) > 0.01:
+                        logger.info(f"{stock_code} 成本价变化：{old_db_cost_price:.2f} -> {final_cost_price:.2f}，重新计算止损价格")
+                        calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)
+                        final_stop_loss_price = round(calculated_slp, 2) if calculated_slp is not None else None
+
                     elif final_stop_loss_price is None:
                         # 如果没有传入止损价且最高价没变化，则重新计算
                         calculated_slp = self.calculate_stop_loss_price(final_cost_price, final_highest_price, final_profit_triggered)

@@ -86,8 +86,8 @@ ACCOUNT_CONFIG = get_account_config()
 
 # ======================= 策略配置 =======================
 # 仓位管理
-POSITION_UNIT = 20000  # 每次买入金额
-MAX_POSITION_VALUE = 50000  # 单只股票最大持仓金额
+POSITION_UNIT = 35000  # 每次买入金额
+MAX_POSITION_VALUE = 70000  # 单只股票最大持仓金额
 MAX_TOTAL_POSITION_RATIO = 0.95  # 最大总持仓比例（占总资金）
 SIMULATION_BALANCE = 1000000 # 模拟持仓
 
@@ -101,7 +101,7 @@ STOP_LOSS_RATIO = -0.07  # 固定止损比例：成本价下跌7%触发止损
 
 # 动态止盈配置
 ENABLE_DYNAMIC_STOP_PROFIT = True  # 启用动态止盈功能
-INITIAL_TAKE_PROFIT_RATIO = 0.05   # 首次止盈触发阈值：盈利5%时触发
+INITIAL_TAKE_PROFIT_RATIO = 0.06   # 首次止盈触发阈值：盈利6%时触发
 INITIAL_TAKE_PROFIT_PULLBACK_RATIO = 0.005  # 回撤比例：0.5%（可配置）
 INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE = 0.6  # 首次止盈卖出比例：50%（半仓）
 
@@ -114,7 +114,8 @@ DYNAMIC_TAKE_PROFIT = [
     (0.15, 0.90),  # 最高浮盈达15%时，止盈位为最高价的90%
     (0.20, 0.87),  # 最高浮盈达20%时，止盈位为最高价的87%
     (0.30, 0.85),  # 最高浮盈达30%时，止盈位为最高价的85%
-    (0.40, 0.83)   # 最高浮盈达40%时，止盈位为最高价的83%
+    (0.40, 0.83),  # 最高浮盈达40%时，止盈位为最高价的83%
+    (0.50, 0.80)   # 最高浮盈达50%时，止盈位为最高价的80%    
 ]
 
 # 止盈止损优先级说明：
