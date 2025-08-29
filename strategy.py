@@ -201,7 +201,7 @@ class TradingStrategy:
 
     def execute_add_position_strategy(self, stock_code, add_position_info):
         """
-        执行补仓策略 - 新增方法
+        执行补仓策略
         
         参数:
         stock_code (str): 股票代码
@@ -211,6 +211,16 @@ class TradingStrategy:
         bool: 是否执行成功
         """
         try:
+            # 最终持仓限制检查（防止时差导致的超限）
+            position = self.position_manager.get_position(stock_code)
+            if position:
+                current_value = float(position.get('market_value', 0))
+                add_amount = add_position_info['add_amount']
+                
+                if current_value + add_amount > config.MAX_POSITION_VALUE:
+                    logger.warning(f"{stock_code} 补仓被拒绝: 当前市值{current_value} + 补仓{add_amount} = {current_value + add_amount} > 限制{config.MAX_POSITION_VALUE}")
+                    return False
+                            
             # 冷却期检查
             cool_key = f"add_position_{stock_code}"
             if cool_key in getattr(self, 'last_trade_time', {}):
