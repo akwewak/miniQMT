@@ -1642,7 +1642,7 @@ class PositionManager:
                                 'current_price': current_price,
                                 'stop_loss_price': stop_loss_price,
                                 'cost_price': cost_price,
-                                'volume': position['volume'],
+                                'volume': position['available'],
                                 'reason': 'validated_stop_loss'
                             }
                         else:
@@ -1695,7 +1695,7 @@ class PositionManager:
                                 'current_price': current_price,
                                 'cost_price': cost_price,
                                 'profit_ratio': profit_ratio,
-                                'volume': position['volume'],
+                                'volume': position['available'],
                                 'sell_ratio': config.INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE,
                                 'breakout_highest_price': breakout_highest_price,
                                 'pullback_ratio': pullback_ratio
@@ -1730,7 +1730,7 @@ class PositionManager:
                             'dynamic_take_profit_price': dynamic_take_profit_price,
                             'highest_price': highest_price,
                             'matched_level': matched_level,
-                            'volume': position['volume'],
+                            'volume': position['available'],
                             'cost_price': cost_price
                         }
                         
