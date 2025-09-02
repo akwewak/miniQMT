@@ -787,7 +787,14 @@ class PositionManager:
 
             # 数据预处理和验证
             p_volume = int(float(volume)) if volume is not None else 0
-            final_cost_price = float(cost_price) if cost_price is not None and cost_price > 0 else 0.01
+
+            if p_volume <= 0:
+                # 持仓量为0时，如果成本价为0就保持为0（不强制设为0.01）
+                final_cost_price = float(cost_price) if cost_price is not None and cost_price > 0 else 0.0
+            else:
+                # 有持仓时，成本价不能为0，设最小值0.01
+                final_cost_price = float(cost_price) if cost_price is not None and cost_price > 0 else 0.01
+
             p_base_cost_price = float(base_cost_price) if base_cost_price is not None else None
             # if p_volume <= 0 or final_cost_price <= 0:
             #     logger.error(f"跳过 {stock_code} 无效数据: volume={volume}, cost_price={cost_price}")
@@ -797,9 +804,15 @@ class PositionManager:
             final_highest_price = float(current_price) if current_price is not None else final_cost_price
             p_market_value = float(market_value) if market_value is not None else (p_volume * final_current_price)
             p_available = int(available) if available is not None else p_volume
-            p_profit_ratio = float(profit_ratio) if profit_ratio is not None else (
-                round(100 * (final_current_price - final_cost_price) / final_cost_price, 2) if final_cost_price > 0 else 0.0
-            )
+
+            if final_cost_price > 0:
+                p_profit_ratio = float(profit_ratio) if profit_ratio is not None else (
+                    round(100 * (final_current_price - final_cost_price) / final_cost_price, 2)
+                )
+            else:
+                # 成本价为0时，盈亏率也设为0
+                p_profit_ratio = 0.0
+                
             # profit_triggered 布尔值转换
             if isinstance(profit_triggered, str):
                 p_profit_triggered = profit_triggered.lower() in ['true', '1', 't', 'y', 'yes']

@@ -193,8 +193,8 @@ LOG_CLEANUP_TIME = "00:00:00"  # 每天凌晨执行清理
 # ======================= 功能配置 =======================
 # 交易时间配置
 TRADE_TIME = {
-    "morning_start": "09:30:00",
-    "morning_end": "11:30:00",
+    "morning_start": "09:25:00",
+    "morning_end": "13:00:00",
     "afternoon_start": "13:00:00",
     "afternoon_end": "15:00:00",
     "trade_days": [1, 2, 3, 4, 5]  # 周一至周五
