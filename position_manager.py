@@ -348,6 +348,7 @@ class PositionManager:
                         profit_triggered = row['profit_triggered']
                         highest_price = row['highest_price']
                         stop_loss_price = row['stop_loss_price']
+                        base_cost_price = row['base_cost_price']
                         profit_breakout_triggered = row['profit_breakout_triggered']
                         breakout_highest_price = row['breakout_highest_price']
                         
@@ -381,9 +382,9 @@ class PositionManager:
                             # 插入新记录，使用当前日期作为 open_date
                             current_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             cursor.execute("""
-                                INSERT INTO positions (stock_code, stock_name, volume, available, cost_price, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, last_update) 
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (stock_code, stock_name, volume, available, cost_price, current_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now))
+                                INSERT INTO positions (stock_code, stock_name, volume, available, cost_price, base_cost_price, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, last_update)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (stock_code, stock_name, volume, available, cost_price, base_cost_price, current_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now))
                             
                             insert_count += 1
                             # 插入新记录后，立即从数据库读取 open_date，以确保内存数据库与数据库一致
