@@ -1,0 +1,6 @@
+1. 找到代码运行的虚拟环境例如C:\Users\PC\Anaconda3\envs\python39
+2. 找到虚拟环境下的mootdx安装目录，例如Anaconda3\envs\python39\lib\site-packages\mootdx
+3. 替换site-packages\mootdx\tools\reversion.py
+
+C:\Users\PC\Anaconda3\envs\python39\lib\site-packages\mootdx\tools\
+
