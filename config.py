@@ -70,16 +70,73 @@ REALTIME_DATA_CONFIG = {
 # ======================= 交易配置 =======================
 # 交易账号信息（从外部文件读取，避免敏感信息硬编码）
 ACCOUNT_CONFIG_FILE = "account_config.json"
-QMT_PATH = r'C:/光大证券金阳光QMT实盘/userdata_mini'
+
+# QMT路径配置优先级：
+# 1. 环境变量 QMT_PATH
+# 2. account_config.json 中的 qmt_path 字段
+# 3. 默认值（自动检测常见路径）
+DEFAULT_QMT_PATHS = [
+    r'C:/QMT/userdata_mini',
+    r'C:/光大证券金阳光QMT实盘/userdata_mini',
+    r'C:/迅投QMT交易端/userdata_mini',
+    r'D:/QMT/userdata_mini',
+    r'D:/光大证券金阳光QMT实盘/userdata_mini',
+]
 
 def get_account_config():
     """从外部文件读取账号配置"""
     try:
-        with open(ACCOUNT_CONFIG_FILE, 'r') as f:
+        with open(ACCOUNT_CONFIG_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
         # 如果配置文件不存在，返回默认空配置
         return {"account_id": "", "account_type": "STOCK"}
+    except Exception as e:
+        print(f"读取账户配置文件失败: {str(e)}")
+        return {"account_id": "", "account_type": "STOCK"}
+
+def get_qmt_path():
+    """
+    获取QMT路径 - 灵活配置方案
+
+    优先级：
+    1. 环境变量 QMT_PATH
+    2. account_config.json 中的 qmt_path 字段
+    3. 自动检测常见路径（存在性检查）
+    4. 使用第一个默认路径（兜底）
+
+    Returns:
+        str: QMT userdata_mini 路径
+    """
+    import os
+
+    # 优先级1: 环境变量
+    env_path = os.environ.get('QMT_PATH')
+    if env_path and os.path.exists(env_path):
+        print(f"[QMT_PATH] Using environment variable: {env_path}")
+        return env_path
+
+    # 优先级2: 配置文件中的qmt_path字段
+    account_config = get_account_config()
+    config_path = account_config.get('qmt_path')
+    if config_path and os.path.exists(config_path):
+        print(f"[QMT_PATH] Using path from account_config.json: {config_path}")
+        return config_path
+
+    # 优先级3: 自动检测常见路径
+    for path in DEFAULT_QMT_PATHS:
+        if os.path.exists(path):
+            print(f"[QMT_PATH] Auto-detected path: {path}")
+            return path
+
+    # 优先级4: 兜底，返回第一个默认路径（即使不存在，后续会有错误提示）
+    fallback_path = DEFAULT_QMT_PATHS[0]
+    print(f"[QMT_PATH] WARNING: QMT path not found, using default: {fallback_path}")
+    print(f"[QMT_PATH] TIP: If QMT is installed elsewhere, set 'qmt_path' in account_config.json")
+    return fallback_path
+
+# 动态获取QMT路径
+QMT_PATH = get_qmt_path()
 
 # 账号信息
 ACCOUNT_CONFIG = get_account_config()

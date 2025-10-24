@@ -273,6 +273,8 @@ class easy_qmt_trader:
             return xt_trader,acc
         else:
             print('qmt连接失败')
+            # 🔧 修复：连接失败时返回None，方便调用方检测
+            return None
     def order_stock(self,stock_code='600031.SH', order_type=xtconstant.STOCK_BUY,
                     order_volume=100,price_type=xtconstant.FIX_PRICE,price=20,strategy_name='',order_remark=''):
             '''
@@ -661,6 +663,18 @@ class easy_qmt_trader:
     def position(self):
         '''对接同花顺持股'''
         try:
+            # 🔧 修复：检查xt_trader是否已正确初始化
+            if not hasattr(self, 'xt_trader') or self.xt_trader is None or isinstance(self.xt_trader, str):
+                logger_error_msg = f"QMT未连接或连接失败，无法获取持仓。xt_trader类型: {type(self.xt_trader) if hasattr(self, 'xt_trader') else 'undefined'}"
+                print(f"获取持仓信息时出错: {logger_error_msg}")
+
+                # 返回预定义空DataFrame
+                columns = ['账号类型', '资金账号', '证券代码', '股票余额', '可用余额',
+                        '成本价', '市值', '选择', '持股天数', '交易状态', '明细',
+                        '证券名称', '冻结数量', '市价', '盈亏', '盈亏比(%)',
+                        '当日买入', '当日卖出']
+                return pd.DataFrame(columns=columns)
+
             positions = self.xt_trader.query_stock_positions(self.acc)
             print("easy_qmt_trader.position-持仓数量:", len(positions))
             

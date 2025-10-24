@@ -40,7 +40,18 @@ class PositionManager:
             account=account_config.get('account_id'),
             account_type=account_config.get('account_type', 'STOCK')
         )
-        self.qmt_trader.connect()
+
+        # 🔧 修复：检查QMT连接结果
+        connect_result = self.qmt_trader.connect()
+
+        if connect_result is None:
+            logger.error("❌ QMT连接失败！请确保QMT客户端已启动")
+            logger.warning("⚠️  系统将以离线模式运行，部分功能可能受限")
+            # 🔧 设置标志位，标记QMT未连接
+            self.qmt_connected = False
+        else:
+            logger.info("✅ QMT连接成功")
+            self.qmt_connected = True
 
         # 创建内存数据库
         self.memory_conn = sqlite3.connect(":memory:", check_same_thread=False)
