@@ -3451,7 +3451,7 @@
         const difDea = (data.dif !== null && data.dif !== undefined)
             ? `DIF ${data.dif} / DEA ${data.dea}` : `DEA ${data.dea}`;
         tooltip.innerHTML = `
-            <div class="advice-trend">${data.trend || ''}</div>
+            <div class="advice-header"><span class="advice-trend">${data.trend || ''}</span><span class="advice-badge">操作建议</span></div>
             <div class="advice-line">底仓：<b>${data.base_position || '--'}</b>；网格：<b>${data.grid || '--'}</b></div>
             <div class="advice-meta">${data.cross || ''}<br>${difDea}｜${data.updated || ''}（${data.code || code}）</div>
         `;
