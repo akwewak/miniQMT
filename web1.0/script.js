@@ -3302,10 +3302,18 @@
             }
         }
 
-        // 定位tooltip
+        // 定位tooltip（空间不足时翻到上方）
         const rect = event.target.getBoundingClientRect();
-        tooltip.style.left = `${rect.left + window.scrollX}px`;
-        tooltip.style.top = `${rect.bottom + window.scrollY + 10}px`;
+        let left = rect.left + window.scrollX;
+        let top = rect.bottom + window.scrollY + 10;
+        const estH = 290;
+        if (rect.bottom + estH > window.innerHeight) {
+            top = rect.top + window.scrollY - estH - 10;
+        }
+        top = Math.max(8, top);
+        left = Math.max(8, Math.min(left, window.innerWidth + window.scrollX - 350));
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
         tooltip.style.display = 'block';
     }
 
