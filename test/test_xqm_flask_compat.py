@@ -18,6 +18,7 @@ import unittest
 import sqlite3
 import tempfile
 import shutil
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -323,6 +324,37 @@ class TestFlaskCompatEndpoints(unittest.TestCase):
         self.assertIn("data", body)
         self.assertIn("ranges", body)          # 顶层
         self.assertIn("singleBuyAmount", body["data"])
+
+    # ---- /api/macd/advice: 网关模式兼容 web2.0 操作建议悬浮窗 ----
+
+    def test_macd_advice_compat_endpoint(self):
+        expected = {
+            "status": "success",
+            "code": "600059.SH",
+            "trend": "上升趋势(强)",
+            "base_position": "重仓",
+            "grid": "启动",
+            "cross": "DIF在DEA上方(多头)",
+            "dea": 0.12,
+            "dif": 0.18,
+            "updated": "2026-07-24",
+            "series": [],
+        }
+        with patch("macd_advisor.get_advice", return_value=expected) as mocked:
+            r = self.client.get("/api/macd/advice?code=600059.SH", headers={"X-Account-Id": ACC1})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), expected)
+        mocked.assert_called_once_with("600059.SH")
+
+    def test_macd_advice_compat_endpoint_error(self):
+        with patch("macd_advisor.get_advice", side_effect=RuntimeError("指标数据不足")):
+            r = self.client.get("/api/macd/advice?code=600059.SH", headers={"X-Account-Id": ACC1})
+
+        self.assertEqual(r.status_code, 500)
+        body = r.json()
+        self.assertEqual(body["status"], "error")
+        self.assertIn("指标数据不足", body["message"])
 
     # ---- /api/trade-records: 数组 + BUY/SELL 映射 ----
 

@@ -17,12 +17,15 @@ const chartSvg = computed(() =>
     >
       <div class="advice-header">
         <span class="advice-trend">{{ state.data.trend }}</span>
-        <span class="advice-badge">操作建议</span>
+        <span class="advice-badge">{{ state.data.is_status ? '状态' : '操作建议' }}</span>
       </div>
       <div class="advice-line">底仓：<b>{{ state.data.base_position }}</b>；网格：<b>{{ state.data.grid }}</b></div>
       <div class="advice-meta">
         <template v-if="state.data.cross">{{ state.data.cross }}<br></template>
-        <template v-if="state.data.dif != null">DIF {{ state.data.dif }} / </template>DEA {{ state.data.dea }}｜{{ state.data.updated }}（{{ state.data.code }}）
+        <template v-if="state.data.dea != null">
+          <template v-if="state.data.dif != null">DIF {{ state.data.dif }} / </template>DEA {{ state.data.dea }}｜{{ state.data.updated }}（{{ state.data.code }}）
+        </template>
+        <template v-else>（{{ state.data.code }}）</template>
       </div>
       <div v-if="chartSvg" class="advice-chart" v-html="chartSvg"></div>
     </div>

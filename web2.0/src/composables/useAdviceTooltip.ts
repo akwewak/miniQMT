@@ -13,8 +13,25 @@ const state = reactive({
 
 const cache: Record<string, { data: any; ts: number }> = {}
 const TTL = 300000 // 5 分钟
+let requestSeq = 0
 
 export function useAdviceTooltip() {
+  function makeStatusAdvice(code: string, trend: string, message: string) {
+    return {
+      status: 'success',
+      code,
+      trend,
+      base_position: '--',
+      grid: '--',
+      cross: message,
+      dif: null,
+      dea: null,
+      updated: '',
+      series: [],
+      is_status: true,
+    }
+  }
+
   function placeTooltip() {
     const rect = state.triggerRect
     const tooltip = document.querySelector('.advice-tooltip') as HTMLElement | null
@@ -43,40 +60,51 @@ export function useAdviceTooltip() {
     state.y = top
   }
 
-  async function show(event: MouseEvent, code: string) {
+  async function show(event: Event, code: string) {
     if (!code) return
 
     const el = event.currentTarget as HTMLElement
     const rect = el.getBoundingClientRect()
+    const currentSeq = ++requestSeq
     state.triggerRect = rect
     state.x = Math.max(8, rect.left)
     state.y = Math.max(8, rect.bottom + 8)
     state.ready = false
+    state.data = makeStatusAdvice(code, '加载操作建议...', '正在获取 MACD 数据')
+    state.visible = true
+    await nextTick()
+    placeTooltip()
+    state.ready = true
 
     const now = Date.now()
     const cached = cache[code]
     let data: any
-    if (cached && now - cached.ts < TTL) {
-      data = cached.data
-    } else {
-      data = await getMacdAdvice(code)
-      cache[code] = { data, ts: now }
+    try {
+      if (cached && now - cached.ts < TTL) {
+        data = cached.data
+      } else {
+        data = await getMacdAdvice(code)
+        cache[code] = { data, ts: now }
+      }
+    } catch (e: any) {
+      data = { status: 'error', message: e?.message || '请求失败' }
     }
 
-    // 数据不足或网关模式降级：静默不显示
+    if (currentSeq !== requestSeq) return
+
+    // 数据不足或接口不可用时，也给用户明确反馈
     if (!data || data.status !== 'success') {
-      state.visible = false
-      return
+      state.data = makeStatusAdvice(code, '操作建议不可用', data?.message || data?.error || '接口未返回可用建议')
+    } else {
+      state.data = data
     }
-
-    state.data = data
-    state.visible = true
     await nextTick()
     placeTooltip()
     state.ready = true
   }
 
   function hide() {
+    requestSeq += 1
     state.visible = false
     state.ready = false
   }

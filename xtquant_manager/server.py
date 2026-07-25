@@ -1000,6 +1000,17 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             "ranges": {},
         })
 
+    @app.get("/api/macd/advice", tags=["兼容"])
+    async def flask_macd_advice(request: Request):
+        """Flask 兼容: /api/macd/advice → MACD 操盘建议。"""
+        try:
+            import macd_advisor
+            code = request.query_params.get("code") or macd_advisor.SHENZHEN_INDEX_CODE
+            return JSONResponse(macd_advisor.get_advice(code))
+        except Exception as exc:
+            logger.error(f"获取MACD操盘建议时出错: {exc}")
+            return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
+
     @app.get("/api/trade-records", tags=["兼容"])
     async def flask_trade_records(request: Request):
         """Flask 兼容: /api/trade-records（与 web1.0 同源：优先读 SQLite trade_records）"""
