@@ -38,6 +38,10 @@ class GridSession:
     position_ratio: float = 0.25
     callback_ratio: float = 0.005
 
+    # 单次交易份额模式 (amount=固定金额, shares=固定股数)
+    trade_mode: str = "amount"
+    fixed_volume: int = 0
+
     # 资金配置
     max_investment: float = 0.0
     current_investment: float = 0.0
@@ -668,6 +672,8 @@ class GridTradingManager:
                         price_interval=session_dict['price_interval'],
                         position_ratio=session_dict['position_ratio'],
                         callback_ratio=session_dict['callback_ratio'],
+                        trade_mode=session_dict.get('trade_mode', 'amount'),
+                        fixed_volume=session_dict.get('fixed_volume', 0),
                         max_investment=session_dict['max_investment'],
                         current_investment=session_dict['current_investment'],
                         max_deviation=session_dict['max_deviation'],
@@ -1073,12 +1079,27 @@ class GridTradingManager:
         end_time = start_time + timedelta(days=user_config.get('duration_days', 7))
         current_price = position.get('current_price', highest_price)
 
+        # 交易份额模式：amount=固定金额(现有), shares=固定股数
+        trade_mode = user_config.get('trade_mode', config.GRID_DEFAULT_TRADE_MODE)
+        _position_ratio = user_config.get('position_ratio', config.GRID_DEFAULT_POSITION_RATIO)
+        fixed_volume = int(user_config.get('fixed_volume') or 0)
+        # 固定股数模式且用户未指定股数：默认按 当前持仓总数 × 每档比例 兜底计算(对齐100股)
+        if trade_mode == 'shares' and fixed_volume <= 0:
+            holding_volume = int(position.get('volume', 0) or 0)
+            fixed_volume = (int(holding_volume * _position_ratio) // 100) * 100
+            if fixed_volume < 100:
+                fixed_volume = 100
+            logger.info(f"[GRID] start_grid_session: [阶段1] 固定股数模式未指定股数, "
+                        f"按持仓{holding_volume}×{_position_ratio*100:.0f}%兜底={fixed_volume}股")
+
         session_data = {
             'stock_code': stock_code,
             'center_price': center_price,
             'price_interval': user_config.get('price_interval', config.GRID_DEFAULT_PRICE_INTERVAL),
-            'position_ratio': user_config.get('position_ratio', config.GRID_DEFAULT_POSITION_RATIO),
+            'position_ratio': _position_ratio,
             'callback_ratio': user_config.get('callback_ratio', config.GRID_CALLBACK_RATIO),
+            'trade_mode': trade_mode,
+            'fixed_volume': fixed_volume,
             'max_investment': user_config.get('max_investment', 0),
             'max_deviation': user_config.get('max_deviation', config.GRID_MAX_DEVIATION_RATIO),
             'target_profit': user_config.get('target_profit', config.GRID_TARGET_PROFIT_RATIO),
@@ -1119,6 +1140,8 @@ class GridTradingManager:
                 price_interval=session_data['price_interval'],
                 position_ratio=session_data['position_ratio'],
                 callback_ratio=session_data['callback_ratio'],
+                trade_mode=session_data['trade_mode'],
+                fixed_volume=session_data['fixed_volume'],
                 max_investment=session_data['max_investment'],
                 max_deviation=session_data['max_deviation'],
                 target_profit=session_data['target_profit'],
@@ -2903,32 +2926,41 @@ class GridTradingManager:
 
         # 2. 计算买入金额和数量
         remaining_investment = session.max_investment - session.current_investment
-        # 单次买入金额 = min(剩余额度, 总额度 × position_ratio)
-        # T-GAP-8/A-1修复：买入与卖出使用同一个 position_ratio 字段，语义统一为"每档交易比例"。
-        # 原设计注释中说"买入固定用 max_investment×20%"是历史遗留，现改为以 position_ratio 为准：
-        # - 用户可通过调整 position_ratio 同时控制买入每档额度和卖出每档数量。
-        # - 默认 position_ratio=0.25 即单次买入不超过总额度 25%（最多 4 档），与原 20% 逻辑类似但更灵活。
-        target_buy_amount = session.max_investment * session.position_ratio
-        buy_amount = min(remaining_investment, target_buy_amount)
-        logger.debug(f"[GRID] _execute_grid_buy: remaining_investment={remaining_investment:.2f}, "
-                    f"target_buy_amount(position_ratio={session.position_ratio*100:.0f}%)={target_buy_amount:.2f}, buy_amount={buy_amount:.2f}")
-
-        if buy_amount < 100:  # 最小买入金额
-            logger.warning(f"[GRID] _execute_grid_buy: {stock_code} 可用买入金额{buy_amount:.2f}不足100元, 跳过买入")
-            return False
-
-        # 计算股数
-        raw_volume = buy_amount / trigger_price  # 原始股数
-
-        # 计算股数 (统一要求100股倍数)
-        volume = (int(raw_volume) // 100) * 100
         min_volume = 100
 
-        logger.debug(f"[GRID] _execute_grid_buy: 计算买入数量 raw_volume={raw_volume:.2f}, volume={volume}, min_volume={min_volume}")
+        if session.trade_mode == 'shares':
+            # 固定股数模式：每次买入 fixed_volume 股（对齐100股）
+            volume = (int(session.fixed_volume) // 100) * 100
+            logger.debug(f"[GRID] _execute_grid_buy: 固定股数模式 fixed_volume={session.fixed_volume}, volume={volume}")
+            if volume < min_volume:
+                logger.warning(f"[GRID] _execute_grid_buy: {stock_code} 固定股数{session.fixed_volume}不足{min_volume}股, 跳过买入")
+                return False
+        else:
+            # 固定金额模式：单次买入金额 = min(剩余额度, 总额度 × position_ratio)
+            # T-GAP-8/A-1修复：买入与卖出使用同一个 position_ratio 字段，语义统一为"每档交易比例"。
+            # 原设计注释中说"买入固定用 max_investment×20%"是历史遗留，现改为以 position_ratio 为准：
+            # - 用户可通过调整 position_ratio 同时控制买入每档额度和卖出每档数量。
+            # - 默认 position_ratio=0.25 即单次买入不超过总额度 25%（最多 4 档），与原 20% 逻辑类似但更灵活。
+            target_buy_amount = session.max_investment * session.position_ratio
+            buy_amount = min(remaining_investment, target_buy_amount)
+            logger.debug(f"[GRID] _execute_grid_buy: remaining_investment={remaining_investment:.2f}, "
+                        f"target_buy_amount(position_ratio={session.position_ratio*100:.0f}%)={target_buy_amount:.2f}, buy_amount={buy_amount:.2f}")
 
-        if volume < min_volume:
-            logger.warning(f"[GRID] _execute_grid_buy: {stock_code} 买入数量{volume}不足{min_volume}股(原始={raw_volume:.2f}股), 跳过")
-            return False
+            if buy_amount < 100:  # 最小买入金额
+                logger.warning(f"[GRID] _execute_grid_buy: {stock_code} 可用买入金额{buy_amount:.2f}不足100元, 跳过买入")
+                return False
+
+            # 计算股数
+            raw_volume = buy_amount / trigger_price  # 原始股数
+
+            # 计算股数 (统一要求100股倍数)
+            volume = (int(raw_volume) // 100) * 100
+
+            logger.debug(f"[GRID] _execute_grid_buy: 计算买入数量 raw_volume={raw_volume:.2f}, volume={volume}, min_volume={min_volume}")
+
+            if volume < min_volume:
+                logger.warning(f"[GRID] _execute_grid_buy: {stock_code} 买入数量{volume}不足{min_volume}股(原始={raw_volume:.2f}股), 跳过")
+                return False
 
         # 3. 执行买入
         actual_amount = volume * trigger_price
@@ -3091,15 +3123,21 @@ class GridTradingManager:
             return False
 
         # 2. 计算卖出数量
-        # position_ratio 字段控制每次卖出可卖持仓的比例（买入使用相同字段，语义统一）。
-        # A-3修复：基于 available_volume（可卖数量）而非 current_volume（总持仓），
-        # 遵守 T+1 规则，避免包含当日买入股份导致无效委托。
-        # BUG-1修复：改用 (int(x) // 100) * 100 形式，语义更清晰：
-        # 先计算应卖股数（浮点转整数截断），再向下取整到100的倍数
-        # 与买入逻辑的整百方式统一，两者数值等价但表达一致
-        sell_volume = (int(available_volume * session.position_ratio) // 100) * 100
-        logger.debug(f"[GRID] _execute_grid_sell: 计算卖出数量 position_ratio={session.position_ratio*100:.1f}%, "
-                     f"available_volume={available_volume}, 初步sell_volume={sell_volume}")
+        if session.trade_mode == 'shares':
+            # 固定股数模式：每次卖出 fixed_volume 股（对齐100股），不超过可卖数量
+            sell_volume = (int(session.fixed_volume) // 100) * 100
+            logger.debug(f"[GRID] _execute_grid_sell: 固定股数模式 fixed_volume={session.fixed_volume}, "
+                         f"初步sell_volume={sell_volume}, available_volume={available_volume}")
+        else:
+            # position_ratio 字段控制每次卖出可卖持仓的比例（买入使用相同字段，语义统一）。
+            # A-3修复：基于 available_volume（可卖数量）而非 current_volume（总持仓），
+            # 遵守 T+1 规则，避免包含当日买入股份导致无效委托。
+            # BUG-1修复：改用 (int(x) // 100) * 100 形式，语义更清晰：
+            # 先计算应卖股数（浮点转整数截断），再向下取整到100的倍数
+            # 与买入逻辑的整百方式统一，两者数值等价但表达一致
+            sell_volume = (int(available_volume * session.position_ratio) // 100) * 100
+            logger.debug(f"[GRID] _execute_grid_sell: 计算卖出数量 position_ratio={session.position_ratio*100:.1f}%, "
+                         f"available_volume={available_volume}, 初步sell_volume={sell_volume}")
 
         if sell_volume == 0:
             sell_volume = 100  # 最少卖100股

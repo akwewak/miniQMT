@@ -804,6 +804,11 @@ GRID_DEFAULT_PRICE_INTERVAL = 0.05           # 默认价格间隔5%
 GRID_DEFAULT_POSITION_RATIO = 0.25           # 默认每档交易25%
 GRID_DEFAULT_MAX_INVESTMENT_RATIO = 0.5      # 默认最大投入为持仓市值50%
 
+# 网格单次交易份额模式
+# - 'amount' 固定金额: 每次买入金额 = max_investment × position_ratio (现有行为)
+# - 'shares' 固定股数: 每次买卖股数 = fixed_volume (固定股数模式仍受 max_investment 硬上限兜底)
+GRID_DEFAULT_TRADE_MODE = 'amount'           # 默认固定金额
+
 # 日志级别
 GRID_LOG_LEVEL = "INFO"  # DEBUG时输出详细价格追踪
 

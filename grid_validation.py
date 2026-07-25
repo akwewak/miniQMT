@@ -36,6 +36,14 @@ class GridConfigSchema(Schema):
         validate=validate.Range(min=0.01, max=1.0, error='每档交易比例必须在0.01-1.0之间（1%-100%）')
     )
 
+    trade_mode = fields.Str(
+        validate=validate.OneOf(['amount', 'shares'], error='交易模式只能为 amount(固定金额) 或 shares(固定股数)')
+    )
+
+    fixed_volume = fields.Int(
+        validate=validate.Range(min=0, error='固定股数不能为负数')
+    )
+
     callback_ratio = fields.Float(
         validate=validate.Range(min=0.001, max=0.10, error='回调触发比例必须在0.001-0.10之间（0.1%-10%）')
     )
@@ -116,7 +124,22 @@ class GridConfigSchema(Schema):
 
         买入金额 = max_investment × position_ratio，需至少 100 元才能生成最低 100 股的订单。
         若乘积 < 100，则每次买入都会因金额不足被拒绝，会话永远无法执行任何交易。
+
+        固定股数模式(trade_mode='shares')：不按金额计算份额，改为校验 fixed_volume 合法性
+        （>0 时须≥100 且为100倍数；=0 表示交由后端按持仓兜底，放行）。
         """
+        trade_mode = data.get('trade_mode', 'amount')
+
+        if trade_mode == 'shares':
+            fixed_volume = data.get('fixed_volume', 0)
+            if fixed_volume and fixed_volume > 0:
+                if fixed_volume < 100 or fixed_volume % 100 != 0:
+                    raise ValidationError(
+                        f'固定股数({fixed_volume})必须≥100且为100的整数倍',
+                        'fixed_volume'
+                    )
+            return
+
         if 'max_investment' in data and 'position_ratio' in data:
             min_trade_amount = data['max_investment'] * data['position_ratio']
             if min_trade_amount < 100:

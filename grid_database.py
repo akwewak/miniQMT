@@ -140,6 +140,10 @@ class DatabaseManager:
                 position_ratio REAL NOT NULL DEFAULT 0.25,
                 callback_ratio REAL NOT NULL DEFAULT 0.005,
 
+                -- 单次交易份额模式 (amount=固定金额, shares=固定股数)
+                trade_mode TEXT NOT NULL DEFAULT 'amount',
+                fixed_volume INTEGER NOT NULL DEFAULT 0,
+
                 -- 资金配置
                 max_investment REAL NOT NULL,
                 current_investment REAL DEFAULT 0,
@@ -212,6 +216,25 @@ class DatabaseManager:
         try:
             cursor.execute("ALTER TABLE grid_trading_sessions ADD COLUMN total_sell_volume INTEGER DEFAULT 0")
             logger.info("数据库迁移: 添加 total_sell_volume 字段")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" in str(e):
+                pass
+            else:
+                raise
+
+        # 单次交易份额模式字段 (amount=固定金额, shares=固定股数)
+        try:
+            cursor.execute("ALTER TABLE grid_trading_sessions ADD COLUMN trade_mode TEXT NOT NULL DEFAULT 'amount'")
+            logger.info("数据库迁移: 添加 trade_mode 字段")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" in str(e):
+                pass
+            else:
+                raise
+
+        try:
+            cursor.execute("ALTER TABLE grid_trading_sessions ADD COLUMN fixed_volume INTEGER NOT NULL DEFAULT 0")
+            logger.info("数据库迁移: 添加 fixed_volume 字段")
         except sqlite3.OperationalError as e:
             if "duplicate column name" in str(e):
                 pass
@@ -501,9 +524,10 @@ class DatabaseManager:
                 INSERT INTO grid_trading_sessions
                 (stock_code, status, enabled, center_price, current_center_price,
                  price_interval, position_ratio, callback_ratio,
+                 trade_mode, fixed_volume,
                  max_investment, max_deviation, target_profit, stop_loss,
                  start_time, end_time, risk_level, template_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 session_data['stock_code'],
                 'active',
@@ -513,6 +537,8 @@ class DatabaseManager:
                 session_data['price_interval'],
                 session_data['position_ratio'],
                 session_data['callback_ratio'],
+                session_data.get('trade_mode', 'amount'),
+                session_data.get('fixed_volume', 0),
                 session_data['max_investment'],
                 session_data['max_deviation'],
                 session_data['target_profit'],

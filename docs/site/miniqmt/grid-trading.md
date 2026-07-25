@@ -16,10 +16,25 @@
 | `price_interval` | 价格档位间距（元） |
 | `position_ratio` | 每档买入仓位比例 |
 | `callback_ratio` | 回调触发比例（0.5%） |
+| `trade_mode` | 单次交易份额模式：`amount`（固定金额，默认）/ `shares`（固定股数） |
+| `fixed_volume` | 固定股数模式下每次买卖股数（`shares` 模式生效，0=按持仓兜底） |
 | `max_investment` | 单会话最大投入金额 |
 | `max_deviation` | 最大偏离中心价比例（±15%） |
 | `target_profit` | 目标盈利比例（10%） |
 | `stop_loss` | 网格止损比例（-10%） |
+
+### 交易份额模式（固定金额 / 固定股数）
+
+启动网格会话前二选一，控制每次网格买卖的份额计算方式：
+
+| 模式 | `trade_mode` | 每次买入 | 每次卖出 |
+|------|-------------|---------|---------|
+| **固定金额**（默认） | `amount` | `max_investment × position_ratio` 折算股数（对齐100股） | `可卖数量 × position_ratio`（对齐100股） |
+| **固定股数** | `shares` | `fixed_volume` 股（对齐100股） | `fixed_volume` 股（对齐100股，不超过可卖数量） |
+
+- **固定股数模式仍受 `max_investment` 硬上限兜底**：单次买入金额超过剩余额度时本次跳过，防止极端行情无限加仓。
+- `fixed_volume` 默认值：启动时若未指定，按 `当前持仓总数 × position_ratio` 兜底计算（最小 100 股）。
+- **MACD 默认推荐**（web1.0 配置对话框）：打开时自动查询该股 MACD，`DEA` 趋势向上推荐「固定金额」，向下推荐「固定股数」，用户可自由切换。默认模式由 `config.GRID_DEFAULT_TRADE_MODE` 控制（默认 `amount`）。
 
 ### 价格追踪器（PriceTracker）
 
@@ -228,7 +243,7 @@ curl -X POST http://localhost:5000/api/grid/stop \
 - 默认不要求先触发首次止盈即可启动网格；如需更保守风控，可设置 `GRID_REQUIRE_PROFIT_TRIGGERED = True` 或同名环境变量
 - 每只股票同一时间只能有一个活跃网格会话
 - 单个网格会话可通过 Web”自动/暂停”开关临时禁止新网格单，不等同于停止会话
-- **买卖量基数统一**：买入量与卖出量使用同一基数 `current_volume × position_ratio`（有持仓时），确保每档买卖操作量对称；首次买入（无持仓）回退为基于 `max_investment × position_ratio / price` 计算
+- **买卖量基数统一**：固定金额模式下，买入量与卖出量使用同一基数 `current_volume × position_ratio`（有持仓时），确保每档买卖操作量对称；首次买入（无持仓）回退为基于 `max_investment × position_ratio / price` 计算。固定股数模式（`trade_mode='shares'`）则买卖统一使用 `fixed_volume` 股（对齐100股，买入仍受 `max_investment` 硬上限兜底）
 - 网格数据持久化在 SQLite `grid_trading_sessions` / `grid_trades` / `grid_orders` / `grid_lots` / `grid_lot_matches` 表中（详见[数据库表结构](database.md)）
 - 实盘网格下单以**成交回报**为准（`GRID_CONFIRM_LIVE_ORDER_BY_DEAL`）：委托先进入 `grid_orders`，真实成交后才写 `grid_trades`、账本和普通 `trade_records`，系统重启自动对账恢复未完成委托
 - 建议在模拟模式下充分验证策略后再切换实盘

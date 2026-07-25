@@ -1004,6 +1004,8 @@ def _make_grid_session_mock(session_id=1, stock_code='000001.SZ'):
     sess.price_interval = 0.05
     sess.position_ratio = 0.25
     sess.callback_ratio = 0.005
+    sess.trade_mode = 'amount'
+    sess.fixed_volume = 0
     sess.max_investment = 10000.0
     sess.current_investment = 0.0
     sess.max_deviation = 0.15

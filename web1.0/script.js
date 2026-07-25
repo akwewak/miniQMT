@@ -2577,6 +2577,44 @@
             document.getElementById('gridTargetProfit').value = (config.target_profit * 100).toFixed(0);
             document.getElementById('gridStopLoss').value = (config.stop_loss * 100).toFixed(0);  // ⭐ 负数转换为百分比
 
+            // ⭐ 交易模式初始化（固定金额/固定股数）
+            const holdingVolume = cells[9] ? (parseFloat(cells[9].textContent) || 0) : 0;
+            const defaultFixedVolume = Math.max(100, Math.floor(holdingVolume * (config.position_ratio || 0.25) / 100) * 100);
+            const fixedVolumeInput = document.getElementById('gridFixedVolume');
+            const tradeModeHint = document.getElementById('gridTradeModeHint');
+
+            // 绑定模式切换按钮（onclick 赋值天然幂等，不会累积监听器）
+            document.getElementById('gridTradeModeAmountBtn').onclick = () => setGridTradeMode('amount');
+            document.getElementById('gridTradeModeSharesBtn').onclick = () => setGridTradeMode('shares');
+
+            let initialTradeMode = 'amount';
+            if (hasActiveSession && config.trade_mode) {
+                // 已有会话：回填已保存的模式与股数
+                initialTradeMode = config.trade_mode === 'shares' ? 'shares' : 'amount';
+                const savedVol = parseInt(config.fixed_volume) || 0;
+                if (fixedVolumeInput) fixedVolumeInput.value = savedVol > 0 ? savedVol : defaultFixedVolume;
+                if (tradeModeHint) tradeModeHint.textContent = '';
+            } else {
+                // 新会话：固定股数默认按 持仓总数×每档比例 兜底；按 MACD DEA 趋势给默认模式推荐
+                if (fixedVolumeInput) fixedVolumeInput.value = defaultFixedVolume;
+                try {
+                    const adviceResp = await fetch(`${API_BASE_URL}/api/macd/advice?code=${normalizedCode}`);
+                    const advice = await adviceResp.json();
+                    if (advice && advice.status === 'success' && advice.dea != null && advice.dea_prev != null) {
+                        const deaUp = Number(advice.dea) >= Number(advice.dea_prev);
+                        initialTradeMode = deaUp ? 'amount' : 'shares';
+                        if (tradeModeHint) {
+                            tradeModeHint.textContent = deaUp
+                                ? 'MACD：DEA 趋势向上，推荐「固定金额」'
+                                : 'MACD：DEA 趋势向下，推荐「固定股数」';
+                        }
+                    }
+                } catch (e) {
+                    console.warn('获取MACD建议失败，交易模式默认固定金额:', e);
+                }
+            }
+            setGridTradeMode(initialTradeMode);
+
             // 显示对话框
             const dialog = document.getElementById('gridConfigDialog');
             dialog.classList.remove('hidden');
@@ -2668,6 +2706,26 @@
             // 刷新持仓数据以确保状态一致
             fetchHoldings();
         }
+    }
+
+    // ⭐ 网格交易模式（固定金额/固定股数）当前选择，供 startGridSession 读取
+    let gridSelectedTradeMode = 'amount';
+
+    /**
+     * 更新交易模式按钮样式并显示/隐藏固定股数输入框
+     * @param {string} mode - 'amount'(固定金额) | 'shares'(固定股数)
+     */
+    function setGridTradeMode(mode) {
+        gridSelectedTradeMode = (mode === 'shares') ? 'shares' : 'amount';
+        const amountBtn = document.getElementById('gridTradeModeAmountBtn');
+        const sharesBtn = document.getElementById('gridTradeModeSharesBtn');
+        const fixedRow = document.getElementById('gridFixedVolumeRow');
+        const baseCls = 'grid-trade-mode-btn flex-1 px-3 py-2 rounded border text-sm font-medium transition-colors ';
+        const activeCls = 'bg-blue-600 text-white border-blue-600';
+        const inactiveCls = 'bg-white text-gray-600 border-gray-300 hover:border-blue-400';
+        if (amountBtn) amountBtn.className = baseCls + (gridSelectedTradeMode === 'amount' ? activeCls : inactiveCls);
+        if (sharesBtn) sharesBtn.className = baseCls + (gridSelectedTradeMode === 'shares' ? activeCls : inactiveCls);
+        if (fixedRow) fixedRow.classList.toggle('hidden', gridSelectedTradeMode !== 'shares');
     }
 
     /**
@@ -2774,6 +2832,10 @@
                 price_interval: parseFloat(document.getElementById('gridPriceInterval').value) / 100,
                 position_ratio: parseFloat(document.getElementById('gridPositionRatio').value) / 100,
                 callback_ratio: parseFloat(document.getElementById('gridCallbackRatio').value) / 100,
+                trade_mode: gridSelectedTradeMode,  // ⭐ 交易模式：amount(固定金额)/shares(固定股数)
+                fixed_volume: gridSelectedTradeMode === 'shares'
+                    ? (parseInt(document.getElementById('gridFixedVolume').value) || 0)
+                    : 0,
                 max_investment: parseFloat(document.getElementById('gridMaxInvestment').value),
                 max_deviation: parseFloat(document.getElementById('gridMaxDeviation').value) / 100,
                 target_profit: parseFloat(document.getElementById('gridTargetProfit').value) / 100,
@@ -2790,6 +2852,13 @@
             if (config.position_ratio <= 0 || config.position_ratio > 1) {
                 showMessage('每档交易比例必须在1%-100%之间', 'error');
                 return;
+            }
+            // ⭐ 固定股数模式校验：≥100 且为100整数倍
+            if (config.trade_mode === 'shares') {
+                if (!config.fixed_volume || config.fixed_volume < 100 || config.fixed_volume % 100 !== 0) {
+                    showMessage('固定股数必须≥100且为100的整数倍', 'error');
+                    return;
+                }
             }
             if (config.callback_ratio < 0.001 || config.callback_ratio > 0.1) {
                 showMessage('回调触发比例必须在0.1%-10%之间', 'error');

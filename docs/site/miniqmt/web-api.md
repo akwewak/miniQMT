@@ -133,6 +133,9 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 | PUT | `/api/grid/template/<name>/default` | 设为默认模板 | ❌ |
 | GET | `/api/grid/risk-templates` | 风险分级模板 | ❌ |
 
+!!! tip "网格交易份额模式（trade_mode）"
+    `POST /api/grid/start` 请求体（含嵌套 `config`）支持 `trade_mode`（`amount` 固定金额 / `shares` 固定股数，默认 `amount`）与 `fixed_volume`（固定股数模式每次买卖股数，须为 100 整数倍；0=按持仓兜底）。`/api/grid/session/<stock_code>` 等查询接口的 `config` 会回显这两个字段供前端回填。详见[网格交易 · 交易份额模式](grid-trading.md)。
+
 !!! info "网格写操作仅 Flask 直连"
     网格策略由 `grid_trading_manager` 主线程驱动，网关进程独立运行不持有策略状态。因此启动/停止/模板/账本详情等网格写操作和深度查询仍需 Flask 模式；网关模式仅兼容 `/api/grid/sessions`，从账号 SQLite 只读返回会话列表。
 !!! note "实盘委托与成交分离"

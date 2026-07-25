@@ -782,7 +782,7 @@ class TestMyFeature(TestBase):
 - [无人值守运行](docs/site/miniqmt/unattended.md) - 线程监控、超时保护、非交易时段优化
 - [Web 前端](docs/site/miniqmt/web-frontend.md) - web1.0 / web2.0 双模式
 - [自动买入](docs/site/miniqmt/autobuy.md) - 候选池筛选、指数门禁、防重买入
-- [网格交易](docs/site/miniqmt/grid-trading.md) - 网格实盘闭环与真实盈亏账本
+- [网格交易](docs/site/miniqmt/grid-trading.md) - 网格实盘闭环与真实盈亏账本（含固定金额/固定股数交易份额模式，按 MACD DEA 趋势推荐默认）
 
 ### 配置文件
 

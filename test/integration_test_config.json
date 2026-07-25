@@ -51,6 +51,7 @@
       "modules": [
         "test.test_grid_trade_buy",
         "test.test_grid_trade_sell",
+        "test.test_grid_trade_fixed_shares",
         "test.test_grid_trade_fund_management",
         "test.test_grid_trade_statistics",
         "test.test_grid_trade_rebuild",

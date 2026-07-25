@@ -219,6 +219,7 @@ DYNAMIC_TAKE_PROFIT = [
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
+| `GRID_DEFAULT_TRADE_MODE` | `'amount'` | 网格单次交易份额模式默认值：`amount`（固定金额）/ `shares`（固定股数）；web1.0 打开配置对话框时按 MACD DEA 趋势推荐并可切换 |
 | `GRID_CALLBACK_RATIO` | `0.005` | 回调触发比例（0.5%） |
 | `GRID_LEVEL_COOLDOWN` | `60` | 同一档位冷却时间（秒） |
 | `GRID_BUY_COOLDOWN` | `300` | 买入成功后冷却（秒） |
