@@ -3545,7 +3545,7 @@
     let adviceCache = {};                    // {code: {data, timestamp}}
     const ADVICE_CACHE_TIME = 300000;        // 5分钟缓存
     let adviceHoverTimer = null;            // hover 防抖定时器
-    const ADVICE_HOVER_DELAY = 400;          // 悬停 400ms 后才弹出
+    const ADVICE_HOVER_DELAY = 800;          // 悬停 400ms 后才弹出
 
     function clearAdviceHoverTimer() {
         if (adviceHoverTimer) {
@@ -3595,24 +3595,24 @@
         // 清除之前的定时器，避免重复弹出
         clearAdviceHoverTimer();
 
-        // 有缓存时立即响应；无缓存时延迟 400ms 再显示，避免快速划过触发请求
+        // 统一延时：无论缓存命中还是首次请求，都延迟指定时间后再弹出
         const now = Date.now();
         const cached = adviceCache[code];
-        if (cached && (now - cached.timestamp < ADVICE_CACHE_TIME)) {
-            renderAdviceTooltip(tooltip, event, code, cached.data);
-            return;
-        }
+        const hitCache = cached && (now - cached.timestamp < ADVICE_CACHE_TIME);
 
-        adviceHoverTimer = setTimeout(async () => {
-            let data;
-            try {
-                data = await apiRequest(`${API_ENDPOINTS.getMacdAdvice}?code=${encodeURIComponent(code)}`);
-            } catch (error) {
-                console.error('加载操盘建议失败:', error);
-                return;
+        adviceHoverTimer = setTimeout(() => {
+            if (hitCache) {
+                renderAdviceTooltip(tooltip, event, code, cached.data);
+            } else {
+                apiRequest(`${API_ENDPOINTS.getMacdAdvice}?code=${encodeURIComponent(code)}`)
+                    .then(data => {
+                        adviceCache[code] = { data, timestamp: Date.now() };
+                        renderAdviceTooltip(tooltip, event, code, data);
+                    })
+                    .catch(error => {
+                        console.error('加载操盘建议失败:', error);
+                    });
             }
-            adviceCache[code] = { data, timestamp: Date.now() };
-            renderAdviceTooltip(tooltip, event, code, data);
         }, ADVICE_HOVER_DELAY);
     }
 
