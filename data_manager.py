@@ -741,8 +741,19 @@ class DataManager:
             result = self.conn.execute("PRAGMA quick_check").fetchone()
             if result and result[0] != 'ok':
                 logger.warning(f"检测到数据库索引异常: {result[0]}，执行 REINDEX 修复...")
-                self.conn.execute("REINDEX")
-                self.conn.commit()
+                try:
+                    self.conn.execute("REINDEX")
+                    self.conn.commit()
+                except sqlite3.IntegrityError as e:
+                    if "stock_daily_data.stock_code" not in str(e) or "stock_daily_data.date" not in str(e):
+                        raise
+                    removed = self._deduplicate_stock_daily_data()
+                    if removed > 0:
+                        logger.warning(f"已清理 stock_daily_data 重复日线记录 {removed} 条，重新执行 REINDEX...")
+                        self.conn.execute("REINDEX")
+                        self.conn.commit()
+                    else:
+                        raise
                 # 再次验证
                 result2 = self.conn.execute("PRAGMA quick_check").fetchone()
                 if result2 and result2[0] == 'ok':
@@ -753,6 +764,36 @@ class DataManager:
                 logger.debug("数据库索引完整性检查通过")
         except Exception as e:
             logger.warning(f"数据库索引检查失败（不影响运行）: {str(e)}")
+
+    def _deduplicate_stock_daily_data(self):
+        """清理 stock_daily_data 中违反 (stock_code, date) 唯一性的重复日线记录。"""
+        try:
+            cursor = self.conn.cursor()
+            duplicate_count = cursor.execute("""
+                SELECT COALESCE(SUM(cnt - 1), 0)
+                FROM (
+                    SELECT COUNT(*) AS cnt
+                    FROM stock_daily_data
+                    GROUP BY stock_code, date
+                    HAVING COUNT(*) > 1
+                )
+            """).fetchone()[0] or 0
+            if duplicate_count <= 0:
+                return 0
+
+            cursor.execute("""
+                DELETE FROM stock_daily_data
+                WHERE rowid NOT IN (
+                    SELECT MAX(rowid)
+                    FROM stock_daily_data
+                    GROUP BY stock_code, date
+                )
+            """)
+            self.conn.commit()
+            return int(duplicate_count)
+        except Exception as e:
+            logger.warning(f"清理 stock_daily_data 重复记录失败: {e}")
+            return 0
     
     # def _init_xtquant(self):
     #     """初始化迅投行情接口"""

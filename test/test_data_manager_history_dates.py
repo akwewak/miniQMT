@@ -1,10 +1,11 @@
 import unittest
+import sqlite3
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from data_manager import DataManager
+from data_manager import DataManager, logger
 
 
 class TestHistoryDateNormalization(unittest.TestCase):
@@ -235,6 +236,228 @@ class TestHistoryDateNormalization(unittest.TestCase):
         throttle_logs = [m for m in cm.output if "历史数据更新节流中" in m]
         self.assertEqual(len(full_fetch_logs), 1)
         self.assertEqual(len(throttle_logs), 1)
+
+class TestStockDailyDataDedup(unittest.TestCase):
+    """测试 stock_daily_data 日线表重复记录清理功能"""
+
+    def setUp(self):
+        """创建不带主键的 stock_daily_data 表（模拟旧版遗留数据场景）"""
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("""
+            CREATE TABLE stock_daily_data (
+                stock_code TEXT,
+                stock_name TEXT,
+                date TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                amount REAL
+            )
+        """)
+        self.conn.commit()
+
+        self.dm = DataManager.__new__(DataManager)
+        self.dm.conn = self.conn
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _insert(self, stock_code, date, close, stock_name=None):
+        self.conn.execute(
+            "INSERT INTO stock_daily_data (stock_code, stock_name, date, open, high, low, close, volume, amount) "
+            "VALUES (?, ?, ?, 10.0, 11.0, 9.5, ?, 10000, 100000)",
+            (stock_code, stock_name or "", date, close),
+        )
+        self.conn.commit()
+
+    def test_removes_duplicates_preserves_latest_row(self):
+        """3组重复数据只保留每组最大 rowid 的一条"""
+        self._insert("000001.SZ", "2026-06-15", 9.5)
+        self._insert("000001.SZ", "2026-06-15", 10.0)
+        self._insert("000001.SZ", "2026-06-15", 10.5)
+        self._insert("000001.SZ", "2026-06-16", 11.0)
+        self._insert("000001.SZ", "2026-06-16", 11.5)
+        self._insert("399001.SZ", "2026-06-15", 8.0)
+
+        removed = self.dm._deduplicate_stock_daily_data()
+
+        self.assertEqual(removed, 3)  # (3-1) + (2-1) = 3
+        rows = self.conn.execute(
+            "SELECT stock_code, date, close FROM stock_daily_data ORDER BY stock_code, date"
+        ).fetchall()
+        self.assertEqual(len(rows), 3)
+        self.assertIn(("000001.SZ", "2026-06-15", 10.5), rows)
+        self.assertIn(("000001.SZ", "2026-06-16", 11.5), rows)
+        self.assertIn(("399001.SZ", "2026-06-15", 8.0), rows)
+
+    def test_no_duplicates_returns_zero(self):
+        """无重复时返回 0 且数据不变"""
+        self._insert("000001.SZ", "2026-06-15", 10.0)
+        self._insert("000001.SZ", "2026-06-16", 11.0)
+        self._insert("399001.SZ", "2026-06-15", 8.0)
+
+        removed = self.dm._deduplicate_stock_daily_data()
+
+        self.assertEqual(removed, 0)
+        rows = self.conn.execute("SELECT count(*) FROM stock_daily_data").fetchone()[0]
+        self.assertEqual(rows, 3)
+
+    def test_empty_table_returns_zero(self):
+        """空表返回 0"""
+        removed = self.dm._deduplicate_stock_daily_data()
+        self.assertEqual(removed, 0)
+
+    def test_multiple_stocks_multiple_dates(self):
+        """多股票多日期交叉重复场景"""
+        self._insert("A.SH", "2026-06-01", 1.0)
+        self._insert("A.SH", "2026-06-01", 1.1)
+        self._insert("A.SH", "2026-06-02", 2.0)
+        self._insert("B.SH", "2026-06-01", 3.0)
+        self._insert("B.SH", "2026-06-01", 3.1)
+        self._insert("B.SH", "2026-06-01", 3.2)
+
+        removed = self.dm._deduplicate_stock_daily_data()
+
+        self.assertEqual(removed, 3)  # 1 + 2
+        rows = self.conn.execute(
+            "SELECT stock_code, date, close FROM stock_daily_data ORDER BY stock_code, date"
+        ).fetchall()
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows, [("A.SH", "2026-06-01", 1.1),
+                                 ("A.SH", "2026-06-02", 2.0),
+                                 ("B.SH", "2026-06-01", 3.2)])
+
+    def test_repair_indexes_calls_dedup_on_unique_constraint(self):
+        """_repair_indexes_if_needed 在 REINDEX 遇到 UNIQUE 约束冲突时调用去重"""
+        self._insert("000001.SZ", "2026-06-15", 10.0)
+        self._insert("000001.SZ", "2026-06-15", 10.5)
+
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sdd_pk ON stock_daily_data(stock_code, date)")
+        self.conn.commit()
+
+        with self.assertLogs("miniQMT.dm", level="WARNING") as cm:
+            self.dm._repair_indexes_if_needed()
+
+        warning_logs = [m for m in cm.output if "已清理 stock_daily_data 重复日线记录" in m]
+        self.assertEqual(len(warning_logs), 1)
+
+class TestStockDailyDataDedup(unittest.TestCase):
+    """测试 stock_daily_data 日线表重复记录清理功能"""
+
+    def setUp(self):
+        """创建不带主键的 stock_daily_data 表（模拟旧版遗留数据场景）"""
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("""
+            CREATE TABLE stock_daily_data (
+                stock_code TEXT,
+                stock_name TEXT,
+                date TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                amount REAL
+            )
+        """)
+        self.conn.commit()
+
+        self.dm = DataManager.__new__(DataManager)
+        self.dm.conn = self.conn
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _insert(self, stock_code, date, close, stock_name=None):
+        self.conn.execute(
+            "INSERT INTO stock_daily_data (stock_code, stock_name, date, open, high, low, close, volume, amount) "
+            "VALUES (?, ?, ?, 10.0, 11.0, 9.5, ?, 10000, 100000)",
+            (stock_code, stock_name or "", date, close),
+        )
+        self.conn.commit()
+
+    def test_removes_duplicates_preserves_latest_row(self):
+        """3组重复数据只保留每组最大 rowid 的一条"""
+        self._insert("000001.SZ", "2026-06-15", 9.5)
+        self._insert("000001.SZ", "2026-06-15", 10.0)
+        self._insert("000001.SZ", "2026-06-15", 10.5)
+        self._insert("000001.SZ", "2026-06-16", 11.0)
+        self._insert("000001.SZ", "2026-06-16", 11.5)
+        self._insert("399001.SZ", "2026-06-15", 8.0)
+
+        removed = self.dm._deduplicate_stock_daily_data()
+
+        self.assertEqual(removed, 3)  # (3-1) + (2-1) = 3
+        rows = self.conn.execute(
+            "SELECT stock_code, date, close FROM stock_daily_data ORDER BY stock_code, date"
+        ).fetchall()
+        self.assertEqual(len(rows), 3)
+        self.assertIn(("000001.SZ", "2026-06-15", 10.5), rows)
+        self.assertIn(("000001.SZ", "2026-06-16", 11.5), rows)
+        self.assertIn(("399001.SZ", "2026-06-15", 8.0), rows)
+
+    def test_no_duplicates_returns_zero(self):
+        """无重复时返回 0 且数据不变"""
+        self._insert("000001.SZ", "2026-06-15", 10.0)
+        self._insert("000001.SZ", "2026-06-16", 11.0)
+        self._insert("399001.SZ", "2026-06-15", 8.0)
+
+        removed = self.dm._deduplicate_stock_daily_data()
+
+        self.assertEqual(removed, 0)
+        rows = self.conn.execute("SELECT count(*) FROM stock_daily_data").fetchone()[0]
+        self.assertEqual(rows, 3)
+
+    def test_empty_table_returns_zero(self):
+        """空表返回 0"""
+        removed = self.dm._deduplicate_stock_daily_data()
+        self.assertEqual(removed, 0)
+
+    def test_multiple_stocks_multiple_dates(self):
+        """多股票多日期交叉重复场景"""
+        self._insert("A.SH", "2026-06-01", 1.0)
+        self._insert("A.SH", "2026-06-01", 1.1)
+        self._insert("A.SH", "2026-06-02", 2.0)
+        self._insert("B.SH", "2026-06-01", 3.0)
+        self._insert("B.SH", "2026-06-01", 3.1)
+        self._insert("B.SH", "2026-06-01", 3.2)
+
+        removed = self.dm._deduplicate_stock_daily_data()
+
+        self.assertEqual(removed, 3)
+        rows = self.conn.execute(
+            "SELECT stock_code, date, close FROM stock_daily_data ORDER BY stock_code, date"
+        ).fetchall()
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows, [("A.SH", "2026-06-01", 1.1),
+                                 ("A.SH", "2026-06-02", 2.0),
+                                 ("B.SH", "2026-06-01", 3.2)])
+
+    def test_repair_indexes_with_pk_table_no_duplicates(self):
+        """_repair_indexes_if_needed 在有 PK、无重复数据的正常表上不报错"""
+        self.conn.close()
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("""
+            CREATE TABLE stock_daily_data (
+                stock_code TEXT,
+                stock_name TEXT,
+                date TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                amount REAL,
+                PRIMARY KEY (stock_code, date)
+            )
+        """)
+        self.conn.commit()
+        self.dm.conn = self.conn
+        self._insert("000001.SZ", "2026-06-15", 10.0)
+
+        self.dm._repair_indexes_if_needed()  # should not raise
 
 
 if __name__ == "__main__":
