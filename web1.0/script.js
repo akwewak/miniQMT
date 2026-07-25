@@ -2373,6 +2373,11 @@
      * @param {string} stockCode - 股票代码
      */
     async function showGridConfigDialog(stockCode) {
+        // ⭐ 前置检查：允许自动网格未启用时直接引导，避免后端 grid_manager=None 报错
+        if (!isGridTradingEnabled) {
+            showMessage('⚠️ 请先勾选「允许自动网格」后，再配置个股网格交易', 'warning', 6000);
+            return;
+        }
         const normalizedCode = normalizeStockCode(stockCode);
         if (!normalizedCode) {
             showMessage('股票代码无效', 'error');
