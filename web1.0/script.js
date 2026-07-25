@@ -3544,6 +3544,15 @@
     // ======================= MACD操盘建议Tooltip =======================
     let adviceCache = {};                    // {code: {data, timestamp}}
     const ADVICE_CACHE_TIME = 300000;        // 5分钟缓存
+    let adviceHoverTimer = null;            // hover 防抖定时器
+    const ADVICE_HOVER_DELAY = 400;          // 悬停 400ms 后才弹出
+
+    function clearAdviceHoverTimer() {
+        if (adviceHoverTimer) {
+            clearTimeout(adviceHoverTimer);
+            adviceHoverTimer = null;
+        }
+    }
 
     function placeAdviceTooltip(event, tooltip) {
         const margin = 8;
@@ -3583,22 +3592,32 @@
         const tooltip = document.getElementById('adviceTooltip');
         if (!tooltip) return;
 
+        // 清除之前的定时器，避免重复弹出
+        clearAdviceHoverTimer();
+
+        // 有缓存时立即响应；无缓存时延迟 400ms 再显示，避免快速划过触发请求
         const now = Date.now();
         const cached = adviceCache[code];
-        let data;
         if (cached && (now - cached.timestamp < ADVICE_CACHE_TIME)) {
-            data = cached.data;
-        } else {
+            renderAdviceTooltip(tooltip, event, code, cached.data);
+            return;
+        }
+
+        adviceHoverTimer = setTimeout(async () => {
+            let data;
             try {
                 data = await apiRequest(`${API_ENDPOINTS.getMacdAdvice}?code=${encodeURIComponent(code)}`);
             } catch (error) {
                 console.error('加载操盘建议失败:', error);
                 return;
             }
-            adviceCache[code] = { data, timestamp: now };
-        }
+            adviceCache[code] = { data, timestamp: Date.now() };
+            renderAdviceTooltip(tooltip, event, code, data);
+        }, ADVICE_HOVER_DELAY);
+    }
 
-        if (!data || data.status !== 'success') return;  // 数据不足/降级，不显示
+    function renderAdviceTooltip(tooltip, event, code, data) {
+        if (!data || data.status !== 'success') return;
 
         const difDea = (data.dif !== null && data.dif !== undefined)
             ? `DIF ${data.dif} / DEA ${data.dea}` : `DEA ${data.dea}`;
@@ -3683,6 +3702,7 @@
     }
 
     function hideAdviceTooltip() {
+        clearAdviceHoverTimer();
         const tooltip = document.getElementById('adviceTooltip');
         if (tooltip) tooltip.style.display = 'none';
     }
