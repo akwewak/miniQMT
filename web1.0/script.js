@@ -1514,9 +1514,9 @@
             const code = escapeLogHtml(entry.stock_code || '');
             // 单行紧凑：B/S | 平安银行 | ¥31,500 | 10.50×3000 | 网格 | HH:MM
             parts.push(
-                `<div class="log-row ${strategyClass}" title="${sideTitle} ${name} ${code}  ¥${amountText}  ${price}×${volume}  ${strategyLabel}">` +
-                    `<span class="log-col-side ${strategyClass}">${sideText}</span>` +
-                    `<span class="log-col-name">${name}</span>` +
+                   `<div class="log-row ${strategyClass}" title="${sideTitle} ${name} ${code}  ¥${amountText}  ${price}×${volume}  ${strategyLabel}">` +
+                    `<span class="log-col-side"></span>` +
+                   `<span class="log-col-name cursor-help" onmouseenter="showAdviceTooltip(event, '${code}')" onmouseleave="hideAdviceTooltip()">${name}</span>` +
                     `<span class="log-col-dir ${strategyClass}">${sideText}</span>` +
                     `<span class="log-col-money ${strategyClass}">${amountText}</span>` +
                     `<span class="log-col-price">${price}×${volume}</span>` +
