@@ -35,6 +35,7 @@ const selectAll = computed({
 })
 
 function openGridConfig(code: string) { gridStockCode.value = code; showGridDialog.value = true }
+function openAdvice(event: Event, code: string) { showAdvice(event as MouseEvent, code) }
 
 function hasActiveGrid(pos: any): boolean {
   return pos.grid_session_active === true || grid.isActiveForStock(pos.stock_code)
@@ -42,7 +43,7 @@ function hasActiveGrid(pos: any): boolean {
 
 const COLS = [
   { k: 'stock_code',   l: '代码',     s: true,  c: 'tabular-nums' },
-  { k: 'stock_name',   l: '名称',     s: false, c: 'text-slate-500 truncate max-w-[60px]' },
+  { k: 'stock_name',   l: '名称',     s: false, c: 'text-slate-500 max-w-[96px]' },
   { k: 'change_percentage', l: '涨跌幅', s: true, c: 'text-right tabular-nums' },
   { k: 'current_price',l: '现价',     s: true,  c: 'text-right tabular-nums' },
   { k: 'cost_price',   l: '成本',     s: true,  c: 'text-right tabular-nums text-slate-500' },
@@ -101,7 +102,17 @@ function shortName(pos: any): string {
               {{ pos.stock_code }}
             </button>
             <div class="mt-0.5 flex min-w-0 items-center gap-1.5">
-              <span class="min-w-0 truncate text-xs text-slate-500 cursor-help" @mouseenter="showAdvice($event, pos.stock_code)" @mouseleave="hideAdvice()">{{ shortName(pos) }}</span>
+              <span class="min-w-0 truncate text-xs text-slate-500 cursor-help" @mouseenter="openAdvice($event, pos.stock_code)" @mouseleave="hideAdvice()">{{ shortName(pos) }}</span>
+              <button
+                type="button"
+                class="inline-flex h-5 flex-shrink-0 items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 text-[10px] font-semibold leading-none text-amber-700 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                title="MACD 操作建议"
+                @mouseenter="openAdvice($event, pos.stock_code)"
+                @mouseleave="hideAdvice()"
+                @focus="openAdvice($event, pos.stock_code)"
+                @blur="hideAdvice()"
+                @click.stop="openAdvice($event, pos.stock_code)"
+              >建议</button>
               <span v-if="hasActiveGrid(pos)" class="badge-green !text-[9px] !px-1.5 !py-0">网格</span>
               <span v-if="pos.profit_triggered" class="badge-amber !text-[9px] !px-1.5 !py-0">止盈</span>
             </div>
@@ -182,11 +193,24 @@ function shortName(pos: any): string {
             <td v-for="col in COLS.slice(1)" :key="col.k"
               :class="['px-2 py-2 whitespace-nowrap', col.c, col.k === 'stock_name' ? 'cursor-help' : '',
                        (col.k === 'profit_ratio' || col.k === 'change_percentage') ? ((pos[col.k] ?? 0) > 0 ? 'text-red-600' : (pos[col.k] ?? 0) < 0 ? 'text-emerald-600' : 'text-slate-400') : '']"
-              @mouseenter="col.k === 'stock_name' && showAdvice($event, pos.stock_code)"
+              @mouseenter="col.k === 'stock_name' && openAdvice($event, pos.stock_code)"
               @mouseleave="col.k === 'stock_name' && hideAdvice()">
               <span v-if="col.k === 'profit_triggered'" class="inline-flex items-center justify-center">
                 <svg v-if="pos.profit_triggered" class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="已触发首次止盈"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
                 <span v-else class="text-slate-300" title="未触发">—</span>
+              </span>
+              <span v-else-if="col.k === 'stock_name'" class="inline-flex min-w-0 max-w-full items-center gap-1.5">
+                <span class="min-w-0 truncate">{{ cellValue(pos, col) }}</span>
+                <button
+                  type="button"
+                  class="inline-flex h-5 flex-shrink-0 items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 text-[10px] font-semibold leading-none text-amber-700 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                  title="MACD 操作建议"
+                  @mouseenter="openAdvice($event, pos.stock_code)"
+                  @mouseleave="hideAdvice()"
+                  @focus="openAdvice($event, pos.stock_code)"
+                  @blur="hideAdvice()"
+                  @click.stop="openAdvice($event, pos.stock_code)"
+                >建议</button>
               </span>
               <span v-else>{{ cellValue(pos, col) }}</span>
             </td>
