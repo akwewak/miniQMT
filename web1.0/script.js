@@ -3266,11 +3266,54 @@
 
     // ======================= 网格Tooltip功能 =======================
 
+    function placeGridTooltip(event, tooltip) {
+        const margin = 8;
+        const trigger = event.currentTarget || event.target;
+        const rect = trigger.getBoundingClientRect();
+
+        tooltip.style.visibility = 'hidden';
+        tooltip.style.display = 'block';
+        tooltip.style.left = '0px';
+        tooltip.style.top = '0px';
+        tooltip.classList.remove('above');
+
+        const tooltipRect = tooltip.getBoundingClientRect();
+        const tooltipWidth = Math.min(tooltipRect.width, window.innerWidth - margin * 2);
+        const tooltipHeight = Math.min(tooltipRect.height, window.innerHeight - margin * 2);
+
+        let left = rect.left;
+        if (left + tooltipWidth + margin > window.innerWidth) {
+            left = window.innerWidth - tooltipWidth - margin;
+        }
+        left = Math.max(margin, left);
+
+        let top = rect.bottom + margin;
+        let isAbove = false;
+        if (top + tooltipHeight + margin > window.innerHeight) {
+            top = rect.top - tooltipHeight - margin;
+            isAbove = true;
+        }
+        if (top < margin) {
+            top = Math.max(margin, Math.min(rect.bottom + margin, window.innerHeight - tooltipHeight - margin));
+            isAbove = false;
+        }
+
+        const triggerCenter = rect.left + rect.width / 2;
+        const arrowLeft = Math.max(14, Math.min(triggerCenter - left - 8, tooltipWidth - 22));
+
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
+        tooltip.style.setProperty('--tooltip-arrow-left', `${arrowLeft}px`);
+        tooltip.classList.toggle('above', isAbove);
+        tooltip.style.visibility = 'visible';
+    }
+
     // ============ 显示Tooltip ============
     async function showGridTooltip(event, stockCode) {
         const normalizedCode = normalizeStockCode(stockCode);
         if (!normalizedCode) return;
         const tooltip = document.getElementById('gridTooltip');
+        if (!tooltip) return;
 
         // 检查缓存
         const cached = tooltipDataCache[normalizedCode];
@@ -3302,19 +3345,7 @@
             }
         }
 
-        // 定位tooltip（空间不足时翻到上方）
-        const rect = event.target.getBoundingClientRect();
-        let left = rect.left;
-        let top = rect.bottom + 10;
-        const estH = 290;
-        if (rect.bottom + estH > window.innerHeight) {
-            top = rect.top - estH - 10;
-        }
-        top = Math.max(8, top);
-        left = Math.max(8, Math.min(left, window.innerWidth - 350));
-        tooltip.style.left = `${left}px`;
-        tooltip.style.top = `${top}px`;
-        tooltip.style.display = 'block';
+        placeGridTooltip(event, tooltip);
     }
 
     // ============ 更新Tooltip内容 ============
@@ -3434,6 +3465,39 @@
     let adviceCache = {};                    // {code: {data, timestamp}}
     const ADVICE_CACHE_TIME = 300000;        // 5分钟缓存
 
+    function placeAdviceTooltip(event, tooltip) {
+        const margin = 8;
+        const trigger = event.currentTarget || event.target;
+        const rect = trigger.getBoundingClientRect();
+
+        tooltip.style.visibility = 'hidden';
+        tooltip.style.display = 'block';
+        tooltip.style.left = '0px';
+        tooltip.style.top = '0px';
+
+        const tooltipRect = tooltip.getBoundingClientRect();
+        const tooltipWidth = Math.min(tooltipRect.width, window.innerWidth - margin * 2);
+        const tooltipHeight = Math.min(tooltipRect.height, window.innerHeight - margin * 2);
+
+        let left = rect.left;
+        if (left + tooltipWidth + margin > window.innerWidth) {
+            left = window.innerWidth - tooltipWidth - margin;
+        }
+        left = Math.max(margin, left);
+
+        let top = rect.bottom + margin;
+        if (top + tooltipHeight + margin > window.innerHeight) {
+            top = rect.top - tooltipHeight - margin;
+        }
+        if (top < margin) {
+            top = Math.max(margin, Math.min(rect.bottom + margin, window.innerHeight - tooltipHeight - margin));
+        }
+
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
+        tooltip.style.visibility = 'visible';
+    }
+
     async function showAdviceTooltip(event, code) {
         if (!code) return;
         const tooltip = document.getElementById('adviceTooltip');
@@ -3465,19 +3529,7 @@
             ${data.series && data.series.length ? `<div class="advice-chart">${renderMacdChartSVG(data.series)}</div>` : ''}
         `;
 
-        const rect = event.currentTarget.getBoundingClientRect();
-        let left = rect.left;
-        let top = rect.bottom + 8;
-        // 下方空间不够 → 翻到上方
-        const estH = 260;
-        if (rect.bottom + estH > window.innerHeight) {
-            top = rect.top - estH - 8;
-        }
-        top = Math.max(8, top);
-        left = Math.max(8, Math.min(left, window.innerWidth - 480));
-        tooltip.style.left = `${left}px`;
-        tooltip.style.top = `${top}px`;
-        tooltip.style.display = 'block';
+        placeAdviceTooltip(event, tooltip);
     }
 
     // 生成 MACD 迷你全景图 SVG(蜡烛+MA34+MACD+底仓/网格区间带)

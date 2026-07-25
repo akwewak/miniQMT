@@ -10,7 +10,11 @@ const chartSvg = computed(() =>
 
 <template>
   <Teleport to="body">
-    <div v-if="state.visible && state.data" class="advice-tooltip" :style="{ left: state.x + 'px', top: state.y + 'px' }">
+    <div
+      v-if="state.visible && state.data"
+      class="advice-tooltip"
+      :style="{ left: state.x + 'px', top: state.y + 'px', visibility: state.ready ? 'visible' : 'hidden' }"
+    >
       <div class="advice-header">
         <span class="advice-trend">{{ state.data.trend }}</span>
         <span class="advice-badge">操作建议</span>
@@ -28,6 +32,7 @@ const chartSvg = computed(() =>
 <style scoped>
 .advice-tooltip {
   position: fixed;
+  box-sizing: border-box;
   z-index: 9999;
   background: #fff;
   border: 2px solid #d97706;
@@ -37,7 +42,7 @@ const chartSvg = computed(() =>
   font-size: 13px;
   line-height: 1.6;
   min-width: 220px;
-  max-width: 480px;
+  max-width: min(480px, calc(100vw - 16px));
   pointer-events: none;
 }
 .advice-trend { font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #78350f; }

@@ -366,6 +366,7 @@
         .grid-tooltip {
           display: none;
           position: fixed;
+          box-sizing: border-box;
           background: white;
           border: 2px solid #667eea;
           border-radius: 8px;
@@ -373,7 +374,7 @@
           box-shadow: 0 4px 16px rgba(0,0,0,0.2);
           z-index: 9999;
           min-width: 280px;
-          max-width: 350px;
+          max-width: min(350px, calc(100vw - 16px));
           pointer-events: none;
           font-size: 13px;
         }
@@ -381,6 +382,7 @@
         .advice-tooltip {
           display: none;
           position: fixed;
+          box-sizing: border-box;
           background: white;
           border: 2px solid #d97706;
           border-radius: 8px;
@@ -388,7 +390,7 @@
           box-shadow: 0 4px 16px rgba(0,0,0,0.2);
           z-index: 9999;
           min-width: 220px;
-          max-width: 480px;
+          max-width: min(480px, calc(100vw - 16px));
           pointer-events: none;
           font-size: 13px;
           line-height: 1.6;
@@ -483,7 +485,7 @@
           content: "";
           position: absolute;
           top: -8px;
-          left: 20px;
+          left: var(--tooltip-arrow-left, 20px);
           border: 8px solid transparent;
           border-bottom-color: #667eea;
         }
@@ -492,9 +494,23 @@
           content: "";
           position: absolute;
           top: -6px;
-          left: 22px;
+          left: calc(var(--tooltip-arrow-left, 20px) + 2px);
           border: 6px solid transparent;
           border-bottom-color: white;
+        }
+
+        .grid-tooltip.above::before {
+          top: auto;
+          bottom: -8px;
+          border-bottom-color: transparent;
+          border-top-color: #667eea;
+        }
+
+        .grid-tooltip.above::after {
+          top: auto;
+          bottom: -6px;
+          border-bottom-color: transparent;
+          border-top-color: white;
         }
 
         .grid-detail-table th,
