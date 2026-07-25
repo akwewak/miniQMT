@@ -1056,7 +1056,13 @@
         // 构建对话框内容
         const content = `
             <p class="mb-2">请输入要买入的股票代码（一行一个）：</p>
-            <textarea id="customStockInput" class="w-full border rounded p-2 h-40"></textarea>
+            <textarea id="customStockInput" class="w-full border rounded p-2" style="height:110px"></textarea>
+            <div class="mt-2 flex gap-2">
+                <button type="button" onclick="previewStockNames()" class="px-3 py-1 text-xs bg-indigo-50 text-indigo-700 border border-indigo-200 rounded hover:bg-indigo-100">预览名称</button>
+            </div>
+            <div id="stockPreviewArea" class="mt-2 hidden">
+                <div id="stockPreviewList" class="border rounded bg-gray-50 p-2 max-h-40 overflow-y-auto text-sm space-y-1"></div>
+            </div>
         `;
         
         // 显示对话框
@@ -3634,6 +3640,45 @@
     window.hideGridTooltip = hideGridTooltip;
     window.showAdviceTooltip = showAdviceTooltip;
     window.hideAdviceTooltip = hideAdviceTooltip;
+    window.normalizeStockCode = normalizeStockCode;
+    window.previewStockNames = async function() {
+        const textarea = document.getElementById('customStockInput');
+        if (!textarea) return;
+        const codes = textarea.value.split('\n')
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
+        if (codes.length === 0) return;
+
+        // 从持仓数据构建名称映射
+        let nameMap = {};
+        try {
+            const resp = await fetch('/api/positions-all');
+            const data = await resp.json();
+            if (data && data.status === 'success' && Array.isArray(data.data)) {
+                data.data.forEach(p => {
+                    const c = window.normalizeStockCode(p.stock_code);
+                    if (c) nameMap[c] = p.stock_name || p.name || c;
+                });
+            }
+        } catch (e) {
+            console.warn('获取股票名称失败', e);
+        }
+
+        const area = document.getElementById('stockPreviewArea');
+        const list = document.getElementById('stockPreviewList');
+        if (!area || !list) return;
+        area.classList.remove('hidden');
+
+        list.innerHTML = codes.map(code => {
+            const c = window.normalizeStockCode(code);
+            const name = nameMap[c] || code;
+            const safeCode = c.replace(/'/g, "\\'");
+            return `<div class="flex items-center gap-2 px-2 py-1.5 bg-white rounded border text-sm">
+                <span class="text-gray-400 text-xs font-mono">${code}</span>
+                <span class="cursor-help font-medium text-blue-700" onmouseenter="showAdviceTooltip(event, '${safeCode}')" onmouseleave="hideAdviceTooltip()">${name}</span>
+            </div>`;
+        }).join('');
+    };
     window.showGridDetailDialog = showGridDetailDialog;
 });
 
