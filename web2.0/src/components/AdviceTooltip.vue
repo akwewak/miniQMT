@@ -27,7 +27,7 @@ const chartSvg = computed(() =>
 
 <style scoped>
 .advice-tooltip {
-  position: absolute;
+  position: fixed;
   z-index: 9999;
   background: #fff;
   border: 2px solid #d97706;

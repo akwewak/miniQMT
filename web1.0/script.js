@@ -3304,14 +3304,14 @@
 
         // 定位tooltip（空间不足时翻到上方）
         const rect = event.target.getBoundingClientRect();
-        let left = rect.left + window.scrollX;
-        let top = rect.bottom + window.scrollY + 10;
+        let left = rect.left;
+        let top = rect.bottom + 10;
         const estH = 290;
         if (rect.bottom + estH > window.innerHeight) {
-            top = rect.top + window.scrollY - estH - 10;
+            top = rect.top - estH - 10;
         }
         top = Math.max(8, top);
-        left = Math.max(8, Math.min(left, window.innerWidth + window.scrollX - 350));
+        left = Math.max(8, Math.min(left, window.innerWidth - 350));
         tooltip.style.left = `${left}px`;
         tooltip.style.top = `${top}px`;
         tooltip.style.display = 'block';
@@ -3466,15 +3466,15 @@
         `;
 
         const rect = event.currentTarget.getBoundingClientRect();
-        let left = rect.left + window.scrollX;
-        let top = rect.bottom + window.scrollY + 8;
+        let left = rect.left;
+        let top = rect.bottom + 8;
         // 下方空间不够 → 翻到上方
         const estH = 260;
         if (rect.bottom + estH > window.innerHeight) {
-            top = rect.top + window.scrollY - estH - 8;
+            top = rect.top - estH - 8;
         }
         top = Math.max(8, top);
-        left = Math.max(8, Math.min(left, window.innerWidth + window.scrollX - 480));
+        left = Math.max(8, Math.min(left, window.innerWidth - 480));
         tooltip.style.left = `${left}px`;
         tooltip.style.top = `${top}px`;
         tooltip.style.display = 'block';

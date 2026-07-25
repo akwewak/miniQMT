@@ -17,14 +17,14 @@ export function useAdviceTooltip() {
     if (!code) return
     const el = event.currentTarget as HTMLElement
     const rect = el.getBoundingClientRect()
-    let left = rect.left + window.scrollX
-    let top = rect.bottom + window.scrollY + 8
+    let left = rect.left
+    let top = rect.bottom + 8
     // 下方空间不够(迷你图约250px高) → 翻到上方
     const estH = 260
     if (rect.bottom + estH > window.innerHeight) {
-      top = rect.top + window.scrollY - estH - 8
+      top = rect.top - estH - 8
     }
-    state.x = Math.max(8, Math.min(left, window.innerWidth + window.scrollX - 480))
+    state.x = Math.max(8, Math.min(left, window.innerWidth - 480))
     state.y = Math.max(8, top)
 
     const now = Date.now()
