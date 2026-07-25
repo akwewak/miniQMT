@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [3.8.3] - 2026-07-25
+
+> 本版本新增 **MACD 操盘建议悬浮窗**：web1.0 / web2.0 悬停账号(深证成指)或持仓个股名称，弹出"底仓 / 网格"参考建议及迷你全景图。
+
+### Added
+- **MACD 操盘建议后端**：新增 `macd_advisor.py`(决策矩阵纯函数 `classify` + 逐日序列构建 `_build_series` + 5 分钟缓存)与只读端点 `GET /api/macd/advice`。决策方向看 DEA、0 轴位置看 DIF；复用 `data_manager.update_stock_data` / `indicator_calculator` / `get_indicators_history`。
+- **悬浮迷你全景图**：悬浮窗下半部渲染日 K 线 + MA8/MA34 均线 + MACD(DIF/DEA/柱/0轴) + 底部"底仓/网格"区间色带(左侧图例、段内简化文字)。web1.0 原生 SVG(`renderMacdChartSVG`)、web2.0 共享 TS 渲染器 `web2.0/src/utils/macdChart.ts`，两端输出逐字节一致。
+- 悬浮窗右上角新增"操作建议"胶囊标签(仿网格卡片风格)。
+
+### Tests
+- 新增 `test/test_macd_advisor.py`(25 用例，覆盖决策四象限、DIF 轴、序列构建、MA8/MA34)。
+- 使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test\run_integration_regression_tests.py --all-with-fast` 完整回归：31 组、1963 用例，1963 通过，0 失败，0 错误，成功率 100%。
+
 ## [3.8.2] - 2026-07-24
 
 ### Changed

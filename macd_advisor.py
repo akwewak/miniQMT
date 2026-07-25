@@ -1,11 +1,11 @@
 """MACD 操盘建议(悬浮窗)。
 
-依据日线 MACD 的 DEA 方向与 DEA 相对 0 轴位置，给出"底仓 / 网格"参考建议。
+依据日线 MACD 的 DEA 方向与 DIF 相对 0 轴位置，给出"底仓 / 网格"参考建议。
 纯只读展示，不触发任何交易动作。
 
-决策矩阵(以最新一根日线 DEA 为准)::
+决策矩阵(方向看 DEA，0轴位置看 DIF)::
 
-    DEA 方向   DEA 位置    趋势判定             底仓      网格
+    DEA 方向   DIF 位置    趋势判定             底仓      网格
     向上       0 轴以上    上升趋势(强)         重仓      启动
     向上       0 轴以下    上升趋势(弱/修复)    半仓以下  启动
     向下       0 轴以上    下降趋势(弱)/顶部反转 半仓以下  启动
@@ -36,6 +36,31 @@ def _is_index_code(code: str) -> bool:
     return c.startswith("399") or c in ("000001.SH", "999999.SH")
 
 
+# 决策矩阵四类别(与 _cat_index 返回下标一一对应)
+CATEGORIES = [
+    {"trend": "上升趋势(强)", "base_position": "重仓", "grid": "启动"},
+    {"trend": "上升趋势(弱/修复)", "base_position": "半仓以下", "grid": "启动"},
+    {"trend": "下降趋势(弱)/顶部反转", "base_position": "半仓以下", "grid": "启动"},
+    {"trend": "下降趋势(强)", "base_position": "清仓", "grid": "停用"},
+]
+
+
+def _cat_index(dea_prev, dea_last, dif_last):
+    """DEA 方向 × DIF 相对0轴 → 类别下标 0..3(纯逻辑)。"""
+    dea_up = dea_last >= dea_prev              # DEA 方向：向上
+    try:
+        dif_above_zero = dif_last is not None and float(dif_last) > 0   # DIF 位置：0 轴以上
+    except (TypeError, ValueError):
+        dif_above_zero = False
+    if dea_up and dif_above_zero:
+        return 0
+    if dea_up and not dif_above_zero:
+        return 1
+    if not dea_up and dif_above_zero:
+        return 2
+    return 3
+
+
 def classify(dea_prev, dea_last, dif_last):
     """依据 DEA 前后值与 DIF 给出建议(纯函数)。
 
@@ -55,17 +80,7 @@ def classify(dea_prev, dea_last, dif_last):
     except (TypeError, ValueError):
         return None
 
-    dea_up = dea_last >= dea_prev          # DEA 方向：向上
-    dea_above_zero = dea_last > 0          # DEA 位置：0 轴以上
-
-    if dea_up and dea_above_zero:
-        trend, base, grid = "上升趋势(强)", "重仓", "启动"
-    elif dea_up and not dea_above_zero:
-        trend, base, grid = "上升趋势(弱/修复)", "半仓以下", "启动"
-    elif not dea_up and dea_above_zero:
-        trend, base, grid = "下降趋势(弱)/顶部反转", "半仓以下", "启动"
-    else:
-        trend, base, grid = "下降趋势(强)", "清仓", "停用"
+    cat = CATEGORIES[_cat_index(dea_prev, dea_last, dif_last)]
 
     # 金叉/死叉补充说明(DIF 相对 DEA)
     cross = ""
@@ -75,7 +90,75 @@ def classify(dea_prev, dea_last, dif_last):
         except (TypeError, ValueError):
             cross = ""
 
-    return {"trend": trend, "base_position": base, "grid": grid, "cross": cross}
+    return {"trend": cat["trend"], "base_position": cat["base_position"], "grid": cat["grid"], "cross": cross}
+
+
+SERIES_BARS = 60  # 迷你全景图展示的日线根数
+MA34_PERIOD = 34  # K线叠加的慢均线周期
+MA8_PERIOD = 8    # K线叠加的快均线周期
+
+
+def _build_series(hist_df, ind_df):
+    """合并 OHLC 与 MACD，逐日打类别标签，返回最近 SERIES_BARS 根日线序列。
+
+    参数:
+        hist_df: get_history_data_from_db 结果(含 open/high/low/close)
+        ind_df:  get_indicators_history 结果(含 macd/macd_signal/macd_hist)，按日期升序
+    返回:
+        list[dict]: [{d,o,h,l,c,dif,dea,hist,ma8,ma34,cat}, ...]
+    """
+    if hist_df is None or getattr(hist_df, "empty", True):
+        return []
+    hist_df = hist_df.sort_values("date")
+    ohlc = {}
+    for _, r in hist_df.iterrows():
+        ohlc[str(r["date"])] = (r["open"], r["high"], r["low"], r["close"])
+
+    # MA8 / MA34 均线(基于完整历史收盘价滚动，覆盖可视窗口全部日期)
+    ma8_map, ma34_map = {}, {}
+    try:
+        closes = hist_df["close"].astype(float)
+        dates = hist_df["date"].astype(str)
+        ma8 = closes.rolling(MA8_PERIOD).mean()
+        ma34 = closes.rolling(MA34_PERIOD).mean()
+        for date, v8, v34 in zip(dates, ma8, ma34):
+            ma8_map[date] = None if v8 != v8 else round(float(v8), 3)     # v!=v 判 NaN
+            ma34_map[date] = None if v34 != v34 else round(float(v34), 3)
+    except Exception:
+        ma8_map, ma34_map = {}, {}
+
+    rows = []
+    prev_dea = None
+    for _, r in ind_df.iterrows():
+        dea = r.get("macd_signal")
+        dif = r.get("macd")
+        if dea is None:
+            continue
+        try:
+            dea = float(dea)
+        except (TypeError, ValueError):
+            continue
+        date = str(r["date"])
+        bar = ohlc.get(date)
+        if bar is None:
+            continue
+        cat = _cat_index(prev_dea if prev_dea is not None else dea, dea, dif)
+        prev_dea = dea
+        try:
+            o, h, l, c = (float(x) for x in bar)
+        except (TypeError, ValueError):
+            continue
+        rows.append({
+            "d": date,
+            "o": round(o, 3), "h": round(h, 3), "l": round(l, 3), "c": round(c, 3),
+            "dif": round(float(dif), 4) if dif is not None else None,
+            "dea": round(dea, 4),
+            "hist": round(float(r.get("macd_hist")), 4) if r.get("macd_hist") is not None else None,
+            "ma8": ma8_map.get(date),
+            "ma34": ma34_map.get(date),
+            "cat": cat,
+        })
+    return rows[-SERIES_BARS:]
 
 
 def _compute_advice(code: str) -> dict:
@@ -105,7 +188,7 @@ def _compute_advice(code: str) -> dict:
         logger.warning(f"[MACD建议] {code} 指标计算失败: {e}")
 
     # 3) 取最近的 DEA/DIF
-    ind_df = indicator_calculator.get_indicators_history(code, days=5)
+    ind_df = indicator_calculator.get_indicators_history(code, days=SERIES_BARS + 10)
     if ind_df is None or ind_df.empty or "macd_signal" not in ind_df.columns:
         return {"status": "error", "code": code, "message": "无指标数据"}
 
@@ -122,6 +205,10 @@ def _compute_advice(code: str) -> dict:
     if result is None:
         return {"status": "error", "code": code, "message": "指标数值无效"}
 
+    # 4) 构建迷你全景图序列(OHLC + MACD + 逐日类别)
+    hist_df = data_manager.get_history_data_from_db(code)
+    series = _build_series(hist_df, ind_df)
+
     updated = str(ind_df["date"].iloc[-1]) if "date" in ind_df.columns else ""
     return {
         "status": "success",
@@ -134,6 +221,7 @@ def _compute_advice(code: str) -> dict:
         "dea": round(float(dea_last), 4),
         "dea_prev": round(float(dea_prev), 4),
         "updated": updated,
+        "series": series,
     }
 
 
