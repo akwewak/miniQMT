@@ -6,6 +6,33 @@
 
 ## [Unreleased]
 
+## [3.8.4] - 2026-07-28
+
+> 本版本将**动态止盈止损开关下沉到个股层面**：全局开关之下新增每只股票的独立闸门，可在 web1.0 持仓列表用拨动开关随时暂停/恢复单只股票；同时优化 web1.0 持仓列表与下单日志的排版可读性。
+
+### Added
+- **个股级动态止盈止损开关**：`positions` 表新增 `stop_profit_enabled` 字段（默认 `1`=开启，向后兼容）。与全局 `ENABLE_DYNAMIC_STOP_PROFIT` / `ENABLE_AUTO_TRADING` 为 **AND** 关系——全局关则全关，全局开时可单独暂停某只股票；被关闭的个股跳过信号检测并清理其残留动态信号，不影响网格信号与其他股票。
+- **写入入口** `PositionManager.set_stop_profit_enabled()`：仿 `GridTradingManager.set_session_enabled` 的开关范式，只更新单列 + `_increment_data_version()`，不触碰 `update_position` 核心路径。
+- **新增端点** `POST /api/holdings/stop_profit`（参数 `stock_code`、`enabled`，需 Token）。
+- **web1.0 持仓列表末列「自动止盈」拨动开关**：纯 CSS iOS 风格滑动开关（不引入任何库），切换即持久化，失败自动回滚并提示。
+- **网关模式同步支持**：`xtquant_manager/stop_profit.py` 每轮检测前读取账号 `data_<账号>/trading.db` 的开关表并跳过被关闭的个股；库/列/行缺失一律按"开启"处理，保证向后兼容。
+
+### Changed
+- **web1.0 持仓列表**：首列表头由全选 checkbox 改为「网格」文本并居中（随之移除已失效的全选逻辑）；表头文字精简为涨幅/成本/盈亏/可用/浮盈/冲高/止损/建仓/基准/自动止盈并统一居中。
+- **web1.0 下单日志**：移除恒空的 `log-col-side` 列；B/S 改为买红卖绿加粗（原先挂 `strategyClass`，网格/外部策略返回空串导致方向不着色）；列宽收紧、金额列弹性右对齐并补齐表头时间列占位，表头与记录严格对齐。
+- **web1.0 布局比例**：持仓列表与下单日志由 2:1 调整为 3:1，持仓列表获得更多宽度。
+- **消息提示改为 fixed 浮层**：`#messageArea` 脱离文档流，消息出现/消失不再挤压页面造成布局抖动（原先插入 DOM 会把下方内容整体推下再弹回）。
+
+### Tests
+- 新增 16 个用例：门控 7（个股开关关闭不入队/重开恢复/清理残留/不误删网格信号/默认开启/持久化+版本自增/不存在持仓）、Web API 4、网关 5。
+- 使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test/run_integration_regression_tests.py --all-with-fast` 完整回归：31 组、108 模块、2004 用例，2004 通过，0 失败，0 错误，成功率 100%，耗时 672.75 秒。
+
+### Docs
+- 更新 `CLAUDE.md`（门控规则、持久化字段表、API 列表）。
+- 更新止盈止损文档：门控表新增个股开关行，新增「个股级开关」小节（AND 语义、Web 操作、网关行为），字段表补充 `stop_profit_enabled` 及旧库自动迁移说明。
+- 更新 Web 前端文档：控制条对照表新增「自动止盈」，新增「持仓列表（web1.0）」小节说明首列网格入口、末列开关与紧凑表头释义。
+- 更新 Web API 文档：交易操作表新增 `POST /api/holdings/stop_profit`。
+
 ## [3.8.3] - 2026-07-25
 
 > 本版本新增 **MACD 操盘建议悬浮窗**：web1.0 / web2.0 悬停账号(深证成指)或持仓个股名称，弹出"底仓 / 网格"参考建议及迷你全景图。
