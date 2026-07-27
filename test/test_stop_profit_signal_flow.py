@@ -777,6 +777,84 @@ class TestDynamicSignalGating(TestBase):
                       "网格信号不应被动态止盈门控清理")
         self.assertEqual(self.pm.latest_signals[stock_code]['type'], 'grid_buy')
 
+    # ---- 个股级「动态止盈止损」开关 ----
+
+    def test_per_stock_disabled_does_not_enqueue(self):
+        """全局开关都开，但个股 stop_profit_enabled=False：不入队。"""
+        stock_code, current_price = self._insert_take_profit_full_position()
+        config.ENABLE_DYNAMIC_STOP_PROFIT = True
+        config.ENABLE_AUTO_TRADING = True
+        self.assertTrue(self.pm.set_stop_profit_enabled(stock_code, False)['success'])
+
+        result = self.pm._detect_and_enqueue_dynamic_signal(stock_code, current_price)
+
+        self.assertIsNone(result, "个股开关关闭时不应入队动态信号")
+        self.assertNotIn(stock_code, self.pm.latest_signals)
+
+    def test_per_stock_enabled_still_enqueues(self):
+        """个股开关重新打开：恢复检测与入队（回归）。"""
+        stock_code, current_price = self._insert_take_profit_full_position()
+        config.ENABLE_DYNAMIC_STOP_PROFIT = True
+        config.ENABLE_AUTO_TRADING = True
+        self.pm.set_stop_profit_enabled(stock_code, False)
+        self.pm.set_stop_profit_enabled(stock_code, True)
+
+        result = self.pm._detect_and_enqueue_dynamic_signal(stock_code, current_price)
+
+        self.assertEqual(result, "take_profit_full")
+        self.assertIn(stock_code, self.pm.latest_signals)
+
+    def test_per_stock_disable_clears_stale_signal(self):
+        """先入队再关闭个股开关：残留动态信号被清理。"""
+        stock_code, current_price = self._insert_take_profit_full_position()
+        config.ENABLE_DYNAMIC_STOP_PROFIT = True
+        config.ENABLE_AUTO_TRADING = True
+        self.pm._detect_and_enqueue_dynamic_signal(stock_code, current_price)
+        self.assertIn(stock_code, self.pm.latest_signals)
+
+        self.pm.set_stop_profit_enabled(stock_code, False)
+        result = self.pm._detect_and_enqueue_dynamic_signal(stock_code, current_price)
+
+        self.assertIsNone(result)
+        self.assertNotIn(stock_code, self.pm.latest_signals)
+
+    def test_per_stock_disable_preserves_grid_signal(self):
+        """个股开关关闭清理动态信号时，不应误删网格信号。"""
+        stock_code, current_price = self._insert_take_profit_full_position()
+        config.ENABLE_DYNAMIC_STOP_PROFIT = True
+        config.ENABLE_AUTO_TRADING = True
+        self.pm.set_stop_profit_enabled(stock_code, False)
+        with self.pm.signal_lock:
+            self.pm.latest_signals[stock_code] = {
+                'type': 'grid_buy', 'info': {}, 'timestamp': datetime.now()
+            }
+
+        self.pm._detect_and_enqueue_dynamic_signal(stock_code, current_price)
+
+        self.assertIn(stock_code, self.pm.latest_signals)
+        self.assertEqual(self.pm.latest_signals[stock_code]['type'], 'grid_buy')
+
+    def test_is_stop_profit_enabled_defaults_true(self):
+        """缺行（无持仓）默认视为开启，向后兼容。"""
+        self.assertTrue(self.pm._is_stop_profit_enabled("999999.SZ"))
+
+    def test_set_stop_profit_enabled_persists_and_bumps_version(self):
+        """set_stop_profit_enabled 写内存库并自增数据版本。"""
+        stock_code, _ = self._insert_take_profit_full_position()
+        v0 = self.pm.data_version
+
+        self.assertTrue(self.pm.set_stop_profit_enabled(stock_code, False)['success'])
+        self.assertFalse(self.pm._is_stop_profit_enabled(stock_code))
+        self.assertGreater(self.pm.data_version, v0)
+
+        self.assertTrue(self.pm.set_stop_profit_enabled(stock_code, True)['success'])
+        self.assertTrue(self.pm._is_stop_profit_enabled(stock_code))
+
+    def test_set_stop_profit_enabled_missing_position(self):
+        """对不存在的持仓设置开关返回失败。"""
+        result = self.pm.set_stop_profit_enabled("999999.SZ", False)
+        self.assertFalse(result['success'])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

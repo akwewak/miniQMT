@@ -200,10 +200,45 @@ class StopProfitMonitor:
         if not positions:
             return
 
-        for pos in positions:
-            self._check_position(acc_id, account, pos, cfg)
+        # 个股「动态止盈止损」开关：一次性读取该账号 SQLite，避免每股查库
+        sp_flags = self._load_stop_profit_flags(acc_id)
 
-    def _check_position(self, acc_id: str, account, pos: dict, cfg: StopProfitConfig) -> None:
+        for pos in positions:
+            self._check_position(acc_id, account, pos, cfg, sp_flags)
+
+    def _load_stop_profit_flags(self, acc_id: str) -> Dict[str, bool]:
+        """读取账号 data_<aid>/trading.db positions 表的 stop_profit_enabled。
+
+        返回 {裸股票代码: bool}。库不存在 / 旧库无该列 / 读取异常一律返回 {}，
+        由调用方 .get(code, True) 兜底为「开启」，保证网关行为向后兼容。
+        """
+        import sqlite3
+        import os as _os
+        db_path = _os.path.join(_os.path.dirname(__file__), "..", f"data_{acc_id}", "trading.db")
+        db_path = _os.path.normpath(db_path)
+        if not _os.path.exists(db_path):
+            return {}
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT stock_code, stop_profit_enabled FROM positions"
+            ).fetchall()
+            conn.close()
+            flags: Dict[str, bool] = {}
+            for r in rows:
+                code = str(r["stock_code"] or "").split(".")[0]
+                if not code:
+                    continue
+                val = r["stop_profit_enabled"]
+                flags[code] = True if val is None else bool(val)
+            return flags
+        except Exception:
+            # 旧库缺 stop_profit_enabled 列会命中 "no such column" → 全部按开启处理
+            return {}
+
+    def _check_position(self, acc_id: str, account, pos: dict, cfg: StopProfitConfig,
+                        sp_flags: Optional[Dict[str, bool]] = None) -> None:
         stock_code = pos.get("证券代码", "")
         volume = int(pos.get("股票余额", 0) or 0)
         available = int(pos.get("可用余额", 0) or 0)
@@ -211,6 +246,10 @@ class StopProfitMonitor:
         current_price = float(pos.get("市价", 0) or 0)
 
         if not stock_code or volume <= 0 or cost_price <= 0:
+            return
+
+        # 个股级开关：该股被关闭则跳过（缺库/缺列/缺行默认开启）
+        if sp_flags and sp_flags.get(str(stock_code).split(".")[0], True) is False:
             return
 
         # ——— 获取或创建持仓状态 ———

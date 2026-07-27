@@ -472,7 +472,8 @@ class PositionManager:
                 highest_price REAL,
                 stop_loss_price REAL,
                 profit_breakout_triggered BOOLEAN DEFAULT FALSE,
-                breakout_highest_price REAL
+                breakout_highest_price REAL,
+                stop_profit_enabled INTEGER DEFAULT 1
             )
             ''')
             self.memory_conn.commit()
@@ -1242,6 +1243,7 @@ class PositionManager:
                 'open_date': 'open_date',
                 'profit_breakout_triggered': 'profit_breakout_triggered',
                 'breakout_highest_price': 'breakout_highest_price',
+                'stop_profit_enabled': 'stop_profit_enabled',
                 'last_update': 'last_update'
             }
             
@@ -1285,6 +1287,7 @@ class PositionManager:
                 'profit_triggered': False,
                 'profit_breakout_triggered': False,
                 'breakout_highest_price': 0.0,
+                'stop_profit_enabled': True,
                 'open_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
@@ -1316,7 +1319,7 @@ class PositionManager:
                         position_dict[field] = 0
             
             # 布尔字段
-            boolean_fields = ['profit_triggered', 'profit_breakout_triggered']
+            boolean_fields = ['profit_triggered', 'profit_breakout_triggered', 'stop_profit_enabled']
             for field in boolean_fields:
                 if field in position_dict:
                     if isinstance(position_dict[field], str):
@@ -3839,6 +3842,68 @@ class PositionManager:
                 logger.warning(f"清除 {count} 个待处理信号{f'（原因: {reason}）' if reason else ''}: {list(self.latest_signals.keys())}")
                 self.latest_signals.clear()
 
+    def set_stop_profit_enabled(self, stock_code, enabled):
+        """设置个股「动态止盈止损」开关（内存库 + SQLite 双写）。
+
+        对齐 GridTradingManager.set_session_enabled 的开关操作范式：只更新单列，
+        不触碰 update_position 核心路径。写入后自增数据版本触发前端刷新。
+
+        返回 {'success': bool, 'error': str}。
+        """
+        if not stock_code:
+            return {'success': False, 'error': '股票代码不能为空'}
+        flag = 1 if enabled else 0
+        try:
+            # 内存库
+            with self.memory_conn_lock:
+                cursor = self.memory_conn.cursor()
+                cursor.execute(
+                    "UPDATE positions SET stop_profit_enabled=? WHERE stock_code=?",
+                    (flag, stock_code))
+                updated = cursor.rowcount
+                self.memory_conn.commit()
+            if updated == 0:
+                return {'success': False, 'error': f'未找到{stock_code}的持仓'}
+
+            # SQLite 持久化
+            try:
+                with self.sync_lock:
+                    db_cursor = self.conn.cursor()
+                    db_cursor.execute(
+                        "UPDATE positions SET stop_profit_enabled=? WHERE stock_code=?",
+                        (flag, stock_code))
+                    self.conn.commit()
+            except Exception as e:
+                logger.error(f"{stock_code} stop_profit_enabled 持久化到 SQLite 失败: {e}")
+
+            self._increment_data_version()
+            logger.info(f"{stock_code} 动态止盈止损开关已{'开启' if enabled else '关闭'}")
+            return {'success': True, 'error': None}
+        except Exception as e:
+            logger.error(f"设置 {stock_code} stop_profit_enabled 失败: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def _is_stop_profit_enabled(self, stock_code):
+        """读取个股「动态止盈止损」开关（轻量单列查询）。
+
+        缺列/缺行/异常一律返回 True（向后兼容：全局开关开启时默认每只股票都参与止盈止损）。
+        供 _detect_and_enqueue_dynamic_signal 每 3 秒 × 每股调用，故只查单列，不走
+        get_all_positions_with_all_fields 重路径。
+        """
+        try:
+            with self.memory_conn_lock:
+                cursor = self.memory_conn.cursor()
+                cursor.execute(
+                    "SELECT stop_profit_enabled FROM positions WHERE stock_code=?",
+                    (stock_code,))
+                row = cursor.fetchone()
+            if row is None or row[0] is None:
+                return True
+            return bool(row[0])
+        except Exception as e:
+            logger.debug(f"{stock_code} 读取 stop_profit_enabled 失败，默认视为开启: {e}")
+            return True
+
     def _detect_and_enqueue_dynamic_signal(self, stock_code, current_price):
         """检测动态止盈止损信号并写入 latest_signals（含开关门控）。
 
@@ -3853,6 +3918,15 @@ class PositionManager:
         返回入队的 signal_type（未入队时返回 None），便于单元测试断言。
         """
         if config.ENABLE_DYNAMIC_STOP_PROFIT and config.ENABLE_AUTO_TRADING:
+            # 个股级开关：全局开启时仍允许对单只股票单独暂停动态止盈止损。
+            # 关闭的个股走下方清理分支，避免残留信号被策略线程反复读取。
+            if not self._is_stop_profit_enabled(stock_code):
+                with self.signal_lock:
+                    stale = self.latest_signals.get(stock_code)
+                    if stale and not str(stale.get('type', '')).startswith('grid_'):
+                        self.latest_signals.pop(stock_code, None)
+                return None
+
             if self._has_tracked_pending_order(stock_code):
                 with self.signal_lock:
                     self.latest_signals.pop(stock_code, None)

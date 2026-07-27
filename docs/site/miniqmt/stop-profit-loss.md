@@ -63,13 +63,28 @@ miniQMT 采用**动态止盈止损**策略，包含两个阶段：
 | 开关 | 作用 |
 |------|------|
 | `ENABLE_AUTO_OPERATION` | 全局自动操作总开关，关闭时所有自动策略不产生新交易动作 |
-| `ENABLE_DYNAMIC_STOP_PROFIT` | 动态止盈止损**检测**开关 |
-| `ENABLE_AUTO_TRADING` | 动态止盈止损**执行**开关 |
+| `ENABLE_DYNAMIC_STOP_PROFIT` | 动态止盈止损**检测**开关（全局） |
+| `ENABLE_AUTO_TRADING` | 动态止盈止损**执行**开关（全局） |
+| `positions.stop_profit_enabled` | **个股级**动态止盈止损开关（默认开启） |
 
-持仓监控线程仅在 **`ENABLE_DYNAMIC_STOP_PROFIT` 且 `ENABLE_AUTO_TRADING` 同时开启**时，才检测动态止盈止损信号并写入 `latest_signals` 队列（`_detect_and_enqueue_dynamic_signal`）。
+持仓监控线程仅在 **`ENABLE_DYNAMIC_STOP_PROFIT` 且 `ENABLE_AUTO_TRADING` 同时开启**，**且该股 `stop_profit_enabled` 为真**时，才检测动态止盈止损信号并写入 `latest_signals` 队列（`_detect_and_enqueue_dynamic_signal`）。
 
 !!! warning "为何检测也要门控"
     若仅按总开关检测、按执行开关执行，则当"允许自动止盈"(`ENABLE_AUTO_TRADING`)关闭而持仓持续满足止盈条件时，会形成"监控检测 → 策略因自动交易关闭而清除 → 监控再检测"的每 3 秒死循环，日志刷屏（曾出现单账户 `take_profit_full` 一天刷屏近 2 万行）。因此关闭执行开关时直接跳过检测，并清理残留动态信号（保留 `grid_` 网格信号）。网格交易走独立分支（`ENABLE_GRID_TRADING`），不受此门控影响。
+
+### 个股级开关
+
+全局开关是总闸，个股开关是其下的细粒度闸门，二者是 **AND** 关系：
+
+- 全局关 → 全部股票都不检测
+- 全局开 + 个股关 → **仅该股**跳过检测，并清理其残留动态信号（不影响网格信号，也不影响其他股票）
+- 新增列默认值为 `1`（开启），旧持仓行为完全不变
+
+**Web 端操作**：web1.0「当前持仓列表」末列「自动止盈」提供拨动开关，可随时暂停/恢复单只股票的动态止盈止损。开关状态持久化到 SQLite，重启后自动恢复。
+
+对应接口：`POST /api/holdings/stop_profit`（参数 `stock_code`、`enabled`）。
+
+**网关模式**：`xtquant_manager` 的独立止盈监控（`stop_profit.py`）同样遵守该开关——每轮检测前从账号 `data_<账号>/trading.db` 读取一次开关表，被关闭的股票直接跳过。读取失败或旧库缺列时一律按"开启"处理，保证向后兼容。
 
 ---
 
@@ -99,8 +114,12 @@ miniQMT 采用**动态止盈止损**策略，包含两个阶段：
 | `highest_price` | float | 持仓期间最高价 |
 | `stop_loss_price` | float | 止损价格 |
 | `open_date` | str | 开仓日期 |
+| `stop_profit_enabled` | int | 个股级动态止盈止损开关（1=开启，默认值；0=暂停） |
 
 这些字段保存在 SQLite `positions` 表中，系统重启后自动恢复。
+
+!!! note "旧库自动迁移"
+    `stop_profit_enabled` 由 `data_manager._migrate_legacy_schema()` 幂等补齐（`PRAGMA table_info` + `ALTER TABLE ... DEFAULT 1`），已有持仓行自动填充为 `1`，无需手工处理数据库。
 
 ---
 

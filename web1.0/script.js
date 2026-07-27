@@ -181,7 +181,6 @@
         buyQuantity: document.getElementById('buyQuantity'),
         // 持仓表格
         holdingsTableBody: document.getElementById('holdingsTableBody'),
-        selectAllHoldings: document.getElementById('selectAllHoldings'),
         holdingsLoading: document.getElementById('holdingsLoading'),
         holdingsError: document.getElementById('holdingsError'),
         // 订单日志
@@ -605,9 +604,6 @@
                 }
             }, duration);
         }
-        
-        // 消息滚动到可见
-        messageDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
     // 显示刷新状态 - 添加节流
@@ -1134,7 +1130,7 @@
     // 判断持仓数据是否需要更新
     function shouldUpdateRow(oldData, newData) {
         // 检查关键字段是否有变化
-        const keysToCheck = ['current_price', 'market_value', 'profit_ratio', 'available', 'volume', 'change_percentage'];
+        const keysToCheck = ['current_price', 'market_value', 'profit_ratio', 'available', 'volume', 'change_percentage', 'stop_profit_enabled'];
         return keysToCheck.some(key => {
             // 对于数值，考虑舍入误差
             if (typeof oldData[key] === 'number' && typeof newData[key] === 'number') {
@@ -1194,6 +1190,15 @@
         cells[13].textContent = (stock.open_date || '').split(' ')[0];
         cells[14].textContent = parseFloat(stock.base_cost_price || stock.cost_price || 0).toFixed(2);
 
+        // 更新动态止盈止损开关（仅同步 checked，保留 createStockRow 绑定的 change 监听）
+        const spInput = cells[15] && cells[15].querySelector('.stop-profit-toggle');
+        if (spInput) {
+            const spEnabled = isStopProfitEnabled(stock);
+            if (spInput.checked !== spEnabled) {
+                spInput.checked = spEnabled;
+            }
+        }
+
         // 高亮闪烁更新的单元格
         cells[4].classList.add('highlight-update');
         setTimeout(() => {
@@ -1221,7 +1226,7 @@
         // 后续的状态更新仍由 updateAllGridTradingStatus 独立管理
         // 构建行内容
         row.innerHTML = `
-            <td class="border p-2">
+            <td class="border p-2 text-center">
                 <input type="checkbox" class="holding-checkbox"
                        data-id="${stock.id || normalizedCode}"
                        data-stock-code="${normalizedCode}"
@@ -1243,6 +1248,12 @@
             <td class="border p-2">${parseFloat(stock.stop_loss_price || 0).toFixed(2)}</td>
             <td class="border p-2 whitespace-nowrap">${(stock.open_date || '').split(' ')[0]}</td>
             <td class="border p-2">${parseFloat(stock.base_cost_price || stock.cost_price || 0).toFixed(2)}</td>
+            <td class="border p-2 text-center">
+                <label class="sp-switch" title="动态止盈止损">
+                    <input type="checkbox" class="stop-profit-toggle" ${isStopProfitEnabled(stock) ? 'checked' : ''}>
+                    <span class="sp-slider"></span>
+                </label>
+            </td>
         `;
 
         // ⭐ checkbox状态由 updateAllGridTradingStatus 独立管理
@@ -1258,6 +1269,24 @@
                 checkbox.checked = hasActiveGrid;
 
                 await showGridConfigDialog(normalizedCode);
+            });
+        }
+
+        // 个股「动态止盈止损」拨动开关：change 时调用后端，失败回滚
+        const spToggle = row.querySelector('.stop-profit-toggle');
+        if (spToggle) {
+            spToggle.addEventListener('change', async () => {
+                const desired = spToggle.checked;
+                spToggle.disabled = true;
+                try {
+                    await setStopProfitEnabled(normalizedCode, desired);
+                    showMessage(`${normalizedCode} 动态止盈止损已${desired ? '开启' : '关闭'}`, 'success');
+                } catch (e) {
+                    spToggle.checked = !desired; // 回滚
+                    showMessage(e.message || '设置动态止盈止损失败', 'error');
+                } finally {
+                    spToggle.disabled = false;
+                }
             });
         }
 
@@ -1282,7 +1311,7 @@
         elements.holdingsError.classList.add('hidden');
 
         if (!Array.isArray(holdings) || holdings.length === 0) {
-            elements.holdingsTableBody.innerHTML = '<tr data-empty-row="true"><td colspan="15" class="text-center p-4 text-gray-500">无持仓数据</td></tr>';
+            elements.holdingsTableBody.innerHTML = '<tr data-empty-row="true"><td colspan="16" class="text-center p-4 text-gray-500">无持仓数据</td></tr>';
             return;
         }
 
@@ -1403,10 +1432,6 @@
                     // 如果有active session，对话框会显示当前配置和"停止"按钮
                     // 如果没有active session，对话框会显示默认配置和"启动"按钮
                     await showGridConfigDialog(stockCode);
-
-                    // 检查是否所有复选框都被选中（用于全选框状态）
-                    const allChecked = Array.from(checkboxes).every(cb => cb.checked);
-                    elements.selectAllHoldings.checked = allChecked;
                 });
                 checkbox.dataset.hasClickListener = 'true';
             }
@@ -1475,12 +1500,12 @@
         // 总行宽 100%, 小数宽 11px, 简写标记 width/number 设 0 即去掉列
         parts.push(
           `<div class="log-head">` +
-            `<span class="log-col-side"></span>` +
             `<span class="log-col-name">股票</span>` +
             `<span class="log-col-dir"></span>` +
             `<span class="log-col-money">金额</span>` +
             `<span class="log-col-price">价×量</span>` +
             `<span class="log-col-tag">策略</span>` +
+            `<span class="log-col-time"></span>` +
           `</div>`
         );
 
@@ -1499,6 +1524,7 @@
             const isBuy = entry.trade_type === 'BUY';
             const isSell = entry.trade_type === 'SELL';
             const sideText = isBuy ? 'B' : (isSell ? 'S' : escapeLogHtml(entry.trade_type || '?'));
+            const sideClass = isBuy ? 'log-side-buy' : (isSell ? 'log-side-sell' : '');
 
             const price = entry.price != null ? Number(entry.price).toFixed(2) : '--';
             const volume = entry.volume != null ? Number(entry.volume).toLocaleString('zh-CN') : '--';
@@ -1521,9 +1547,8 @@
             // 单行紧凑：B/S | 平安银行 | ¥31,500 | 10.50×3000 | 网格 | HH:MM
             parts.push(
                    `<div class="log-row ${strategyClass}" title="${sideTitle} ${name} ${code}  ¥${amountText}  ${price}×${volume}  ${strategyLabel}">` +
-                    `<span class="log-col-side"></span>` +
                    `<span class="log-col-name cursor-help" onmouseenter="showAdviceTooltip(event, '${code}')" onmouseleave="hideAdviceTooltip()">${name}</span>` +
-                    `<span class="log-col-dir ${strategyClass}">${sideText}</span>` +
+                    `<span class="log-col-dir ${sideClass}">${sideText}</span>` +
                     `<span class="log-col-money ${strategyClass}">${amountText}</span>` +
                     `<span class="log-col-price">${price}×${volume}</span>` +
                     `<span class="log-col-tag ${strategyClass}">${escapeLogHtml(strategyLabel)}</span>` +
@@ -2243,12 +2268,7 @@
     elements.initHoldingsBtn.addEventListener('click', handleInitHoldings);
     elements.executeBuyBtn.addEventListener('click', handleExecuteBuy);
 
-    // 持仓表格"全选"复选框监听器
-    elements.selectAllHoldings.addEventListener('change', (event) => {
-        const isChecked = event.target.checked;
-        const checkboxes = elements.holdingsTableBody.querySelectorAll('.holding-checkbox');
-        checkboxes.forEach(cb => cb.checked = isChecked);
-    });
+    // 持仓表格首列表头为"网格"文本（全选功能已移除）
 
     // API Token localStorage 持久化
     const _savedToken = localStorage.getItem('qmt_api_token');
@@ -2364,6 +2384,29 @@
         const result = await response.json();
         if (!response.ok || !result.success) {
             throw new Error(result.error || '更新网格自动开关失败');
+        }
+        return result;
+    }
+
+    // 解析个股「动态止盈止损」开关状态：后端返回 0/1（或缺失），缺失视为开启（向后兼容）
+    function isStopProfitEnabled(stock) {
+        const v = stock ? stock.stop_profit_enabled : undefined;
+        if (v === undefined || v === null) return true;
+        return !(v === 0 || v === false || v === '0' || v === 'false');
+    }
+
+    async function setStopProfitEnabled(stockCode, enabled) {
+        const response = await fetch(`${API_BASE_URL}/api/holdings/stop_profit`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(elements.apiToken?.value.trim() ? { 'X-API-Token': elements.apiToken.value.trim() } : {})
+            },
+            body: JSON.stringify({ stock_code: stockCode, enabled })
+        });
+        const result = await response.json();
+        if (!response.ok || result.status !== 'success') {
+            throw new Error(result.message || '更新动态止盈止损开关失败');
         }
         return result;
     }

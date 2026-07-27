@@ -17,6 +17,7 @@ import sys
 import os
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -357,6 +358,57 @@ class TestManualSell(unittest.TestCase):
         acc._connected = False
         order_id = self.mon.manual_sell("disc_acc", "000001.SZ", 500, 10.0)
         self.assertEqual(order_id, -1)
+
+
+class TestPerStockGate(unittest.TestCase):
+    """个股级「动态止盈止损」开关（sp_flags）在 _check_position 的门控。
+
+    网关从账号 SQLite 读取 stock_code -> stop_profit_enabled，关闭的股票应跳过 emit；
+    缺行/空 map/None 一律按开启处理（向后兼容）。
+    """
+
+    def setUp(self):
+        XtQuantManager.reset_instance()
+        self.mgr = XtQuantManager.get_instance()
+        self.cfg = StopProfitConfig(enabled=True, stop_loss_ratio=-0.075)
+        self.mon = StopProfitMonitor(self.mgr, self.cfg)
+        self.acc_id = "55009640"
+        self.stock = "000001.SZ"
+        self.acc, _ = _make_mock_account(self.mgr, self.acc_id, [
+            {"code": self.stock, "volume": 1000, "cost_price": 10.0, "current_price": 9.0}
+        ])
+        # cost=10, current=9 → -10% < -7.5% 触发止损，正常会 emit
+        self.pos = {"证券代码": self.stock, "股票余额": 1000, "可用余额": 1000,
+                    "成本价": 10.0, "市价": 9.0}
+
+    def tearDown(self):
+        XtQuantManager.reset_instance()
+
+    def test_disabled_stock_skips_emit(self):
+        with patch.object(self.mon, "_emit_signal") as spy:
+            self.mon._check_position(self.acc_id, self.acc, self.pos, self.cfg,
+                                     sp_flags={"000001": False})
+            spy.assert_not_called()
+
+    def test_enabled_stock_emits(self):
+        with patch.object(self.mon, "_emit_signal") as spy:
+            self.mon._check_position(self.acc_id, self.acc, self.pos, self.cfg,
+                                     sp_flags={"000001": True})
+            spy.assert_called()
+
+    def test_missing_flag_defaults_enabled(self):
+        with patch.object(self.mon, "_emit_signal") as spy:
+            self.mon._check_position(self.acc_id, self.acc, self.pos, self.cfg, sp_flags={})
+            spy.assert_called()
+
+    def test_none_flags_defaults_enabled(self):
+        with patch.object(self.mon, "_emit_signal") as spy:
+            self.mon._check_position(self.acc_id, self.acc, self.pos, self.cfg, sp_flags=None)
+            spy.assert_called()
+
+    def test_load_flags_missing_db_returns_empty(self):
+        """账号 DB 不存在时返回空 map（不抛异常）。"""
+        self.assertEqual(self.mon._load_stop_profit_flags("no_such_account_id"), {})
 
 
 if __name__ == "__main__":

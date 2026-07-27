@@ -653,7 +653,8 @@ class DataManager:
             highest_price REAL,
             stop_loss_price REAL,
             profit_breakout_triggered BOOLEAN DEFAULT FALSE,
-            breakout_highest_price REAL
+            breakout_highest_price REAL,
+            stop_profit_enabled INTEGER DEFAULT 1
         )
         ''')
 
@@ -725,6 +726,7 @@ class DataManager:
             migrations = [
                 ('profit_breakout_triggered', 'BOOLEAN DEFAULT FALSE'),
                 ('breakout_highest_price',    'REAL'),
+                ('stop_profit_enabled',       'INTEGER DEFAULT 1'),
             ]
             for col, typedef in migrations:
                 if col not in existing_cols:

@@ -1538,6 +1538,38 @@ def update_holding_params():
             'message': f"更新持仓参数失败: {str(e)}"
         }), 500
 
+@app.route('/api/holdings/stop_profit', methods=['POST'])
+@require_token
+def set_holding_stop_profit():
+    """设置个股「动态止盈止损」开关"""
+    try:
+        position_manager = get_position_manager_instance()
+
+        data = request.json or {}
+        stock_code = data.get('stock_code')
+        enabled = data.get('enabled')
+
+        if not stock_code:
+            return jsonify({'status': 'error', 'message': '股票代码不能为空'}), 400
+        if enabled is None:
+            return jsonify({'status': 'error', 'message': 'enabled 参数不能为空'}), 400
+
+        result = position_manager.set_stop_profit_enabled(stock_code, bool(enabled))
+        if not result.get('success'):
+            return jsonify({'status': 'error', 'message': result.get('error') or '设置失败'}), 400
+
+        return jsonify({
+            'status': 'success',
+            'message': f"{stock_code}动态止盈止损已{'开启' if enabled else '关闭'}",
+            'enabled': bool(enabled)
+        })
+    except Exception as e:
+        logger.error(f"设置个股动态止盈止损开关时出错: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f"设置失败: {str(e)}"
+        }), 500
+
 # 添加SSE接口
 @app.route('/api/sse', methods=['GET'])
 def sse():

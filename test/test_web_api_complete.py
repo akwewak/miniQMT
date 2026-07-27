@@ -584,6 +584,37 @@ class TestPositions(WebAPITestBase):
         )
         mock_pm.get_position.return_value = None
 
+    def test_07a_stop_profit_no_stock(self):
+        """POST /api/holdings/stop_profit 缺 stock_code 应返回 400"""
+        resp, ms = self._post('/api/holdings/stop_profit', json_data={'enabled': False})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_07b_stop_profit_missing_enabled(self):
+        """POST /api/holdings/stop_profit 缺 enabled 应返回 400"""
+        resp, ms = self._post('/api/holdings/stop_profit', json_data={'stock_code': '000001.SZ'})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_07c_stop_profit_success(self):
+        """POST /api/holdings/stop_profit 正常关闭个股开关（enabled=False 不应被误判为缺参）"""
+        mock_pm.set_stop_profit_enabled.return_value = {'success': True, 'error': None}
+        resp, ms = self._post(
+            '/api/holdings/stop_profit',
+            json_data={'stock_code': '000001.SZ', 'enabled': False},
+        )
+        data = self._parse(resp)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(data.get('status'), 'success')
+        mock_pm.set_stop_profit_enabled.assert_called_with('000001.SZ', False)
+
+    def test_07d_stop_profit_failure(self):
+        """POST /api/holdings/stop_profit 底层失败应返回 400"""
+        mock_pm.set_stop_profit_enabled.return_value = {'success': False, 'error': '未找到持仓'}
+        resp, ms = self._post(
+            '/api/holdings/stop_profit',
+            json_data={'stock_code': '000001.SZ', 'enabled': True},
+        )
+        self.assertEqual(resp.status_code, 400)
+
     def test_08_init_holdings(self):
         """POST /api/holdings/init 初始化持仓数据（bug修复后应返回200）"""
         resp, ms = self._post('/api/holdings/init')

@@ -11,6 +11,51 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
         }
 
+        /* 个股「动态止盈止损」拨动开关（iOS 风格） */
+        .sp-switch {
+            position: relative;
+            display: inline-block;
+            width: 38px;
+            height: 20px;
+            vertical-align: middle;
+            cursor: pointer;
+        }
+        .sp-switch input {
+            position: absolute;
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .sp-switch .sp-slider {
+            position: absolute;
+            inset: 0;
+            background-color: #cbd5e1;
+            border-radius: 9999px;
+            transition: background-color 0.25s ease;
+        }
+        .sp-switch .sp-slider::before {
+            content: "";
+            position: absolute;
+            height: 16px;
+            width: 16px;
+            left: 2px;
+            top: 2px;
+            background-color: #ffffff;
+            border-radius: 50%;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+            transition: transform 0.25s ease;
+        }
+        .sp-switch input:checked + .sp-slider {
+            background-color: #10b981;
+        }
+        .sp-switch input:checked + .sp-slider::before {
+            transform: translateX(18px);
+        }
+        .sp-switch input:disabled + .sp-slider {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .main-container {
             display: flex;
             flex-direction: column;
@@ -112,26 +157,25 @@
             background: #dcfce7;
         }
 
-        /* ── 固定列宽, 总宽 100% ── */
-        .log-col-side { width: 18px;  text-align: center; flex-shrink: 0; }
-        .log-col-name { width: 0;     flex: 1 1 0;      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .log-col-dir  { width: 14px;  text-align: center; flex-shrink: 0; }
-        .log-col-money{ width: 56px;  text-align: right;  flex-shrink: 0; font-variant-numeric: tabular-nums; }
+        /* ── 固定列宽, 内容左聚紧凑, 各列对齐 ── */
+        .log-col-name { flex: 0 0 auto; width: 76px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 6px; }
+        .log-col-dir  { width: 16px;  text-align: center; flex-shrink: 0; font-weight: 700; }
+        .log-col-money{ flex: 1 1 auto; min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
         .log-col-price{ width: 78px;  text-align: right;  flex-shrink: 0; font-variant-numeric: tabular-nums; display: none; }   /* 窄屏隐藏 */
-        .log-col-tag  { width: 28px;  text-align: center; flex-shrink: 0; font-size: 10px; }
-        .log-col-time { width: 38px;  text-align: right;  flex-shrink: 0; font-variant-numeric: tabular-nums; color: #94a3b8; }
+        .log-col-tag  { width: 34px;  text-align: center; flex-shrink: 0; font-size: 10px; padding-left: 6px; }
+        .log-col-time { width: 42px;  text-align: right;  flex-shrink: 0; font-variant-numeric: tabular-nums; color: #94a3b8; padding-left: 6px; }
 
-        .log-col-side.profit-action,
+        /* 买卖方向：买红卖绿（A股习惯），一眼区分 */
+        .log-col-dir.log-side-buy  { color: #dc2626; }
+        .log-col-dir.log-side-sell { color: #16a34a; }
+
         .log-col-money.profit-action,
         .log-col-tag.profit-action { color: #ef4444; font-weight: 600; }
-        .log-col-side.stop-loss-action,
         .log-col-money.stop-loss-action,
         .log-col-tag.stop-loss-action { color: #22c55e; font-weight: 600; }
-        .log-col-dir.profit-action { color: #ef4444; font-size: 9px; background: #fee2e2; border-radius: 3px; }
-        .log-col-dir.stop-loss-action { color: #22c55e; font-size: 9px; background: #dcfce7; border-radius: 3px; }
-        .log-col-tag       { color: inherit; padding: 0 4px; white-space: nowrap; }
+        .log-col-tag       { color: inherit; white-space: nowrap; }
 
-        .log-head .log-col-tag { background: transparent; border-radius: 0; padding: 0; }
+        .log-head .log-col-tag { background: transparent; border-radius: 0; }
 
         /* 日期分组吸顶 */
         .log-day-header {
@@ -157,11 +201,25 @@
         }
         
         /* 状态消息样式 */
+        /* 消息浮层：固定定位，脱离文档流，避免插入/移除时挤压页面造成抖动 */
+        #messageArea {
+            position: fixed;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1100;
+            width: auto;
+            max-width: 90vw;
+            pointer-events: none;
+        }
         .status-message {
             padding: 10px;
             margin-bottom: 10px;
             border-radius: 5px;
             font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+            pointer-events: auto;
+            text-align: center;
         }
         .loading { background-color: #e0f2fe; color: #0c4a6e; border: 1px solid #7dd3fc;}
         .error { background-color: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
@@ -669,8 +727,8 @@
             </div>
         </section>
 
-        <section class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div class="lg:col-span-2 flex flex-col space-y-4">
+        <section class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            <div class="lg:col-span-3 flex flex-col space-y-4">
                 <div class="flex items-center space-x-2 border rounded p-3 bg-gray-50">
                     <label for="buyStrategy" class="text-sm font-medium whitespace-nowrap">1. 选股买入设置:</label>
                     <select id="buyStrategy" class="border rounded px-2 py-1 text-sm">
@@ -699,21 +757,22 @@
                      <div class="overflow-y-auto max-h-96"> 
                          <table class="w-full text-sm text-left border-collapse">
                             <thead class="bg-gray-200 sticky top-0"> <tr>
-                                    <th class="border p-2"><input type="checkbox" id="selectAllHoldings"></th>
-                                    <th class="border p-2">代码</th>
-                                    <th class="border p-2">名称</th>
-                                    <th class="border p-2">涨跌幅</th>
-                                    <th class="border p-2">价格</th>
-                                    <th class="border p-2">成本价</th>
-                                    <th class="border p-2">盈亏率</th>
-                                    <th class="border p-2">市值</th>
-                                    <th class="border p-2">可用数</th>
-                                    <th class="border p-2">总数</th>
-                                    <th class="border p-2">已止盈</th>
-                                    <th class="border p-2">买后最高</th>
-                                    <th class="border p-2">动态止损</th>
-                                    <th class="border p-2">建仓时间</th>
-                                    <th class="border p-2">基准成本</th>
+                                    <th class="border p-2 text-center">网格</th>
+                                    <th class="border p-2 text-center">代码</th>
+                                    <th class="border p-2 text-center">名称</th>
+                                    <th class="border p-2 text-center">涨幅</th>
+                                    <th class="border p-2 text-center">价格</th>
+                                    <th class="border p-2 text-center">成本</th>
+                                    <th class="border p-2 text-center">盈亏</th>
+                                    <th class="border p-2 text-center">市值</th>
+                                    <th class="border p-2 text-center">可用</th>
+                                    <th class="border p-2 text-center">总数</th>
+                                    <th class="border p-2 text-center">浮盈</th>
+                                    <th class="border p-2 text-center">冲高</th>
+                                    <th class="border p-2 text-center">止损</th>
+                                    <th class="border p-2 text-center">建仓</th>
+                                    <th class="border p-2 text-center">基准</th>
+                                    <th class="border p-2 text-center">自动止盈</th>
                                 </tr>
                             </thead>
                             <tbody id="holdingsTableBody">

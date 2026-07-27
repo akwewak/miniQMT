@@ -91,6 +91,7 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 |------|------|------|--------|
 | POST | `/api/actions/execute_buy` | 执行买入（自动买入模块也复用该路径）🔑 需 Token | ❌ |
 | POST | `/api/holdings/update` | 更新持仓参数（止盈标记/最高价/止损价）🔑 需 Token | ❌ |
+| POST | `/api/holdings/stop_profit` | 设置个股「动态止盈止损」开关（`stock_code`、`enabled`）🔑 需 Token | ❌ |
 
 **买入参数**：
 

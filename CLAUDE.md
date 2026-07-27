@@ -226,7 +226,8 @@ Get-Content logs/qmt_trading.log -Wait  # Windows PowerShell
 - 监控线程**始终运行**,持续检测信号
 - `ENABLE_AUTO_OPERATION` 是全局自动操作总开关，关闭时所有自动策略不产生新交易动作
 - `ENABLE_AUTO_TRADING` 只控制动态止盈止损等非网格自动策略
-- **动态止盈止损信号入队门控**：监控线程仅在 `ENABLE_DYNAMIC_STOP_PROFIT` 且 `ENABLE_AUTO_TRADING` 同时开启时才检测并写入 `latest_signals`（`_detect_and_enqueue_dynamic_signal`）。任一关闭时不检测/不入队，避免"检测→策略因自动交易关闭而清除→再检测"的每 3 秒日志刷屏。网格检测走独立分支（`ENABLE_GRID_TRADING`），不受此门控影响
+- **动态止盈止损信号入队门控**：监控线程仅在 `ENABLE_DYNAMIC_STOP_PROFIT` 且 `ENABLE_AUTO_TRADING` 同时开启、**且该股 `positions.stop_profit_enabled` 为真**时才检测并写入 `latest_signals`（`_detect_and_enqueue_dynamic_signal`）。任一关闭时不检测/不入队，避免"检测→策略因自动交易关闭而清除→再检测"的每 3 秒日志刷屏。网格检测走独立分支（`ENABLE_GRID_TRADING`），不受此门控影响
+- **个股级动态止盈止损开关**：`positions.stop_profit_enabled`（默认 1=开）与全局开关是 AND 关系，可在 web1.0 持仓列表末列拨动开关单独暂停某只股票；写入走 `PositionManager.set_stop_profit_enabled()`（仿 `set_session_enabled`，只更新单列 + `_increment_data_version()`，不动 `update_position`）。网关模式 `xtquant_manager/stop_profit.py` 同样遵守该开关
 - `ENABLE_GRID_TRADING` 控制网格模块，`grid_trading_sessions.enabled` 控制单只股票网格会话“自动/暂停”
 - 每个信号都要经过 `validate_trading_signal()` 验证,防止重复执行
 
@@ -364,7 +365,7 @@ DYNAMIC_TAKE_PROFIT = [
 | `stock_code`, `volume`, `available`, `cost_price` | QMT实盘 `qmt_trader.position()` | 每10秒同步一次 |
 | `current_price` | `data_manager.get_latest_data()` | 实时更新 |
 | `market_value`, `profit_ratio` | 计算得出 | 价格更新时重新计算 |
-| `open_date`, `profit_triggered`, `highest_price`, `stop_loss_price` | 持久化字段 | 策略状态变化或成交回报确认后同步到SQLite |
+| `open_date`, `profit_triggered`, `highest_price`, `stop_loss_price`, `stop_profit_enabled` | 持久化字段 | 策略状态变化或成交回报确认后同步到SQLite；`stop_profit_enabled` 由 Web 开关即时写入 |
 
 **关键字段说明**:
 - `profit_triggered`: 是否已完成首次止盈(卖出60%)成交确认,影响后续动态止盈逻辑
@@ -609,6 +610,7 @@ monitor.register_thread(
 **交易操作**:
 - `POST /api/actions/execute_buy` - 执行买入 (参数: strategy, quantity, stocks；自动买入模块也复用该路径)
 - `POST /api/holdings/update` - 更新持仓参数（止盈标记/最高价/止损价）
+- `POST /api/holdings/stop_profit` - 设置个股「动态止盈止损」开关（参数: stock_code, enabled）
 
 **网格交易**:
 - `POST /api/grid/start` - 启动网格会话
