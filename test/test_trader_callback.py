@@ -1024,6 +1024,7 @@ class TestTraderCallback(TestBase):
             traded_id="EXTERNAL_DEAL_940572806",
             order_type=24,
         )
+        trade.m_nDirection = 48  # QMT 回报可能同时带 48 和 order_type=24，应以委托类型判定为卖出
 
         old_sim = config.ENABLE_SIMULATION_MODE
         try:

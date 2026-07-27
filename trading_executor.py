@@ -525,10 +525,10 @@ class TradingExecutor:
         if order_side:
             return str(order_side).upper()
 
-        direction = self._field_any(deal_info, ['m_nDirection', 'direction'])
         order_type = self._field_any(deal_info, ['order_type', '委托类型'])
         action = self._field_any(deal_info, ['action', '买卖方向'])
-        for value in (direction, order_type, action):
+        direction = self._field_any(deal_info, ['m_nDirection', 'direction'])
+        for value in (order_type, action, direction):
             text = str(value).upper()
             if text in ('BUY', 'B', '买入'):
                 return 'BUY'
