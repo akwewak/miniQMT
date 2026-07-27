@@ -784,6 +784,11 @@ GRID_SELL_COOLDOWN = 300  # 0=不限制；建议实盘设为 300
 # 网格实盘委托运行期对账：成交/委托推送漏掉时，定期用券商当日委托兜底确认 pending 订单。
 GRID_ORDER_RECONCILE_INTERVAL = 15  # 秒；0=禁用运行期对账
 GRID_ORDER_RECONCILE_STALE_SECONDS = 5  # pending 创建后超过该时间才参与运行期对账
+ENABLE_GRID_PENDING_ORDER_AUTO_CANCEL = True  # 网格实盘pending委托超时自动撤单
+GRID_PENDING_ORDER_TIMEOUT_SECONDS = 90  # 网格pending委托超时阈值（秒）
+GRID_PENDING_ORDER_AUTO_REORDER = True  # 网格pending撤单完成后是否自动重挂
+GRID_PENDING_ORDER_REORDER_MAX_ATTEMPTS = 1  # 单笔网格委托最多自动重挂次数
+GRID_PENDING_CANCEL_CONFIRM_TIMEOUT_SECONDS = 60  # 撤单请求提交后等待终态提示阈值（秒）
 
 # 卖出冷却自适应缩短阈值
 # 当触发价比上次成交价高出该比例时，冷却期减半，避免单边上涨行情中错过更高档位

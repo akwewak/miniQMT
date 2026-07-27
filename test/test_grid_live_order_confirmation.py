@@ -88,6 +88,11 @@ class TestGridLiveOrderConfirmation(unittest.TestCase):
         self.orig_drift = getattr(config, 'GRID_SIGNAL_MAX_PRICE_DRIFT_RATIO', 0.01)
         self.orig_reconcile_interval = getattr(config, 'GRID_ORDER_RECONCILE_INTERVAL', 15)
         self.orig_reconcile_stale = getattr(config, 'GRID_ORDER_RECONCILE_STALE_SECONDS', 5)
+        self.orig_grid_pending_auto_cancel = getattr(config, 'ENABLE_GRID_PENDING_ORDER_AUTO_CANCEL', True)
+        self.orig_grid_pending_timeout = getattr(config, 'GRID_PENDING_ORDER_TIMEOUT_SECONDS', 90)
+        self.orig_grid_pending_reorder = getattr(config, 'GRID_PENDING_ORDER_AUTO_REORDER', True)
+        self.orig_grid_pending_reorder_max = getattr(config, 'GRID_PENDING_ORDER_REORDER_MAX_ATTEMPTS', 1)
+        self.orig_grid_guard = getattr(config, 'GRID_ENABLE_PRICE_LIMIT_GUARD', True)
 
     def tearDown(self):
         config.ENABLE_SIMULATION_MODE = self.orig_sim
@@ -96,6 +101,11 @@ class TestGridLiveOrderConfirmation(unittest.TestCase):
         config.GRID_SIGNAL_MAX_PRICE_DRIFT_RATIO = self.orig_drift
         config.GRID_ORDER_RECONCILE_INTERVAL = self.orig_reconcile_interval
         config.GRID_ORDER_RECONCILE_STALE_SECONDS = self.orig_reconcile_stale
+        config.ENABLE_GRID_PENDING_ORDER_AUTO_CANCEL = self.orig_grid_pending_auto_cancel
+        config.GRID_PENDING_ORDER_TIMEOUT_SECONDS = self.orig_grid_pending_timeout
+        config.GRID_PENDING_ORDER_AUTO_REORDER = self.orig_grid_pending_reorder
+        config.GRID_PENDING_ORDER_REORDER_MAX_ATTEMPTS = self.orig_grid_pending_reorder_max
+        config.GRID_ENABLE_PRICE_LIMIT_GUARD = self.orig_grid_guard
         self.db.close()
 
     def _make_session(self, stock_code='000001.SZ', current_investment=0.0):
@@ -311,6 +321,185 @@ class TestGridLiveOrderConfirmation(unittest.TestCase):
         self.assertAlmostEqual(trades[0]['trigger_price'], 10.1, places=4)
         self.assertEqual(session.buy_count, 1)
         self.executor._save_trade_record.assert_called_once()
+
+    def test_timed_out_pending_order_requests_cancel_without_immediate_reorder(self):
+        """网格pending超时后只提交撤单请求，等待54=已撤后再重挂"""
+        config.ENABLE_SIMULATION_MODE = False
+        config.GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True
+        config.ENABLE_GRID_PENDING_ORDER_AUTO_CANCEL = True
+        config.GRID_PENDING_ORDER_TIMEOUT_SECONDS = 90
+        config.GRID_PENDING_ORDER_AUTO_REORDER = True
+        config.GRID_PENDING_ORDER_REORDER_MAX_ATTEMPTS = 1
+        config.GRID_ENABLE_PRICE_LIMIT_GUARD = False
+        session = self._make_session()
+        signal = self._buy_signal(session)
+        self.executor.buy_stock.return_value = {'order_id': 'ORDER_TIMEOUT'}
+        self.executor.cancel_order.return_value = True
+
+        self.assertTrue(self.manager.execute_grid_trade(signal))
+        self.manager.pending_grid_orders['ORDER_TIMEOUT']['created_at'] = (
+            datetime.now() - timedelta(seconds=91)
+        ).isoformat()
+        self.executor.buy_stock.reset_mock()
+        self.executor.query_stock_trades.return_value = []
+        self.executor.query_stock_orders.return_value = [
+            FakeBrokerOrder('ORDER_TIMEOUT', status=50)
+        ]
+
+        result = self.manager.reconcile_pending_grid_orders_if_due(
+            force=True,
+            reason='超时撤单测试'
+        )
+
+        self.assertEqual(result['timeout_cancel_requested'], 1)
+        self.executor.cancel_order.assert_called_once_with('ORDER_TIMEOUT')
+        self.executor.buy_stock.assert_not_called()
+        pending = self.manager.pending_grid_orders['ORDER_TIMEOUT']
+        self.assertEqual(pending['status'], 'cancel_requested')
+        self.assertTrue(pending['reorder_after_cancel'])
+        db_order = self.db.get_grid_order('ORDER_TIMEOUT')
+        self.assertEqual(db_order['status'], 'cancel_requested')
+        self.assertEqual(db_order['reorder_after_cancel'], 1)
+
+    def test_cancel_confirm_reorders_once_after_timeout_cancel(self):
+        """超时撤单收到54确认后，按最新行情自动重挂一次"""
+        config.ENABLE_SIMULATION_MODE = False
+        config.GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True
+        config.ENABLE_GRID_PENDING_ORDER_AUTO_CANCEL = True
+        config.GRID_PENDING_ORDER_TIMEOUT_SECONDS = 90
+        config.GRID_PENDING_ORDER_AUTO_REORDER = True
+        config.GRID_PENDING_ORDER_REORDER_MAX_ATTEMPTS = 1
+        config.GRID_ENABLE_PRICE_LIMIT_GUARD = False
+        session = self._make_session()
+        signal = self._buy_signal(session)
+        self.executor.buy_stock.return_value = {'order_id': 'ORDER_TIMEOUT'}
+        self.executor.cancel_order.return_value = True
+
+        self.assertTrue(self.manager.execute_grid_trade(signal))
+        self.manager.pending_grid_orders['ORDER_TIMEOUT']['created_at'] = (
+            datetime.now() - timedelta(seconds=91)
+        ).isoformat()
+        self.executor.query_stock_trades.return_value = []
+        self.executor.query_stock_orders.return_value = [
+            FakeBrokerOrder('ORDER_TIMEOUT', status=50)
+        ]
+        self.manager.reconcile_pending_grid_orders_if_due(force=True, reason='超时撤单测试')
+
+        self.executor.buy_stock.reset_mock()
+        self.executor.buy_stock.return_value = {'order_id': 'ORDER_REORDERED'}
+        self.position_manager.data_manager.get_latest_data.return_value = {'lastPrice': 10.0}
+
+        self.assertTrue(self.manager.handle_order_callback(FakeOrderInfo('ORDER_TIMEOUT', status=54)))
+
+        self.assertNotIn('ORDER_TIMEOUT', self.manager.pending_grid_orders)
+        self.assertIn('ORDER_REORDERED', self.manager.pending_grid_orders)
+        self.executor.buy_stock.assert_called_once()
+        old_order = self.db.get_grid_order('ORDER_TIMEOUT')
+        new_order = self.db.get_grid_order('ORDER_REORDERED')
+        self.assertEqual(old_order['status'], 'canceled')
+        self.assertEqual(new_order['parent_order_id'], 'ORDER_TIMEOUT')
+        self.assertEqual(new_order['reorder_count'], 1)
+        tracker = self.manager.trackers[session.id]
+        self.assertTrue(tracker.waiting_callback)
+        self.assertEqual(tracker.direction, 'falling')
+
+    def test_reorder_max_attempts_blocks_second_reorder(self):
+        """达到最大重挂次数后，超时撤单完成不再自动重挂"""
+        config.ENABLE_SIMULATION_MODE = False
+        config.GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True
+        config.ENABLE_GRID_PENDING_ORDER_AUTO_CANCEL = True
+        config.GRID_PENDING_ORDER_TIMEOUT_SECONDS = 90
+        config.GRID_PENDING_ORDER_AUTO_REORDER = True
+        config.GRID_PENDING_ORDER_REORDER_MAX_ATTEMPTS = 1
+        session = self._make_session()
+        signal = self._buy_signal(session)
+        self.executor.buy_stock.return_value = {'order_id': 'ORDER_MAX'}
+        self.executor.cancel_order.return_value = True
+
+        self.assertTrue(self.manager.execute_grid_trade(signal))
+        self.manager.pending_grid_orders['ORDER_MAX'].update({
+            'created_at': (datetime.now() - timedelta(seconds=91)).isoformat(),
+            'reorder_count': 1,
+        })
+        self.executor.query_stock_trades.return_value = []
+        self.executor.query_stock_orders.return_value = [
+            FakeBrokerOrder('ORDER_MAX', status=50)
+        ]
+        self.manager.reconcile_pending_grid_orders_if_due(force=True, reason='最大重挂次数测试')
+
+        self.assertFalse(self.manager.pending_grid_orders['ORDER_MAX']['reorder_after_cancel'])
+        self.executor.buy_stock.reset_mock()
+
+        self.assertTrue(self.manager.handle_order_callback(FakeOrderInfo('ORDER_MAX', status=54)))
+
+        self.executor.buy_stock.assert_not_called()
+        self.assertNotIn('ORDER_MAX', self.manager.pending_grid_orders)
+        self.assertEqual(self.db.get_grid_order('ORDER_MAX')['status'], 'canceled')
+
+    def test_partial_pending_timeout_does_not_auto_cancel_or_reorder(self):
+        """已有部分成交的pending不进入V1自动撤单重挂流程"""
+        config.ENABLE_SIMULATION_MODE = False
+        config.GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True
+        config.ENABLE_GRID_PENDING_ORDER_AUTO_CANCEL = True
+        config.GRID_PENDING_ORDER_TIMEOUT_SECONDS = 90
+        session = self._make_session()
+        signal = self._buy_signal(session)
+        self.executor.buy_stock.return_value = {'order_id': 'ORDER_PARTIAL_TIMEOUT'}
+
+        self.assertTrue(self.manager.execute_grid_trade(signal))
+        self.manager.pending_grid_orders['ORDER_PARTIAL_TIMEOUT'].update({
+            'created_at': (datetime.now() - timedelta(seconds=91)).isoformat(),
+            'filled_volume': 100,
+            'filled_amount': 1000.0,
+        })
+        self.db.update_grid_order('ORDER_PARTIAL_TIMEOUT', {
+            'status': 'partial_filled',
+            'filled_volume': 100,
+            'filled_amount': 1000.0,
+        })
+        self.executor.query_stock_trades.return_value = []
+        self.executor.query_stock_orders.return_value = [
+            FakeBrokerOrder('ORDER_PARTIAL_TIMEOUT', status=55, traded_volume=100, traded_price=10.0)
+        ]
+
+        result = self.manager.reconcile_pending_grid_orders_if_due(
+            force=True,
+            reason='部分成交超时测试'
+        )
+
+        self.assertEqual(result['timeout_skipped_partial'], 1)
+        self.executor.cancel_order.assert_not_called()
+        self.assertIn('ORDER_PARTIAL_TIMEOUT', self.manager.pending_grid_orders)
+        self.assertEqual(self.db.get_grid_order('ORDER_PARTIAL_TIMEOUT')['status'], 'partial_filled')
+
+    def test_broker_partial_timeout_does_not_auto_cancel_or_reorder(self):
+        """券商侧已部分成交时，即使本地尚未补记，也不自动撤单重挂"""
+        config.ENABLE_SIMULATION_MODE = False
+        config.GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True
+        config.ENABLE_GRID_PENDING_ORDER_AUTO_CANCEL = True
+        config.GRID_PENDING_ORDER_TIMEOUT_SECONDS = 90
+        session = self._make_session()
+        signal = self._buy_signal(session)
+        self.executor.buy_stock.return_value = {'order_id': 'ORDER_BROKER_PARTIAL'}
+
+        self.assertTrue(self.manager.execute_grid_trade(signal))
+        self.manager.pending_grid_orders['ORDER_BROKER_PARTIAL']['created_at'] = (
+            datetime.now() - timedelta(seconds=91)
+        ).isoformat()
+        self.executor.query_stock_trades.return_value = []
+        self.executor.query_stock_orders.return_value = [
+            FakeBrokerOrder('ORDER_BROKER_PARTIAL', status=55, traded_volume=100, traded_price=10.0)
+        ]
+
+        result = self.manager.reconcile_pending_grid_orders_if_due(
+            force=True,
+            reason='券商部分成交超时测试'
+        )
+
+        self.assertEqual(result['timeout_skipped_partial'], 1)
+        self.executor.cancel_order.assert_not_called()
+        self.assertIn('ORDER_BROKER_PARTIAL', self.manager.pending_grid_orders)
+        self.assertEqual(self.db.get_grid_order('ORDER_BROKER_PARTIAL')['status'], 'submitted')
 
     def test_buy_signal_suppressed_while_same_side_pending_exists(self):
         """同一会话已有 BUY pending 时，不再生成或执行新的 BUY 网格单"""

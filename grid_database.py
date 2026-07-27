@@ -349,6 +349,10 @@ class DatabaseManager:
                 submitted_at TEXT NOT NULL,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 raw_signal TEXT,
+                reorder_after_cancel INTEGER DEFAULT 0,
+                reorder_count INTEGER DEFAULT 0,
+                parent_order_id TEXT,
+                cancel_requested_at TEXT,
                 FOREIGN KEY (session_id) REFERENCES grid_trading_sessions(id) ON DELETE CASCADE
             )
         """)
@@ -376,6 +380,21 @@ class DatabaseManager:
                 pass
             else:
                 raise
+
+        for column_name, column_def in [
+            ("reorder_after_cancel", "INTEGER DEFAULT 0"),
+            ("reorder_count", "INTEGER DEFAULT 0"),
+            ("parent_order_id", "TEXT"),
+            ("cancel_requested_at", "TEXT"),
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE grid_orders ADD COLUMN {column_name} {column_def}")
+                logger.info(f"数据库迁移: 添加 grid_orders.{column_name} 字段")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e):
+                    pass
+                else:
+                    raise
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS grid_lots (
@@ -693,8 +712,9 @@ class DatabaseManager:
                 INSERT INTO grid_orders
                 (order_id, session_id, stock_code, side, status,
                  requested_volume, expected_price, reserved_price, filled_volume, filled_amount,
-                 submitted_at, raw_signal)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 submitted_at, raw_signal, reorder_after_cancel, reorder_count,
+                 parent_order_id, cancel_requested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(order_id) DO UPDATE SET
                     session_id=excluded.session_id,
                     stock_code=excluded.stock_code,
@@ -707,6 +727,10 @@ class DatabaseManager:
                     filled_amount=excluded.filled_amount,
                     submitted_at=excluded.submitted_at,
                     raw_signal=excluded.raw_signal,
+                    reorder_after_cancel=excluded.reorder_after_cancel,
+                    reorder_count=excluded.reorder_count,
+                    parent_order_id=excluded.parent_order_id,
+                    cancel_requested_at=excluded.cancel_requested_at,
                     updated_at=CURRENT_TIMESTAMP
             """, (
                 str(order_data['order_id']),
@@ -720,14 +744,19 @@ class DatabaseManager:
                 int(order_data.get('filled_volume', 0)),
                 float(order_data.get('filled_amount', 0.0)),
                 order_data.get('submitted_at', datetime.now().isoformat()),
-                order_data.get('raw_signal')
+                order_data.get('raw_signal'),
+                1 if order_data.get('reorder_after_cancel') else 0,
+                int(order_data.get('reorder_count', 0)),
+                order_data.get('parent_order_id'),
+                order_data.get('cancel_requested_at')
             ))
             self.conn.commit()
 
     def update_grid_order(self, order_id: str, updates: dict) -> None:
         """更新网格委托状态"""
         allowed_fields = {
-            'status', 'filled_volume', 'filled_amount', 'last_error', 'raw_signal'
+            'status', 'filled_volume', 'filled_amount', 'last_error', 'raw_signal',
+            'reorder_after_cancel', 'reorder_count', 'parent_order_id', 'cancel_requested_at'
         }
         invalid_fields = set(updates.keys()) - allowed_fields
         if invalid_fields:
