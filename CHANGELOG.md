@@ -30,8 +30,8 @@
 ### Docs
 - 更新 `CLAUDE.md`（门控规则、持久化字段表、API 列表）。
 - 更新止盈止损文档：门控表新增个股开关行，新增「个股级开关」小节（AND 语义、Web 操作、网关行为），字段表补充 `stop_profit_enabled` 及旧库自动迁移说明。
-- 更新 Web 前端文档：控制条对照表新增「自动止盈」，新增「持仓列表（web1.0）」小节说明首列网格入口、末列开关与紧凑表头释义。
-- 更新 Web API 文档：交易操作表新增 `POST /api/holdings/stop_profit`。
+- 更新 Web 前端文档：系统性与代码实现对齐——补全完整 16 列表头释义与字段对照表、修正顶部控制条描述（`ENABLE_DYNAMIC_STOP_PROFIT` 为后端配置开关无前端 UI、网格自动/暂停位于对话框内、补充 Token localStorage 来源、web2.0 从"3 个开关"更正为 7 个控件）、网关能力边界修正（下单 UI 仅在直连下显示、SSE 直连可用）、网格悬停卡片新增"运行时长"字段、启动菜单补全 21 个完整选项。
+- 更新 Web API 文档：系统状态表新增 `GET /api/macd/advice`（MACD 操盘建议），修正 `POST /api/v1/stop-profit/config`（原误标为 GET），v1 摘要表补充 Token 标注。
 
 ## [3.8.3] - 2026-07-25
 
