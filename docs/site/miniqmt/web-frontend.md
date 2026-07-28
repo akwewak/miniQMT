@@ -13,7 +13,7 @@ miniQMT 提供**两套**Web 界面，对应两种后端连接架构。本章节�
 | 默认端口 | `:5000`、`:5001`、…（每账号一个） | `:8888`（多账号共用） |
 | 绑定地址 | `127.0.0.1` — **只绑本机**（避免误暴露写操作 API） | `0.0.0.0` — 全部网卡（含 LAN/WAN） |
 | 适用场景 | 完整功能：配置管理 / 自动操作总开关 / 模拟买入 / 初始化持仓 / 网格操作 | 多账号只读监控 + 下单；远程访问 |
-| 实时推送 | ✅ SSE | ❌ 仅 3s/10s 轮询 |
+| 实时推送 | ✅ SSE | ❌ 网关模式仅 3s/10s 轮询（直连模式 ✅ SSE） |
 | PWA 离线 | ❌ | ✅ 可安装到桌面 |
 
 !!! tip "为什么 web1.0 只绑本机"
@@ -32,7 +32,7 @@ web2.0 通过 xtquant_manager 网关连接时，**写操作受限**。设计上�
 | 多账号切换 | ✅ 完整 | `X-Account-Id` 请求头隔离 |
 | 账户资产/连接状态 | ✅ 完整 | 可用余额 / 持仓市值 / 总资产 |
 | 交易记录 | ✅ 完整 | 优先读 SQLite `trade_records`（与 web1.0 同源） |
-| 下单（买/卖） | ✅ 完整 | 通过 v1 接口 |
+| 下单（买/卖） | ✅ API | 网关 v1 下单接口可用；web2.0 UI 买入面板仅在直连模式下显示 |
 | 动态止盈状态查询 | ✅ 只读 | `/api/v1/stop-profit/status` |
 | 网格会话列表 | ✅ 只读 | `/api/grid/sessions` 从账号 SQLite 读取，盈亏口径为兼容降级快照 |
 | 网格账本详情 | 🔒 不可用 | 需 Flask 直连模式查看 `/api/grid/ledger/<session_id>` |
@@ -40,7 +40,7 @@ web2.0 通过 xtquant_manager 网关连接时，**写操作受限**。设计上�
 | 自动操作总开关 | 🔒 不可用 | 需 Flask 直连模式 |
 | 模拟买入 / 清空 / 导入 / 初始化 | 🔒 不可用 | 需 Flask 直连模式 |
 | 动态止盈控制（开关） | 🔒 不可用 | 需 Flask 直连模式 |
-| SSE 实时推送 | 🔒 不可用 | 依赖 3s/10s 轮询 |
+| SSE 实时推送 | 🔒 不可用 | 网关自身不提供 SSE；直连模式可用 |
 
 实盘网格的委托态和成交态在前端保持分离：已报未成交订单可通过网格会话待确认状态和后台 `grid_orders` 追踪，只有收到成交回报后才进入交易记录、网格成交明细和账本，避免把 `ORDER_xxx` 展示为真实成交。
 
@@ -63,32 +63,63 @@ web1.0 和 web2.0 的页面标题都使用 `%MINIQMT_RELEASE_VERSION%` 占位符
 
 ## 顶部控制条
 
-Flask 直连模式下，顶部控制条包含几类容易混淆的开关：
+Flask 直连模式下，顶部控制条包含以下控件（部分仅后端存在，前端由配置表单统一渲染）：
 
 | 控件 | 后端字段/配置 | 作用 |
 |------|---------------|------|
-| 开始/停止自动操作按钮 | `ENABLE_AUTO_OPERATION`（API 兼容字段 `isMonitoring` / `globalAutoOperation`） | 全局自动操作总开关，只运行时生效不持久化；关闭时动态止盈止损和网格交易都不再产生新单 |
+| 开始/停止自动操作按钮 | `ENABLE_AUTO_OPERATION`（API 兼容字段 `isMonitoring`） | 全局自动操作总开关，只运行时生效不持久化；关闭时动态止盈止损和网格交易都不再产生新单 |
+| 模拟交易模式 | `ENABLE_SIMULATION_MODE` | 切换实盘/模拟模式 |
 | 允许自动止盈 | `ENABLE_AUTO_TRADING`（保存配置字段 `globalAllowBuySell`） | 动态止盈止损自动执行开关，持久化 |
 | 允许自动网格 | `ENABLE_GRID_TRADING`（保存配置字段 `globalAllowGridTrading`） | 网格模块自动执行开关，持久化 |
-| 动态止盈 | `ENABLE_DYNAMIC_STOP_PROFIT` | 控制动态止盈止损模块是否检测信号 |
 | 买 / 卖 | `ENABLE_ALLOW_BUY` / `ENABLE_ALLOW_SELL` | 手动和自动交易的方向权限 |
-| 网格自动/暂停 | `grid_trading_sessions.enabled` | 单只股票网格会话开关，暂停后保留会话但不发新网格单 |
-| 自动止盈（持仓列表末列） | `positions.stop_profit_enabled` | **个股级**动态止盈止损开关，暂停后该股不再检测止盈止损信号，持久化 |
+| 动态止盈（后端配置开关） | `ENABLE_DYNAMIC_STOP_PROFIT` | 控制动态止盈止损模块是否检测信号（此开关仅在后端 config.py 中存在，web1.0 前端无对应 UI 控件；如需切换请直接编辑配置文件） |
+| 网格自动/暂停 | `grid_trading_sessions.enabled` | 单只股票网格会话开关，位于**网格配置对话框内**（非顶部控制条），暂停后保留会话但不发新网格单 |
+| 自动止盈（持仓列表末列） | `positions.stop_profit_enabled` | **个股级**动态止盈止损拨动开关，暂停后该股不再检测止盈止损信号，持久化 |
 
 !!! note "为什么 API 仍叫 isMonitoring"
     早期前端使用 `isMonitoring` 表示顶部开关状态。为兼容旧接口，字段名保留不变，但当前语义已经是全局自动操作总开关；持仓监控线程状态请看 `positionMonitorRunning`。
 
-Web1.0 参数区中，`API Token` 与“模拟交易模式”“允许自动止盈”“允许自动网格”位于同一行；Web2.0 顶部控制条同样提供“模拟交易”“允许自动止盈”“允许自动网格”三个分开关。全局自动操作不再单独显示开关，由“开始/停止自动操作”按钮统一控制。
+Web1.0 参数区中，`API Token` 与"模拟交易模式""允许自动止盈""允许自动网格"位于同一行；Token 值由前端 `localStorage` 持久化，通过 `X-API-Token` 请求头发送，后端与 `QMT_API_TOKEN` 环境变量比对验证。
+
+Web2.0 顶部控制条（非网关模式）包含 7 个控件：开始/停止自动操作按钮、开启动态止盈/禁用动态止盈按钮、买/卖权限复选框、模拟交易复选框、允许自动止盈复选框、允许自动网格复选框。网关模式下写操作控件隐藏，仅保留只读展示。
 
 ### 持仓列表（web1.0）
 
-首列「网格」为网格配置入口（点击打开网格配置对话框，非勾选框语义），末列「自动止盈」为个股级动态止盈止损拨动开关：
+**列定义**（共 16 列）：网格 / 代码 / 名称 / 涨幅 / 价格 / 成本 / 盈亏 / 市值 / 可用 / 总数 / 浮盈 / 冲高 / 止损 / 建仓 / 基准 / 自动止盈。
+
+首列「网格」为网格配置入口（点击打开网格配置对话框，非勾选框语义），列头已从旧版全选 checkbox 改为「网格」文本并居中。末列「自动止盈」为个股级动态止盈止损拨动开关：
 
 - 开关状态来自 `positions.stop_profit_enabled`，切换即调用 `POST /api/holdings/stop_profit` 并持久化到 SQLite
 - 关闭后该股不再检测止盈止损信号（不影响其网格会话，也不影响其他股票）
 - 切换失败时开关自动回滚到原状态并提示
 
-表头为紧凑命名（涨幅 / 成本 / 盈亏 / 可用 / 浮盈 / 冲高 / 止损 / 建仓 / 基准 / 自动止盈），其中「浮盈」即 `profit_triggered`（首次止盈是否已触发），「冲高」为持仓期间最高价，「止损」为动态止损价，「基准」为初次建仓成本（补仓摊薄后保持不变）。
+**字段释义**：
+| 列名 | 后端字段 | 含义 |
+|------|---------|------|
+| 代码 | `stock_code` | 6 位股票代码 |
+| 名称 | `stock_name` | 股票名称（悬停弹出 MACD 操盘建议） |
+| 涨幅 | `change_percentage` | 当日涨跌幅（%） |
+| 价格 | `current_price` | 实时市价 |
+| 成本 | `cost_price` | 平均持仓成本 |
+| 盈亏 | `profit_ratio` | 浮动盈亏比例（%） |
+| 市值 | `market_value` | 持仓市值 |
+| 可用 | `available` | 可卖股数 |
+| 总数 | `volume` | 持仓总股数 |
+| 浮盈 | `profit_triggered` | 首次止盈是否已触发（成交确认后标记） |
+| 冲高 | `highest_price` | 持仓期间最高价 |
+| 止损 | `stop_loss_price` | 动态止损/止盈价格（随 profit_triggered 切换算法） |
+| 建仓 | `open_date` | 首次建仓日期 |
+| 基准 | `base_cost_price` | 初次建仓成本（补仓摊薄后保持不变） |
+| 自动止盈 | `stop_profit_enabled` | 个股级动态止盈止损开关（拨动切换） |
+
+与旧版布局相比的改动：
+- ~~全选 checkbox~~ → 文本「网格」（全选逻辑随之移除）
+- 新增末列「自动止盈」iOS 风格拨动开关
+- 表头文字精简并统一居中
+- 消息提示改为 `position:fixed` 浮层，不再挤压页面布局
+- 持仓列表与下单日志的宽度比例从 2:1 调整为 **3:1**（`lg:grid-cols-4` + `col-span-3`）
+
+**下单日志**：单行左至右为 名称 → B/S 方向（买红卖绿加粗）→ 金额 → 策略标签 → 时间，所有列严格对齐表头。内容靠左聚拢，无多余空白。
 
 ### 卖出委托状态
 动态止盈止损卖出委托由后端 `pending_orders` 跟踪。委托超时后，如果启用了自动重挂，系统会先撤销旧委托，再以新价格重新提交；`best` 对手价模式下买三价无效时会降级到买一价、最新价、收盘价或原信号价。
@@ -97,15 +128,16 @@ Web1.0 参数区中，`API Token` 与“模拟交易模式”“允许自动止�
 
 ### 网格悬停卡片口径
 
-web1.0 持仓列表中，鼠标悬停在已启动网格交易的个股复选框上会显示网格状态卡片。卡片所有比例字段统一使用后端小数比例，由前端格式化为百分比，避免重复乘以 100。
+web1.0 持仓列表中，鼠标悬停在已启动网格交易的个股复选框上会显示网格状态卡片。卡片顶部显示**运行时长**，其余比例字段统一使用后端小数比例，由前端格式化为百分比，避免重复乘以 100。
 
 | 字段 | 数据来源 | 口径 |
 |------|----------|------|
+| 运行时长 | 会话创建时间差 | 从 `created_at` 差值计算（天/时/分） |
 | 网格盈亏 | `stats.pnl_snapshot.profit_ratio` | FIFO 账本真实盈亏率；账本不可用时使用 `get_pnl_snapshot()` 的降级口径 |
 | 已实现/未实现 | `stats.pnl_snapshot.realized_pnl` / `unrealized_pnl` | 已配对卖出收益 + 未平网格库存浮动盈亏 |
 | 交易次数 | `stats.trade_count` / `buy_count` / `sell_count` | 已成交确认并落账后的网格交易次数 |
 | 资金使用 | `stats.current_investment` / `config.max_investment` | 当前未平网格投入占最大投入额度比例 |
-| 中心价偏离 | `stats.deviation_ratio` + `stats.center_deviation_ratio` | 当前网格中心价相对初始中心价的漂移幅度；显示为正数并标注“上移/下移” |
+| 中心价偏离 | `stats.deviation_ratio` + `stats.center_deviation_ratio` | 当前网格中心价相对初始中心价的漂移幅度；显示为正数并标注”上移/下移” |
 
 !!! note "中心价偏离不是当前市价偏离"
     网格风控内部同时计算两种偏离：`drift_deviation = abs(current_center_price - center_price) / center_price` 和 `market_deviation = abs(current_price - current_center_price) / current_center_price`，退出判断取二者最大值。悬停卡片中的“中心价偏离”只展示前者，即网格中心价漂移；当前市价偏离作为后端字段保留，不混入该展示项。
@@ -149,26 +181,49 @@ web1.0 持仓列表中，鼠标悬停在已启动网格交易的个股复选框�
 
 ## 启动菜单（miniqmt.bat）
 
+`miniqmt.bat`（或 `python scripts/_launcher.py menu`）打开交互式控制台菜单，完整选项如下：
+
 ```
-[7] 启动所有账号 (实盘，启动时选择 web1.0/web2.0)
-[8] 启动所有账号 (模拟，启动时选择 web1.0/web2.0)
-[9] 启动指定账号 (选择实盘/模拟 + web1.0/web2.0)
-       web1.0 = Flask :5000 起, 仅本机访问 (配置/监控用)
-       web2.0 = xtquant_manager :8888, 全网卡 (只读查询/对外)
-[d] 启动 XtQuantManager 网关
-[e] 停止 XtQuantManager 网关
-[f] XtQuantManager 状态
-[g] 打开 web2.0 UI（浏览器）
-[h] 重启 XtQuantManager 网关
-[i] 查看 XtQuantManager 日志
-[j] 启动自动买入服务
-[k] 停止自动买入服务
-[l] 查看自动买入状态
-[m] 查看自动买入日志
-[n] Tushare Pro 数据源配置
-[o] 大QMT IPC Trader 配置
-[p] XtTrader 通道总控（miniQMT 直连 / IPC-Trader / RPC-Trader）
+部署/环境：
+  [0] 首次部署向导        [1] 检查 Python 环境与核心依赖
+  [2] 安装/更新依赖       [3] 检查配置文件
+  [4] 拉取最新代码 (git pull)
+
+查看：
+  [5] 查看所有账号配置    [6] 查看运行状态
+
+启动（Flask 直连）：
+  [7] 启动所有账号 (实盘，启动时选择 web1.0/web2.0)
+  [8] 启动所有账号 (模拟，启动时选择 web1.0/web2.0)
+  [9] 启动指定账号 (选择实盘/模拟 + web1.0/web2.0)
+         web1.0 = Flask :5000 起, 仅本机访问 (配置/监控用)
+         web2.0 = xtquant_manager :8888, 全网卡 (只读查询/对外)
+
+停止：
+  [a] 停止所有账号         [b] 停止指定账号
+  [c] 强制停止所有账号
+
+XtQuantManager：
+  [d] 启动 XtQuantManager 网关   [e] 停止网关
+  [f] 网关状态                    [g] 打开 web2.0 UI（浏览器）
+  [h] 重启网关                    [i] 查看网关日志
+
+自动买入：
+  [j] 启动自动买入服务     [k] 停止自动买入服务
+  [l] 查看自动买入状态     [m] 查看自动买入日志
+
+数据源 / 通道切换：
+  [n] Tushare Pro 数据源配置
+  [o] 大QMT IPC Trader 配置
+  [p] XtTrader 通道总控（miniQMT 直连 / IPC-Trader / RPC-Trader）
+
+  [q] 退出
 ```
+
+菜单底部自动显示当前 XtTrader 通道状态（活跃通道 / 连接状态 / 路径）。
+
+!!! note "菜单节选说明"
+    以上为 `python scripts/_launcher.py menu` 的完整选项。CLAUDE.md 中的菜单概览表仅列出了高频使用的子集，请以本文档为准。
 
 ### Web 模式偏好记忆
 

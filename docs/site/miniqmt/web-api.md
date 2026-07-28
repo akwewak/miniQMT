@@ -26,6 +26,7 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 | GET | `/api/connection/status` | QMT 连接状态 | ✅ 完整 |
 | GET | `/api/status` | 系统运行状态总览 | ✅ 完整 |
 | GET | `/api/market/health` | 行情源健康评分内存快照（xtdata/Mootdx 成功率、延迟、新鲜度、数据质量） | ❌ |
+| GET | `/api/macd/advice` | MACD 操盘建议（底仓/网格方向 + 迷你全景图） | ✅ 完整 |
 | GET | `/api/debug/status` | 详细调试状态 | ❌ |
 | GET | `/api/accounts` | 列出已注册账号（无 Token，供前端账号发现）——**仅网关提供**，Flask 直连无此端点 | ✅ 完整 |
 
@@ -220,5 +221,5 @@ web1.0 网格悬停卡片直接使用该接口。为避免前端重复换算，�
 | GET | `/api/v1/health` | 网关全局健康（账号总数 / 在线数） |
 | GET | `/api/v1/accounts` | 账号列表（需 Token） |
 | GET | `/api/v1/stop-profit/status` | 动态止盈运行状态 |
-| GET | `/api/v1/stop-profit/config` | 止盈配置 |
-| POST | `/api/v1/stop-profit/toggle` | 启用/禁用动态止盈 |
+| POST | `/api/v1/stop-profit/config` | 更新止盈配置（需 Token） |
+| POST | `/api/v1/stop-profit/toggle` | 启用/禁用动态止盈（需 Token） |
