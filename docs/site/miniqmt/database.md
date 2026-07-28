@@ -7,16 +7,22 @@
 | 字段 | 数据来源 | 更新频率 | 说明 |
 |------|---------|---------|------|
 | `stock_code` | QMT 实盘 | 首次同步 | 股票代码 |
+| `stock_name` | data_manager | 首次建仓 | 股票名称 |
 | `volume` | QMT 实盘 | 10 秒 | 持仓数量 |
 | `available` | QMT 实盘 | 10 秒 | 可用数量 |
-| `cost_price` | QMT 实盘 | 10 秒 | 成本价 |
+| `cost_price` | QMT 实盘 | 10 秒 | 平均持仓成本 |
+| `base_cost_price` | 持久化 | 首次建仓 | 初次建仓成本（补仓摊薄后保持不变） |
 | `current_price` | data_manager | 实时 | 当前价格 |
 | `market_value` | 计算 | 实时 | 市值 |
 | `profit_ratio` | 计算 | 实时 | 盈亏比例 |
+| `last_update` | 持久化 | 每次更新 | 最后更新时间 |
 | `open_date` | 持久化 | 首次买入 | 开仓日期 |
 | `profit_triggered` | 持久化 | 首次止盈 | 是否已触发首次止盈 |
 | `highest_price` | 持久化 | 价格更新时 | 持仓期间最高价 |
-| `stop_loss_price` | 持久化 | 策略触发时 | 止损价格 |
+| `stop_loss_price` | 持久化 | 策略触发时 | 止损/止盈价格 |
+| `profit_breakout_triggered` | 持久化 | 首次突破 | 是否已突破止盈阈值（首次止盈的回撤监控状态） |
+| `breakout_highest_price` | 持久化 | 突破后价格 | 突破止盈阈值后的最高价 |
+| `stop_profit_enabled` | 持久化 | 建仓时初始化为 1 | 个股级动态止盈止损开关（`1`=开启，默认；`0`=暂停）。在全局开关 `ENABLE_DYNAMIC_STOP_PROFIT` + `ENABLE_AUTO_TRADING` 开启的前提下，关闭后该股不再检测止盈止损信号。旧库自动迁移补齐首列为 `1` |
 
 ### 关键字段说明
 
@@ -53,6 +59,7 @@
 | `id` | 会话 ID |
 | `stock_code` | 股票代码 |
 | `status` | `active` / `stopped` / `completed` |
+| `enabled` | 自动执行开关（`1`=自动，`0`=暂停）；暂停后保留会话数据，不发新网格单 |
 | `center_price` | 网格中心价格 |
 | `current_center_price` | 当前中心价格（成交后调整） |
 | `price_interval` | 档位间距 |

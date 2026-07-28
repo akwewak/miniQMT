@@ -81,6 +81,8 @@ grid_trading_manager.py # 网格交易会话管理
 grid_database.py       # 网格交易数据持久化（SQLite）
 grid_validation.py     # 网格交易参数校验
 autobuy/               # 自动买入独立进程：候选池筛选、防重、HTTP 下单
+macd_advisor.py         # MACD 操盘建议（决策矩阵 + 迷你全景图）
+maintenance.py          # 数据库维护后台线程（清理历史数据、轮转日志）
 xtquant_manager/       # XtQuantManager HTTP 网关（可选）
 ```
 

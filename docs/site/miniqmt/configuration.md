@@ -15,6 +15,7 @@
 | `ENABLE_GRID_TRADING` | `True` | 自动网格分开关；持久化 |
 | `ENABLE_ALLOW_BUY` | `True` | 允许买入 |
 | `ENABLE_ALLOW_SELL` | `True` | 允许卖出 |
+| `ENABLE_STOP_LOSS_BUY` | `True` | 止损补仓功能开关 |
 | `DEBUG` | `False` | 调试模式 |
 | `DEBUG_SIMU_STOCK_DATA` | `False` | 模拟股票数据（绕过交易时间限制） |
 
@@ -193,6 +194,8 @@ DYNAMIC_TAKE_PROFIT = [
     (0.15, 0.90),
     (0.20, 0.87),
     (0.30, 0.85),   # 最高浮盈 30% 时，止盈位 = 最高价 × 85%
+    (0.40, 0.83),   # 最高浮盈 40% 时，止盈位 = 最高价 × 83%
+    (0.50, 0.80),   # 最高浮盈 50% 时，止盈位 = 最高价 × 80%
 ]
 ```
 
