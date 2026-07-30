@@ -623,9 +623,9 @@ class TestPositions(WebAPITestBase):
             '/api/holdings/init', 'POST',
             '初始化持仓数据（修复undefined变量bug）',
             resp, ms,
-            extra_checks=lambda d: self.assertTrue(
-                d.get('success') or d.get('status') == 'success',
-                f"期望success=True，实际: {d}"
+            extra_checks=lambda d: self.assertEqual(
+                d.get('status'), 'success',
+                f"期望status='success'以兼容web1.0按钮，实际: {d}"
             ),
         )
         self.assertEqual(resp.status_code, 200, f"修复后应返回200，实际{resp.status_code}: {data}")

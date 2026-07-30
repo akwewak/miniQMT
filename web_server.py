@@ -1369,6 +1369,9 @@ def init_holdings():
             _apply_config_params(config_data)
 
         result = get_position_manager_instance().initialize_all_positions_data()
+        if isinstance(result, dict) and 'status' not in result:
+            result = dict(result)
+            result['status'] = 'success' if result.get('success') else 'error'
         return jsonify(result)
 
     except Exception as e:

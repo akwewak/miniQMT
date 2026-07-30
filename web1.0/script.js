@@ -2250,9 +2250,9 @@
     ));
     elements.clearBuySellDataBtn.addEventListener('click', async () => {
         // 危险操作：需要二次确认
-        if (!confirm("⚠️⚠️⚠️ 危险操作警告！⚠️⚠️⚠️\n\n您即将清空所有买入/卖出数据！\n这将删除所有交易记录和持仓信息。\n\n此操作不可撤销！确定继续吗？")) return;
+        if (!confirm("⚠️⚠️⚠️ 危险操作警告！⚠️⚠️⚠️\n\n您即将清空全部买入/卖出日志！\n这将删除所有交易记录，不会清空持仓数据。\n\n此操作不可撤销！确定继续吗？")) return;
 
-        if (!confirm("最后确认：您真的要清空所有买入/卖出数据吗？")) return;
+        if (!confirm("最后确认：您真的要清空全部买入/卖出日志吗？")) return;
 
         await handleGenericAction(
             elements.clearBuySellDataBtn,
