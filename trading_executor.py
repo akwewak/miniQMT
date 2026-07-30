@@ -638,7 +638,8 @@ class TradingExecutor:
                 amount=record['amount'],
                 trade_id=record['trade_id'],
                 commission=record['commission'],
-                strategy=record['strategy']
+                strategy=record['strategy'],
+                allow_qmt_name_lookup=False
             )
         except Exception as e:
             logger.error(f"成交确认后写交易流水失败: {e}")
@@ -678,7 +679,7 @@ class TradingExecutor:
             logger.warning(f"检查交易流水是否已存在失败: trade_id={trade_id}, error={e}")
             return False
 
-    def _save_trade_record(self, stock_code, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy='default'):
+    def _save_trade_record(self, stock_code, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy='default', allow_qmt_name_lookup=True):
         """保存交易记录到数据库"""
         try:
             if self._trade_record_exists(trade_id):
@@ -686,7 +687,13 @@ class TradingExecutor:
                 return True
 
             # 获取股票名称
-            stock_name = self.data_manager.get_stock_name(stock_code)
+            try:
+                stock_name = self.data_manager.get_stock_name(
+                    stock_code,
+                    allow_qmt_lookup=allow_qmt_name_lookup
+                )
+            except TypeError:
+                stock_name = self.data_manager.get_stock_name(stock_code)
 
             logger.info(f"保存交易记录: {stock_code}({stock_name}) {trade_type} 价:{price:.2f} 量:{volume} 金额:{amount:.2f} 策略:{strategy}")
             

@@ -45,7 +45,8 @@ import config
 from test.test_base import TestBase
 from position_manager import PositionManager
 from trading_executor import TradingExecutor
-from easy_qmt_trader import MyXtQuantTraderCallback
+from data_manager import DataManager
+from easy_qmt_trader import MyXtQuantTraderCallback, easy_qmt_trader
 from logger import get_logger
 
 logger = get_logger("test_trader_callback")
@@ -158,6 +159,20 @@ class TestTraderCallback(TestBase):
         executor.callbacks = {}
         executor.trade_lock = threading.Lock()
         return executor
+
+    def _make_name_resolving_data_manager(self):
+        """构造最小 DataManager，让股票名称查询走真实逻辑但不访问网络。"""
+        dm = object.__new__(DataManager)
+        dm.xt = MagicMock()
+        dm.xt.get_instrument_detail.return_value = None
+        dm.stock_names_cache = {}
+        dm._tushare_token_attempted = True
+        dm._tushare_pro = None
+        dm._ts_cooldown_until = 0.0
+        dm._ts_consecutive_failures = 0
+        dm._bs_consecutive_failures = 0
+        dm._bs_cooldown_until = 0.0
+        return dm
 
     def _make_orderable_executor(self):
         executor = self._make_live_executor()
@@ -1047,6 +1062,72 @@ class TestTraderCallback(TestBase):
         self.assertEqual(rows[0][4], "EXTERNAL_DEAL_940572806")
         self.assertEqual(rows[0][5], "external")
 
+    def test_h3d_external_deal_record_does_not_query_qmt_position_for_stock_name(self):
+        """外部成交补账不能为了股票名称回查 QMT 持仓，避免成交回调重入 xttrader。"""
+        executor = self._make_live_executor()
+        executor.data_manager = self._make_name_resolving_data_manager()
+        qmt_trader = MagicMock()
+        qmt_trader.position.return_value = pd.DataFrame([{
+            "证券代码": "000799",
+            "证券名称": "酒鬼酒",
+        }])
+        self.pm.qmt_trader = qmt_trader
+
+        trade = _FakeTrade(
+            order_id=1745879041,
+            stock_code="000799.SZ",
+            traded_volume=100,
+            traded_price=52.30,
+            traded_id="EXTERNAL_DEAL_1745879041",
+            order_type=23,
+        )
+
+        old_sim = config.ENABLE_SIMULATION_MODE
+        old_baostock = config.ENABLE_BAOSTOCK_STOCK_NAME_LOOKUP
+        try:
+            config.ENABLE_SIMULATION_MODE = False
+            config.ENABLE_BAOSTOCK_STOCK_NAME_LOOKUP = False
+            with patch("trading_executor.get_trading_executor", return_value=executor), \
+                    patch("position_manager.get_position_manager", return_value=self.pm), \
+                    patch.object(self.pm, "_request_immediate_position_refresh"):
+                self.pm._on_trade_callback(trade)
+        finally:
+            config.ENABLE_SIMULATION_MODE = old_sim
+            config.ENABLE_BAOSTOCK_STOCK_NAME_LOOKUP = old_baostock
+
+        qmt_trader.position.assert_not_called()
+        rows = executor.conn.execute(
+            "SELECT stock_code, stock_name, trade_type, price, volume, strategy FROM trade_records"
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "000799")
+        self.assertEqual(rows[0][1], "000799")
+        self.assertEqual(rows[0][2], "BUY")
+        self.assertEqual(rows[0][5], "external")
+
+    def test_h3e_external_deal_does_not_request_immediate_position_refresh(self):
+        """外部成交回调不应立即调度持仓快刷，后续由监控线程正常同步。"""
+        executor = self._make_live_executor()
+        trade = _FakeTrade(
+            order_id=1745879042,
+            stock_code="000799.SZ",
+            traded_volume=100,
+            traded_price=52.30,
+            traded_id="EXTERNAL_DEAL_1745879042",
+            order_type=23,
+        )
+
+        old_sim = config.ENABLE_SIMULATION_MODE
+        try:
+            config.ENABLE_SIMULATION_MODE = False
+            with patch("trading_executor.get_trading_executor", return_value=executor), \
+                    patch.object(self.pm, "_request_immediate_position_refresh") as mock_refresh:
+                self.pm._on_trade_callback(trade)
+        finally:
+            config.ENABLE_SIMULATION_MODE = old_sim
+
+        mock_refresh.assert_not_called()
+
     def test_h3c_grid_handled_deal_does_not_write_external_record(self):
         """网格管理器已接住的成交回报不应额外补写 external。"""
         executor = self._make_live_executor()
@@ -1136,6 +1217,44 @@ class TestTraderCallback(TestBase):
 
         status = self.pm._query_order_status("301560", "940572805")
         self.assertEqual(status, 56)
+
+    def test_i1_reconnect_does_not_block_forever_when_old_trader_stop_hangs(self):
+        """重连清理旧 xttrader 时应有超时保护，不能被 stop() 永久卡住。"""
+        class BlockingOldTrader:
+            def stop(self):
+                time.sleep(0.3)
+
+        class NewTrader:
+            def register_callback(self, callback):
+                self.callback = callback
+
+            def start(self):
+                pass
+
+            def connect(self):
+                return 0
+
+            def subscribe(self, account):
+                return 0
+
+        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader.xt_trader = BlockingOldTrader()
+
+        old_timeout = getattr(config, "QMT_STOP_TIMEOUT", None)
+        try:
+            config.QMT_STOP_TIMEOUT = 0.05
+            with patch("easy_qmt_trader.XtQuantTrader", return_value=NewTrader()):
+                start = time.time()
+                result = trader.connect()
+                elapsed = time.time() - start
+        finally:
+            if old_timeout is None:
+                delattr(config, "QMT_STOP_TIMEOUT")
+            else:
+                config.QMT_STOP_TIMEOUT = old_timeout
+
+        self.assertIsNotNone(result)
+        self.assertLess(elapsed, 0.2, "旧 trader.stop() 卡住时 connect() 也不应长时间阻塞")
 
 
 if __name__ == "__main__":

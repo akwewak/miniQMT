@@ -127,6 +127,39 @@ class easy_qmt_trader:
         self._connecting = False  # 连接进行中标记，避免误判错误
         logger.info('操作提示: 请登录QMT,选择行情加交易选项,选择极简模式')
 
+    def _stop_trader_with_timeout(self, trader, label='XtQuantTrader'):
+        """带超时停止交易接口，避免底层 stop() 卡死拖垮重连线程。"""
+        if not trader:
+            return True
+
+        timeout = float(getattr(config, 'QMT_STOP_TIMEOUT', 5.0))
+        result = {'stopped': False, 'error': None}
+
+        def _do_stop():
+            try:
+                trader.stop()
+                result['stopped'] = True
+            except Exception as e:
+                result['error'] = e
+
+        stop_thread = threading.Thread(
+            target=_do_stop,
+            daemon=True,
+            name='qmt_stop_worker'
+        )
+        stop_thread.start()
+        stop_thread.join(timeout)
+
+        if stop_thread.is_alive():
+            logger.warning(f'停止{label}超时({timeout}秒)，跳过等待并继续重连')
+            return False
+        if result['error'] is not None:
+            logger.warning(f'停止{label}时出错 (忽略): {result["error"]}')
+            return False
+
+        logger.info(f'已停止{label}')
+        return True
+
     def register_trade_callback(self, cb):
         """注册成交回报外部回调，cb(trade) 在每次成交时被调用"""
         if self._callback is not None:
@@ -300,11 +333,7 @@ class easy_qmt_trader:
         # 🔧 Fail-Safe 修复: 先清理旧连接，防止重复调用时资源泄漏
         old_trader = getattr(self, 'xt_trader', None)
         if old_trader:
-            try:
-                old_trader.stop()
-                logger.info('已停止旧 XtQuantTrader 实例')
-            except Exception as e:
-                logger.warning(f'停止旧 XtQuantTrader 时出错 (忽略): {e}')
+            self._stop_trader_with_timeout(old_trader, '旧 XtQuantTrader 实例')
             self.xt_trader = None
 
         # path为mini qmt客户端安装目录下userdata_mini路径
@@ -342,11 +371,7 @@ class easy_qmt_trader:
         if connect_thread.is_alive():
             logger.error(f'QMT连接超时({connect_timeout}秒)，中止本次连接')
             # 超时：尽量停止本次连接，避免遗留后台线程
-            try:
-                xt_trader.stop()
-                logger.info('已停止超时的 XtQuantTrader 实例')
-            except Exception as e:
-                logger.warning(f'停止超时的 XtQuantTrader 实例出错 (忽略): {e}')
+            self._stop_trader_with_timeout(xt_trader, '超时的 XtQuantTrader 实例')
             self.xt_trader = None
             self.acc = None
             self._connecting = False
@@ -354,11 +379,7 @@ class easy_qmt_trader:
 
         if connect_error:
             logger.error(f'QMT连接异常: {connect_error}')
-            try:
-                xt_trader.stop()
-                logger.info('已停止异常的 XtQuantTrader 实例')
-            except Exception as e:
-                logger.warning(f'停止异常的 XtQuantTrader 实例出错 (忽略): {e}')
+            self._stop_trader_with_timeout(xt_trader, '异常的 XtQuantTrader 实例')
             self.xt_trader = None
             self.acc = None
             self._connecting = False
@@ -374,11 +395,7 @@ class easy_qmt_trader:
         else:
             logger.error(f'QMT连接失败, 连接结果={connect_result}')
             # 连接失败：停止新建线程，避免残留后台线程
-            try:
-                xt_trader.stop()
-                logger.info('已停止失败的 XtQuantTrader 实例')
-            except Exception as e:
-                logger.warning(f'停止失败的 XtQuantTrader 实例出错 (忽略): {e}')
+            self._stop_trader_with_timeout(xt_trader, '失败的 XtQuantTrader 实例')
             # 连接失败：重置为 None，避免 self.xt_trader 停留在 '' 字符串状态
             self.xt_trader = None
             self.acc = None

@@ -4426,6 +4426,8 @@ class PositionManager:
         recorded = self._record_trade_after_confirmation(order_id, order_info, trade=trade)
         if recorded:
             logger.info(f"[外部成交] 已确认交易流水: {stock_code} order_id={order_id}, strategy=external")
+        self.last_position_update_time = 0
+        logger.info(f"[外部成交] {stock_code} 已标记下轮监控强制同步持仓")
         return recorded
 
     def _confirm_filled_order(self, stock_code, order_id, source, trade=None, order_info=None):
@@ -4460,7 +4462,8 @@ class PositionManager:
             pending_snapshot.setdefault('stock_code', stock_code_base)
             self._record_trade_after_confirmation(order_id, pending_snapshot, trade=trade)
 
-        self._request_immediate_position_refresh(stock_code_base, source)
+        if matched_key or order_info:
+            self._request_immediate_position_refresh(stock_code_base, source)
         return bool(matched_key or order_info)
 
     def _confirm_canceled_order(self, stock_code, order_id, source):

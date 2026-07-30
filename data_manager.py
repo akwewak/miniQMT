@@ -1768,12 +1768,13 @@ class DataManager:
         except Exception:
             pass
 
-    def get_stock_name(self, stock_code):
+    def get_stock_name(self, stock_code, allow_qmt_lookup=True):
         """
         获取股票名称
 
         参数:
         stock_code (str): 股票代码
+        allow_qmt_lookup (bool): 是否允许通过 QMT 持仓回查名称
 
         返回:
         str: 股票名称，如果未找到则返回股票代码
@@ -1786,28 +1787,29 @@ class DataManager:
                     return cached_name
                 self.stock_names_cache.pop(stock_code, None)
 
-            # 从QMT交易接口获取（仅实盘模式）
-            try:
-                # 模拟模式下跳过实盘API调用
-                if hasattr(config, 'ENABLE_SIMULATION_MODE') and config.ENABLE_SIMULATION_MODE:
-                    raise Exception("模拟模式，跳过QMT API")
+            if allow_qmt_lookup:
+                # 从QMT交易接口获取（仅实盘模式）
+                try:
+                    # 模拟模式下跳过实盘API调用
+                    if hasattr(config, 'ENABLE_SIMULATION_MODE') and config.ENABLE_SIMULATION_MODE:
+                        raise Exception("模拟模式，跳过QMT API")
 
-                from position_manager import get_position_manager
-                position_manager = get_position_manager()
+                    from position_manager import get_position_manager
+                    position_manager = get_position_manager()
 
-                if hasattr(position_manager, 'qmt_trader') and position_manager.qmt_trader:
-                    positions_df = position_manager.qmt_trader.position()
-                    if not positions_df.empty and '证券代码' in positions_df.columns and '证券名称' in positions_df.columns:
-                        # 简化股票代码以匹配
-                        stock_code_simple = stock_code.split('.')[0] if '.' in stock_code else stock_code
-                        stock_info = positions_df[positions_df['证券代码'] == stock_code_simple]
-                        if not stock_info.empty:
-                            stock_name = stock_info.iloc[0]['证券名称']
-                            cached_name = self._cache_stock_name(stock_code, stock_name)
-                            if cached_name:
-                                return cached_name
-            except Exception as e:
-                logger.debug(f"通过qmt_trader获取股票名称出错: {str(e)}")
+                    if hasattr(position_manager, 'qmt_trader') and position_manager.qmt_trader:
+                        positions_df = position_manager.qmt_trader.position()
+                        if not positions_df.empty and '证券代码' in positions_df.columns and '证券名称' in positions_df.columns:
+                            # 简化股票代码以匹配
+                            stock_code_simple = stock_code.split('.')[0] if '.' in stock_code else stock_code
+                            stock_info = positions_df[positions_df['证券代码'] == stock_code_simple]
+                            if not stock_info.empty:
+                                stock_name = stock_info.iloc[0]['证券名称']
+                                cached_name = self._cache_stock_name(stock_code, stock_name)
+                                if cached_name:
+                                    return cached_name
+                except Exception as e:
+                    logger.debug(f"通过qmt_trader获取股票名称出错: {str(e)}")
 
             stock_name = self._get_stock_name_from_xtdata(stock_code)
             if stock_name:
