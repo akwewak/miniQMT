@@ -179,6 +179,32 @@ class TestTushareHistoryData(TestBase):
         # 日期应标准化为 YYYY-MM-DD
         self.assertTrue(all(len(str(d)) == 10 for d in df['date']))
 
+    def test_download_history_dash_dates_sent_as_tushare_format(self):
+        """YYYY-MM-DD 入参应转换为 Tushare daily 需要的 YYYYMMDD"""
+        mock_pro = self._make_mock_pro()
+        self._mock_tushare_pro(mock_pro)
+
+        self.dm._download_history_tushare('000001.SZ',
+                                          start_date='2026-07-01',
+                                          end_date='2026-07-02')
+
+        _, kwargs = mock_pro.daily.call_args
+        self.assertEqual(kwargs['start_date'], '20260701')
+        self.assertEqual(kwargs['end_date'], '20260702')
+
+    def test_download_history_compact_dates_remain_unchanged(self):
+        """YYYYMMDD 入参应保持为 Tushare daily 格式"""
+        mock_pro = self._make_mock_pro()
+        self._mock_tushare_pro(mock_pro)
+
+        self.dm._download_history_tushare('000001.SZ',
+                                          start_date='20260701',
+                                          end_date='20260702')
+
+        _, kwargs = mock_pro.daily.call_args
+        self.assertEqual(kwargs['start_date'], '20260701')
+        self.assertEqual(kwargs['end_date'], '20260702')
+
     def test_download_history_empty_data_returns_none(self):
         """空 DataFrame 返回 None"""
         mock_pro = MagicMock()

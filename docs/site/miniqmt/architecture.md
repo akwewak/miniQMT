@@ -61,7 +61,7 @@ config.py              # 集中配置管理
 logger.py              # 统一日志管理
 main.py                # 系统启动入口和线程管理
 thread_monitor.py      # 线程健康监控与自愈
-data_manager.py        # 行情获取（实时 xtdata→Mootdx；历史标准模式 Tushare→Mootdx，网关模式 xtdata→Tushare→Mootdx；行情健康评分）
+data_manager.py        # 行情获取（实时标准模式 xtdata→Mootdx，网关模式 xtdata→lastClose/None；历史标准模式 Tushare→Mootdx，网关模式 xtdata→Tushare→Mootdx；行情健康评分）
 indicator_calculator.py # 技术指标计算
 position_manager.py    # 持仓管理核心（内存 + SQLite 双层）
 trading_executor.py    # 交易执行器（xttrader 接口）

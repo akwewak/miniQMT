@@ -1059,10 +1059,11 @@ class DataManager:
 
     def download_history_data(self, stock_code, period=None, start_date=None, end_date=None):
         """
-        下载股票历史数据（优先 xtdata，失败后 fallback 到 Mootdx）
+        下载股票历史数据。
 
-        即使 ENABLE_XTQUANT_MANAGER=False，本地 xtdata 连接可用时也优先使用 xtdata；
-        Mootdx 仅作为兜底数据源，减少通达信源异常日期和网络超时对生产日志的影响。
+        网关模式(ENABLE_XTQUANT_MANAGER=True)：xtdata → Tushare（日/周/月且启用）→ Mootdx。
+        标准模式(ENABLE_XTQUANT_MANAGER=False)：Tushare（日/周/月且启用）→ Mootdx，避免触碰
+        部分 QMT 客户端会进程级崩溃的 xtdata 历史接口。
 
         参数:
         stock_code (str): 股票代码
@@ -1073,7 +1074,7 @@ class DataManager:
         返回:
         pandas.DataFrame: 历史数据，若失败则返回None
         """
-        # ── 历史数据源策略：xtdata 优先，Mootdx 兜底 ──
+        # ── 历史数据源策略：网关模式优先 xtdata，标准模式跳过 xtdata ──
         effective_period = period or 'day'
         _daily_periods = ('day', '1d', 'week', '1w', 'mon', '1mon')
         _is_daily_period = effective_period in _daily_periods
@@ -1107,7 +1108,7 @@ class DataManager:
                 return xt_df
             logger.debug(f"xtdata 未返回 {stock_code} 有效历史数据，fallback 到 Mootdx")
 
-        # ── 标准模式：Tushare 优先 → Mootdx 兜底 ──
+        # ── Tushare（日/周/月）优先 → Mootdx 兜底 ──
         # 仅在日线/周线/月线周期时走 Tushare（分钟线需单独购买 2000元/年权限）
         if _is_daily_period and getattr(config, 'ENABLE_TUSHARE_DATA_SOURCE', False):
             ts_start_date = start_date
@@ -1543,14 +1544,32 @@ class DataManager:
         else:
             return code + '.SZ'
 
+    @staticmethod
+    def _format_tushare_date(value):
+        """将常见日期格式转为 Tushare daily 接口要求的 YYYYMMDD。"""
+        if not value:
+            return None
+        s = str(value).strip()
+        if not s:
+            return None
+        try:
+            if '-' in s:
+                return datetime.strptime(s[:10], '%Y-%m-%d').strftime('%Y%m%d')
+            digits = ''.join(ch for ch in s if ch.isdigit())
+            if len(digits) >= 8:
+                return digits[:8]
+        except Exception:
+            return None
+        return None
+
     def _download_history_tushare(self, stock_code, start_date=None, end_date=None):
         """
         通过 Tushare Pro 获取日线历史数据。
 
         Args:
             stock_code: 股票代码（支持 000001.SZ / 600036.SH / 裸代码）
-            start_date: 开始日期 YYYYMMDD
-            end_date: 结束日期 YYYYMMDD
+            start_date: 开始日期 YYYYMMDD 或 YYYY-MM-DD
+            end_date: 结束日期 YYYYMMDD 或 YYYY-MM-DD
 
         Returns:
             pandas.DataFrame（列 date/open/high/low/close/volume/amount）或 None
@@ -1566,9 +1585,9 @@ class DataManager:
 
         ts_code = self._to_tushare_code(stock_code)
 
-        # 日期格式转换
-        ts_start = start_date if start_date else (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
-        ts_end = end_date if end_date else datetime.now().strftime('%Y%m%d')
+        # 日期格式转换：Tushare daily 入参必须是 YYYYMMDD
+        ts_start = self._format_tushare_date(start_date) or (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
+        ts_end = self._format_tushare_date(end_date) or datetime.now().strftime('%Y%m%d')
 
         import concurrent.futures
         start_ts = time.time()
@@ -1977,8 +1996,9 @@ class DataManager:
         获取最新行情数据
 
         盘中优先走 xtdata tick 推送缓存（_on_xtdata_tick 写入，零延迟零线程池开销）；
-        缓存未命中时回退到 xtdata get_full_tick 轮询 → Mootdx 兜底。
-        非交易时段走 xtdata 快照 → Mootdx 兜底。
+        标准模式缓存未命中时走 xtdata get_full_tick 轮询 → Mootdx 兜底；
+        网关模式不走 Mootdx，xtdata lastPrice=0 时使用 lastClose 参考价或返回 None。
+        非交易时段标准模式走 xtdata 快照 → Mootdx 兜底。
 
         参数:
         stock_code (str): 股票代码

@@ -83,7 +83,12 @@ flowchart TD
 
     subgraph RT["实时行情 get_latest_data"]
         direction TB
-        RT1["xtdata get_full_tick"] -->|失败/超时| RT2["Mootdx 兜底"]
+        RT0{"ENABLE_XTQUANT_MANAGER?"}
+        RT0 -->|标准模式| RT1["xtdata get_full_tick"]
+        RT1 -->|失败/超时/无效价| RT2["Mootdx 兜底"]
+        RT0 -->|网关模式| RT3["xtdata get_full_tick"]
+        RT3 -->|lastPrice=0 且 lastClose>0| RT4["lastClose 参考价"]
+        RT3 -->|无有效价格| RT5["返回 None"]
     end
 
     subgraph HIS["历史 K 线 download_history_data"]
@@ -317,7 +322,7 @@ DYNAMIC_TAKE_PROFIT = [
 | `TUSHARE_MAX_CONSECUTIVE_FAILURES` | `3` | 连续失败达到阈值后进入冷却期 |
 
 !!! info "Tushare 权限说明"
-    免费版（120 积分）仅能取非复权日线，实际不可用于生产；推荐 2000 积分（200 元/年）版本，可用复权日线 + 股票基础信息。Tushare 无 tick 级实时行情，**只用于历史数据和股票名称**，实时价格仍由 xtdata/Mootdx 提供。
+    免费版（120 积分）仅能取非复权日线，实际不可用于生产；推荐 2000 积分（200 元/年）版本，可用复权日线 + 股票基础信息。Tushare 无 tick 级实时行情，**只用于历史数据和股票名称**；实时价格标准模式由 xtdata/Mootdx 提供，网关模式由 xtdata 或 lastClose 参考价提供。
 
 新版 baostock(0.9.x) 收紧了访问格式与行为，本项目已统一适配（见 [baostock_helper.py](https://github.com/weihong-su/miniQMT/blob/main/baostock_helper.py)）：登录前自动应用 `BAOSTOCK_API_KEY`（旧版 0.8.x 无 `set_API_key` 时自动跳过、匿名访问），复权类型归一化为 baostock 接受的 `'1'/'2'/'3'`，登录/查询错误码显式校验并对激活/权限类错误补充可读提示，且 baostock 失败时自动降级到 Mootdx，不阻塞主循环。依赖约束为 `baostock>=0.9.1`（仅在显式开启 baostock 功能时需要）。
 
