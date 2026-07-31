@@ -46,6 +46,31 @@ def get_release_version():
         logger.warning(f"读取发布版本号失败: {str(e)}")
     return 'unknown'
 
+
+def _format_trade_time_for_response(value):
+    """格式化交易时间，兼容历史秒级、带微秒和 ISO 字符串。"""
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, datetime):
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    normalized = text.replace('T', ' ')
+    for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S'):
+        try:
+            return datetime.strptime(normalized, fmt).strftime('%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            pass
+
+    parsed = pd.to_datetime(text, errors='coerce')
+    if pd.isna(parsed):
+        logger.warning(f"交易时间格式无法解析，保留原值: {text}")
+        return text
+    return parsed.strftime('%Y-%m-%d %H:%M:%S')
+
 # 创建Flask应用
 app = Flask(__name__, static_folder=webpage_dir, static_url_path='')
 
@@ -654,7 +679,7 @@ def get_trade_records():
 
         # Format 'trade_time' to 'YYYY-MM-DD'
         if 'trade_time' in trades_df.columns:
-            trades_df['trade_time'] = pd.to_datetime(trades_df['trade_time']).dt.strftime('%Y-%m-%d %H:%M:%S')
+            trades_df['trade_time'] = trades_df['trade_time'].map(_format_trade_time_for_response)
 
         if 'strategy' in trades_df.columns:
             strategy_labels = {

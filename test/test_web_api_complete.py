@@ -690,6 +690,45 @@ class TestTradeRecords(WebAPITestBase):
         )
         mock_executor.get_trades.return_value = pd.DataFrame()
 
+    def test_03_get_trade_records_with_mixed_time_formats(self):
+        """GET /api/trade-records 兼容带微秒和不带微秒的混合交易时间"""
+        df = pd.DataFrame([
+            {
+                'stock_code': '000799.SZ',
+                'trade_type': 'BUY',
+                'price': 39.78,
+                'volume': 400,
+                'trade_time': '2026-07-31 09:31:50.610000',
+                'strategy': 'grid',
+                'trade_id': '2014314498',
+                'stock_name': '酒鬼酒',
+            },
+            {
+                'stock_code': '002083',
+                'trade_type': 'BUY',
+                'price': 11.14,
+                'volume': 1300,
+                'trade_time': '2026-07-31 09:30:44',
+                'strategy': 'external',
+                'trade_id': '2014314497',
+                'stock_name': '孚日股份',
+            },
+        ])
+        mock_executor.get_trades.return_value = df
+        resp, ms = self._get('/api/trade-records')
+        self._record(
+            '/api/trade-records', 'GET',
+            '兼容混合交易时间格式',
+            resp, ms,
+            extra_checks=lambda d: (
+                self.assertEqual(d.get('status'), 'success'),
+                self.assertEqual(len(d.get('data', [])), 2),
+                self.assertEqual(d['data'][0]['trade_time'], '2026-07-31 09:31:50'),
+                self.assertEqual(d['data'][1]['trade_time'], '2026-07-31 09:30:44'),
+            ),
+        )
+        mock_executor.get_trades.return_value = pd.DataFrame()
+
 
 # =====================================================================
 # 5. 配置管理
