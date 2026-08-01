@@ -593,6 +593,17 @@ monitor.register_thread(
 
 **验证**: 退出系统时查看日志,应该看到有序的关闭步骤,无ERROR日志
 
+### 7. 外部成交后系统卡死 / 重连线程僵住
+
+**原因**: 在 QMT 回调线程内反向调用 QMT 同步接口(如 `qmt_trader.position()`),与回调线程互等死锁
+
+**约束**（修改成交回调链路时必须遵守）:
+- 外部成交（QMT 客户端手工下单等本机未发的委托）走 `_record_external_trade_after_callback()`，**只置零 `last_position_update_time`** 让下轮监控自己同步，绝不在回调里请求持仓快刷
+- `_confirm_filled_order()` 仅在 `matched_key or order_info` 为真（确实匹配到本机委托）时才调 `_request_immediate_position_refresh()`
+- 回调链路上写流水时用 `data_manager.get_stock_name(stock_code, allow_qmt_lookup=False)` 关闭 QMT 持仓回查
+
+**相关保护**: `easy_qmt_trader._stop_trader_with_timeout()` 把 `xt_trader.stop()` 放进 daemon 线程并按 `config.QMT_STOP_TIMEOUT`(默认5秒)超时放弃，避免底层 stop 卡死拖垮重连
+
 
 ## Web API端点
 
@@ -755,9 +766,9 @@ thread_monitor.get_status()
 | `grid_simulation` | high | 价格模拟测试（30个用例） |
 | `qmt_ipc_fallback` | high | 大QMT文件IPC降级通道（客户端/执行器/集成） |
 | `qmt_rpc` | high | 大QMT RPC 交易后端（契约兼容、只读门禁、回调/委托映射） |
-| `fast` | critical | 快速验证子集（当前配置 33 个模块、717 个用例） |
+| `fast` | critical | 快速验证子集（当前配置 33 个模块、750 个用例） |
 
-**测试统计（当前配置）**: 31组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 31组、107个模块、1933个用例，100% 通过；具体以本地运行报告为准。
+**测试统计（当前配置）**: 31组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次（2026-08-01）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 31组、108个模块、2014个用例，100% 通过，耗时 871.99 秒；具体以本地运行报告为准。
 
 ### 编写新测试的规范
 

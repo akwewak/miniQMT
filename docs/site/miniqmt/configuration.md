@@ -124,6 +124,16 @@ flowchart TD
 | `ENABLE_QMT_IPC_FALLBACK=True` | `QmtIpcTrader`（大QMT 文件 IPC） | xttrader 失效时的降级：用大QMT自带授权，文件系统 IPC |
 | `ENABLE_QMT_RPC_FALLBACK=True` | `QmtRpcTrader`（大QMT RPC） | xttrader 失效时的降级：Redis/ZMQ RPC 驱动大QMT，毫秒级延迟 |
 
+### xttrader 直连参数
+
+默认通道 `easy_qmt_trader` 的连接与清理保护，全部在独立线程中带超时执行，避免 QMT 底层调用卡死拖垮重连线程。
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `USE_SYNC_ORDER_API` | `False` | `False` 用 `order_stock_async()` 返回 seq 号（需回调映射）；`True` 用 `order_stock()` 直接返回 order_id |
+| `QMT_CONNECT_TIMEOUT` | `30` | 连接 QMT 交易接口超时（秒），超时后中止本次连接并清理实例 |
+| `QMT_STOP_TIMEOUT` | `5.0` | 停止 XtQuantTrader 实例超时（秒）。`stop()` 在 daemon 线程中执行，超时即放弃等待继续重连，不阻塞恢复流程 |
+
 ### XtQuantManager 网关参数
 
 | 参数 | 默认值 | 说明 |
@@ -323,6 +333,9 @@ DYNAMIC_TAKE_PROFIT = [
 
 !!! info "Tushare 权限说明"
     免费版（120 积分）仅能取非复权日线，实际不可用于生产；推荐 2000 积分（200 元/年）版本，可用复权日线 + 股票基础信息。Tushare 无 tick 级实时行情，**只用于历史数据和股票名称**；实时价格标准模式由 xtdata/Mootdx 提供，网关模式由 xtdata 或 lastClose 参考价提供。
+
+!!! tip "日期入参自动归一化"
+    Tushare `daily` 接口要求 `YYYYMMDD`，但项目内部（含盘中补齐历史数据的调用方）会传 `YYYY-MM-DD`。`DataManager._format_tushare_date()` 在请求前统一转换：带 `-` 的按 `%Y-%m-%d` 解析，否则抽取前 8 位数字；无法识别时返回 `None` 并回落到默认区间（近 365 天 / 今天）。此前直接透传导致 Tushare 返回空集，静默降级到 Mootdx。
 
 新版 baostock(0.9.x) 收紧了访问格式与行为，本项目已统一适配（见 [baostock_helper.py](https://github.com/weihong-su/miniQMT/blob/main/baostock_helper.py)）：登录前自动应用 `BAOSTOCK_API_KEY`（旧版 0.8.x 无 `set_API_key` 时自动跳过、匿名访问），复权类型归一化为 baostock 接受的 `'1'/'2'/'3'`，登录/查询错误码显式校验并对激活/权限类错误补充可读提示，且 baostock 失败时自动降级到 Mootdx，不阻塞主循环。依赖约束为 `baostock>=0.9.1`（仅在显式开启 baostock 功能时需要）。
 

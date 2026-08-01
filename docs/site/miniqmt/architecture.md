@@ -34,6 +34,16 @@
 - **SQLite**：持久化关键状态（开仓日期、止盈标记、最高价）
 - 修改内存数据后必须调用 `_increment_data_version()` 触发前端更新
 
+### 外部成交补账
+
+在 QMT 客户端手工下单、或其他程序用同一账号交易时，本机会收到成交回报但匹配不到本机 `pending_orders`。此时走 `_record_external_trade_after_callback()`：以 `strategy='external'` 补写 `trade_records`，并把 `last_position_update_time` 归零，强制下一轮持仓监控立刻重新拉取 QMT 持仓（而不是等 `QMT_POSITION_QUERY_INTERVAL` 到期）。
+
+!!! warning "回调线程内不得回查 QMT"
+    补账走在 QMT 回调线程上，此时**不能**再反向调用 `qmt_trader.position()` 之类的同步接口——底层会与回调线程互等而死锁。因此：
+
+    - `_confirm_filled_order()` 只在确实匹配到本机委托（`matched_key or order_info`）时才请求持仓快刷，外部成交不走这条路径，改用置零时间戳让监控线程自己去同步。
+    - 补写流水时 `data_manager.get_stock_name(allow_qmt_lookup=False)` 关闭 QMT 持仓回查，名称改由缓存/xtdata/Tushare 等非阻塞源提供。
+
 ---
 
 ## 线程架构

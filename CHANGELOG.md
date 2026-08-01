@@ -6,6 +6,37 @@
 
 ## [Unreleased]
 
+## [3.8.5] - 2026-08-01
+
+> 本版本聚焦**实盘稳定性修复**：消除外部成交回报引发的 xttrader 死锁、修正 Tushare 日期入参导致的静默降级、兼容交易记录混合时间格式，并修正 web1.0 两处按钮行为与文案。
+
+### Fixed
+- **外部成交导致 xttrader 死锁**：在 QMT 客户端手工下单（或其他程序用同一账号交易）时，本机收到成交回报但匹配不到本机委托，此前会在回调线程内反向调用 QMT 同步接口，与回调线程互等而永久阻塞。三处收口：
+    - `_record_external_trade_after_callback()` 改为只把 `last_position_update_time` 置零，让下一轮持仓监控自行同步，不在回调里请求持仓快刷。
+    - `_confirm_filled_order()` 仅在 `matched_key or order_info` 为真（确实匹配到本机委托）时才调用 `_request_immediate_position_refresh()`。
+    - 回调链路写流水时通过新增的 `get_stock_name(..., allow_qmt_lookup=False)` 关闭 QMT 持仓回查，名称改由缓存/xtdata/Tushare 等非阻塞源提供；`_save_trade_record()` 新增 `allow_qmt_name_lookup` 参数并对旧签名做 `TypeError` 兼容。
+- **`xt_trader.stop()` 卡死拖垮重连线程**：新增 `easy_qmt_trader._stop_trader_with_timeout()`，把 `stop()` 放进 daemon 线程并按 `QMT_STOP_TIMEOUT`（默认 5 秒）超时放弃等待继续重连。`connect()` 的四条清理路径（清理旧实例 / 连接超时 / 连接异常 / 连接失败）统一走该入口，替换原先四段裸 `try: stop()`。
+- **Tushare 日期入参未归一化**：`daily` 接口要求 `YYYYMMDD`，而项目内部（含盘中补齐历史数据的调用方）传的是 `YYYY-MM-DD`，此前直接透传导致 Tushare 返回空集并静默降级到 Mootdx。新增 `DataManager._format_tushare_date()` 统一转换，无法识别时回落到默认区间（近 365 天 / 今天）。
+- **交易记录混合时间格式导致接口 500**：`trade_records.trade_time` 在库中可能混合 QMT 回报的微秒精度（`2026-07-31 09:31:50.610000`）、系统写入的秒级（`09:30:44`）和历史 ISO 格式，原先整列走 `pd.to_datetime` 会抛错。新增 `_format_trade_time_for_response()`：依次尝试带/不带微秒的严格解析，回退 `pd.to_datetime`，全部失败才原样返回并记 WARNING。
+- **web1.0「初始化持股」按钮不显示成功**：`POST /api/holdings/init` 返回体缺 `status` 字段，前端据此判定失败。后端补齐 `status`（由 `success` 推导），并同步收紧测试断言。
+- **web1.0「清空买卖日志」文案与实现不符**：二次确认提示原写作"删除所有交易记录**和持仓信息**"，而后端只执行 `DELETE FROM trade_records`。文案改为"清空全部买入/卖出日志……不会清空持仓数据"。
+
+### Added
+- 新增配置 `QMT_STOP_TIMEOUT = 5.0`（QMT 交易接口停止超时，秒）。
+
+### Tests
+- 新增/扩展用例：`test_trader_callback.py`（外部成交不触发回调内持仓回查、`stop()` 超时不阻塞重连）、`test_tushare_adapter.py`（日期格式归一化）、`test_web_api_complete.py`（混合时间格式、`holdings/init` 返回 `status`）。
+- 使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test/run_integration_regression_tests.py --all-with-fast` 完整回归：**31 组、108 模块、2014 用例，2014 通过，0 失败，0 错误，0 跳过，成功率 100%**，耗时 871.99 秒。
+
+### Docs
+- `architecture.md` 新增「外部成交补账」小节，明确回调线程内不得回查 QMT 的约束及三处收口点。
+- `unattended.md` 超时保护章节新增「xttrader 连接与清理超时」，说明 `_stop_trader_with_timeout()` 机制与死锁背景。
+- `configuration.md` 新增「xttrader 直连参数」表（`USE_SYNC_ORDER_API` / `QMT_CONNECT_TIMEOUT` / `QMT_STOP_TIMEOUT`），Tushare 章节补充日期入参自动归一化说明。
+- `web-api.md` 补充交易时间格式兼容说明、`clear_buysell` 只删交易记录的语义、`holdings/init` 返回 `status`。
+- `web-frontend.md` 新增「数据管理按钮语义」表与文案对齐提示。
+- `CLAUDE.md` 常见问题新增第 7 条「外部成交后系统卡死 / 重连线程僵住」。
+- 同步更新 `testing.md` / `CLAUDE.md` / `README.md` 的测试统计到 v3.8.5 实测结果。
+
 ## [3.8.4] - 2026-07-28
 
 > 本版本将**动态止盈止损开关下沉到个股层面**：全局开关之下新增每只股票的独立闸门，可在 web1.0 持仓列表用拨动开关随时暂停/恢复单只股票；同时优化 web1.0 持仓列表与下单日志的排版可读性。
@@ -359,7 +390,13 @@
 - 模拟交易模式（无需 QMT 即可验证策略）
 - 回归测试框架基础设施
 
-[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.6.0...HEAD
+[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.5...HEAD
+[3.8.5]: https://github.com/weihong-su/miniQMT/compare/v3.8.4...v3.8.5
+[3.8.4]: https://github.com/weihong-su/miniQMT/compare/v3.8.2...v3.8.4
+[3.8.2]: https://github.com/weihong-su/miniQMT/compare/v3.8.1...v3.8.2
+[3.8.1]: https://github.com/weihong-su/miniQMT/compare/v3.8.0...v3.8.1
+[3.8.0]: https://github.com/weihong-su/miniQMT/compare/v3.7.0...v3.8.0
+[3.7.0]: https://github.com/weihong-su/miniQMT/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/weihong-su/miniQMT/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/weihong-su/miniQMT/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/weihong-su/miniQMT/compare/v3.3.0...v3.4.0

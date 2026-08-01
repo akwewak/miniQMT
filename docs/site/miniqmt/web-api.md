@@ -76,13 +76,16 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 |------|------|------|--------|
 | GET | `/api/positions` | 当前持仓列表（含 SQLite 持久化字段：名称/建仓日/止损价） | ✅ 完整 |
 | GET | `/api/positions-all` | 全部持仓详情 | ✅ 完整 |
-| GET | `/api/trade-records` | 交易记录（优先读 SQLite `trade_records`） | ✅ 完整 |
+| GET | `/api/trade-records` | 交易记录（优先读 SQLite `trade_records`，`trade_time` 统一格式化为 `YYYY-MM-DD HH:MM:SS`） | ✅ 完整 |
 | POST | `/api/initialize_positions` | 初始化持仓数据 🔑 需 Token | ❌ |
-| POST | `/api/holdings/init` | 初始化持股配置 🔑 需 Token | ❌ |
+| POST | `/api/holdings/init` | 初始化持股配置（返回体含 `status`，供 web1.0 按钮判定成败） 🔑 需 Token | ❌ |
 
 !!! note "交易记录口径"
     实盘网格在 `GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True` 时，`/api/trade-records` 只返回真实成交确认后的 `trade_records`。已报未成交的网格委托只体现在 `grid_orders` / 网格会话状态中，不会以 `ORDER_xxx` 形式伪装成成交。
     动态止盈止损的实盘卖出委托也遵循成交确认语义：首次止盈半仓提交成功不等于 `profit_triggered=True`，成交回报到达后才更新持仓状态与持久化字段。
+
+!!! tip "交易时间格式兼容"
+    `trade_records.trade_time` 在库中可能混合多种写法：QMT 成交回报带微秒（`2026-07-31 09:31:50.610000`）、系统内部写入为秒级（`2026-07-31 09:30:44`），历史数据还可能是 ISO（含 `T` 分隔符）。`_format_trade_time_for_response()` 依次尝试带微秒/不带微秒的严格解析，再回退到 `pd.to_datetime`，全部失败才原样返回并记 WARNING。此前统一走 `pd.to_datetime` 在混合格式下会整列抛错，导致交易记录接口 500。
 
 ---
 
@@ -207,7 +210,7 @@ web1.0 网格悬停卡片直接使用该接口。为避免前端重复换算，�
 | 方法 | 路径 | 说明 | 🌐 网关 |
 |------|------|------|--------|
 | POST | `/api/logs/clear` | 清空日志 | ❌ |
-| POST | `/api/data/clear_buysell` | 清除买卖数据 | ❌ |
+| POST | `/api/data/clear_buysell` | 清空买入/卖出日志（`DELETE FROM trade_records`，**不影响持仓数据**） | ❌ |
 | POST | `/api/data/import` | 导入数据 | ❌ |
 
 ---

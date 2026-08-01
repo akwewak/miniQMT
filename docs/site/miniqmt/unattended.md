@@ -61,6 +61,22 @@ except TimeoutError:
 
 超时不阻塞主循环，下一次循环继续尝试。
 
+### xttrader 连接与清理超时
+
+重连路径上的 QMT 底层调用同样有超时兜底。`easy_qmt_trader._stop_trader_with_timeout()` 把 `xt_trader.stop()` 放进 daemon 线程执行，超过 `QMT_STOP_TIMEOUT`（默认 5 秒）就放弃等待并继续重连：
+
+```python
+stop_thread = threading.Thread(target=_do_stop, daemon=True, name='qmt_stop_worker')
+stop_thread.start()
+stop_thread.join(timeout)          # config.QMT_STOP_TIMEOUT
+if stop_thread.is_alive():
+    logger.warning(f'停止{label}超时({timeout}秒)，跳过等待并继续重连')
+```
+
+`connect()` 的四条清理路径（清理旧实例、连接超时、连接异常、连接失败）全部走这个统一入口。**背景**：QMT 在处理外部成交回报时，`stop()` 可能与底层回调线程互相等待而永久阻塞，此前会把整个重连线程拖死，Fail-Safe 自愈随之失效。
+
+连接本身由 `QMT_CONNECT_TIMEOUT`（默认 30 秒）保护，超时后中止本次连接并清理残留实例，避免遗留后台线程。
+
 ---
 
 ## 非交易时段优化
