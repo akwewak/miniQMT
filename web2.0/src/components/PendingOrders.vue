@@ -10,7 +10,7 @@ import { formatAge } from '../utils/freshness'
  * 持仓和成交记录都看不到它，只有委托队列能证明"单已挂出"。
  */
 const positions = usePositionsStore()
-const showAll = ref(false)
+const showAll = ref(true)
 
 const pending = computed(() => positions.pendingOrders)
 const visible = computed(() => showAll.value ? positions.orders : pending.value)
