@@ -3,17 +3,19 @@ import { computed, ref } from 'vue'
 import type { GridLedgerDetail, GridSession, GridTrade, RiskTemplate } from '../types'
 import * as flaskApi from '../api/flask'
 
+/** 网格会话只读视图：仅拉取与展示，不提供启动/停止/暂停等写操作。 */
 export const useGridStore = defineStore('grid', () => {
   const sessions = ref<GridSession[]>([])
   const tradesBySession = ref<Record<number, GridTrade[]>>({})
   const tradeTotalsBySession = ref<Record<number, number>>({})
   const ledgerBySession = ref<Record<number, GridLedgerDetail>>({})
   const riskTemplates = ref<Record<string, RiskTemplate>>({})
-  const templates = ref<any[]>([])
   const loading = ref(false)
   const tradesLoading = ref(false)
   const ledgerLoading = ref(false)
   const ledgerError = ref('')
+  const updatedAt = ref(0)
+
   const activeSessions = computed(() => sessions.value.filter(s => s.status === 'active' || s.status === 'stopping'))
 
   const normalizeStockCode = (code: string) => String(code || '').split('.')[0]
@@ -27,42 +29,17 @@ export const useGridStore = defineStore('grid', () => {
 
   async function fetchSessions() {
     sessions.value = await flaskApi.getAllGridSessions()
+    updatedAt.value = Date.now()
   }
 
   async function fetchRiskTemplates() {
     riskTemplates.value = await flaskApi.getGridRiskTemplates()
   }
 
-  async function fetchTemplates() {
-    templates.value = await flaskApi.getGridTemplates()
-  }
-
   async function fetchAll() {
     loading.value = true
-    await Promise.all([fetchSessions(), fetchRiskTemplates(), fetchTemplates()])
+    await Promise.all([fetchSessions(), fetchRiskTemplates()])
     loading.value = false
-  }
-
-  async function startSession(params: any) {
-    const r = await flaskApi.startGrid(params)
-    if (r?.success) await fetchSessions()
-    return r
-  }
-
-  async function stopSession(sessionId: number) {
-    const r = await flaskApi.stopGrid(sessionId)
-    if (r?.success) await fetchSessions()
-    return r
-  }
-
-  async function setSessionEnabled(sessionId: number, enabled: boolean) {
-    const r = await flaskApi.setGridSessionEnabled(sessionId, enabled)
-    if (r?.success) {
-      sessions.value = sessions.value.map(s =>
-        s.session_id === sessionId ? { ...s, enabled } : s
-      )
-    }
-    return r
   }
 
   async function fetchTrades(sessionId: number, limit = 20, offset = 0) {
@@ -97,13 +74,24 @@ export const useGridStore = defineStore('grid', () => {
   }
 
   function getSessionByStock(stockCode: string): GridSession | undefined {
-    const normalize = (code: string) => (code || '').split('.')[0]
-    return sessions.value.find(s => s.stock_code === stockCode || normalize(s.stock_code) === normalize(stockCode))
+    return sessions.value.find(
+      s => s.stock_code === stockCode || normalizeStockCode(s.stock_code) === normalizeStockCode(stockCode)
+    )
+  }
+
+  function reset() {
+    sessions.value = []
+    tradesBySession.value = {}
+    tradeTotalsBySession.value = {}
+    ledgerBySession.value = {}
+    ledgerError.value = ''
+    updatedAt.value = 0
   }
 
   return {
     sessions, activeSessions, activeStockCodes, tradesBySession, tradeTotalsBySession, ledgerBySession,
-    riskTemplates, templates, loading, tradesLoading, ledgerLoading, ledgerError,
-    fetchSessions, fetchRiskTemplates, fetchTemplates, fetchAll, startSession, stopSession, setSessionEnabled, fetchTrades, fetchLedger, getSessionByStock, isActiveForStock,
+    riskTemplates, loading, tradesLoading, ledgerLoading, ledgerError, updatedAt,
+    fetchSessions, fetchRiskTemplates, fetchAll, fetchTrades, fetchLedger,
+    getSessionByStock, isActiveForStock, reset,
   }
 })

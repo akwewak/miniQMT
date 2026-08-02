@@ -3,20 +3,38 @@ import { useSystemStore } from '../stores/system'
 import { usePositionsStore } from '../stores/positions'
 import { useGridStore } from '../stores/grid'
 
+/**
+ * 分级轮询。
+ *
+ * 监控端唯一的数据来源保障——轮询不因任何业务开关而停止，
+ * 只随页面可见性调整频率。QMT 连接状态也必须在此持续刷新，
+ * 否则掉线后顶栏指示灯会永远停在"已连接"。
+ */
 export function usePolling() {
   const system = useSystemStore()
   const positions = usePositionsStore()
   const grid = useGridStore()
-  const interval = ref(3000)
-  let timer: ReturnType<typeof setInterval> | null = null
-  let statusCounter = 0
-  let logCounter = 0
-  let holdingCounter = 0
 
-  function start(customInterval = 3000) {
+  const BASE_INTERVAL = 3000
+  const HIDDEN_INTERVAL = 15000
+
+  const interval = ref(BASE_INTERVAL)
+  let timer: ReturnType<typeof setInterval> | null = null
+  let tick = 0
+
+  // 各任务的触发周期（单位：tick）。3s 基准下 → 9s / 15s / 15s / 18s / 30s
+  const EVERY = {
+    status: 3,
+    connection: 5,
+    orders: 5,
+    trades: 6,
+    positions: 10,
+  }
+
+  function start(customInterval = BASE_INTERVAL) {
     stop()
     interval.value = customInterval
-    statusCounter = logCounter = holdingCounter = 0
+    tick = 0
     timer = setInterval(poll, interval.value)
   }
 
@@ -24,35 +42,43 @@ export function usePolling() {
     if (timer) { clearInterval(timer); timer = null }
   }
 
-  function adjustInterval(active: boolean) {
-    interval.value = active ? 3000 : 10000
-    if (timer) { stop(); start(interval.value) }
+  function restart(next: number) {
+    if (next === interval.value && timer) return
+    start(next)
   }
 
   async function poll() {
-    // Status: every 3 cycles (~9s when active)
-    statusCounter++
-    if (statusCounter >= 3) {
-      statusCounter = 0
+    tick++
+    if (tick % EVERY.status === 0) system.fetchStatus().catch(() => {})
+    // 连接状态必须轮询：这是 QMT 掉线时唯一的可见信号
+    if (tick % EVERY.connection === 0) system.fetchConnection().catch(() => {})
+    if (tick % EVERY.orders === 0) positions.fetchOrders().catch(() => {})
+    if (tick % EVERY.trades === 0) positions.fetchTrades().catch(() => {})
+    if (tick % EVERY.positions === 0) {
+      grid.fetchSessions().then(() => positions.fetchPositions()).catch(() => {})
+    }
+    if (tick >= 30) tick = 0
+  }
+
+  // 页面不可见时降频，回到前台立即补一次全量刷新
+  function onVisibilityChange() {
+    if (document.hidden) {
+      restart(HIDDEN_INTERVAL)
+    } else {
+      restart(BASE_INTERVAL)
       system.fetchStatus().catch(() => {})
-    }
-    // Trades: every 6 cycles (~18s when active)
-    logCounter++
-    if (logCounter >= 6) {
-      logCounter = 0
-      positions.fetchTrades().catch(() => {})
-    }
-    // Positions: every 10 cycles (~30s when active) — SSE handles most updates
-    holdingCounter++
-    if (holdingCounter >= 10) {
-      holdingCounter = 0
-      grid.fetchSessions()
-        .then(() => positions.fetchPositions())
-        .catch(() => {})
+      system.fetchConnection().catch(() => {})
+      positions.fetchAll().catch(() => {})
+      grid.fetchSessions().catch(() => {})
     }
   }
 
-  onUnmounted(stop)
+  document.addEventListener('visibilitychange', onVisibilityChange)
 
-  return { start, stop, adjustInterval }
+  onUnmounted(() => {
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+    stop()
+  })
+
+  return { start, stop, interval }
 }

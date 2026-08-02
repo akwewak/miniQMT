@@ -2,18 +2,22 @@
 import { computed, ref } from 'vue'
 import { usePositionsStore } from '../stores/positions'
 import { useGridStore } from '../stores/grid'
-import { fmtPrice, fmtPercent, fmtMoney, profitClass } from '../utils/format'
-import GridConfigDialog from './GridConfigDialog.vue'
+import { fmtPrice, fmtPercent, fmtMoney } from '../utils/format'
+import { formatAge } from '../utils/freshness'
 import { useAdviceTooltip } from '../composables/useAdviceTooltip'
+import GridHoverCard from './GridHoverCard.vue'
 
+/** 持仓只读列表。无勾选、无网格启停入口——所有操作在 web1.0 完成。 */
 const { show: showAdvice, hide: hideAdvice } = useAdviceTooltip()
 
 const positions = usePositionsStore()
 const grid = useGridStore()
 const sortKey = ref<string>('profit_ratio')
 const sortDir = ref<-1 | 1>(-1)
-const showGridDialog = ref(false)
-const gridStockCode = ref('')
+
+// 网格悬停卡状态
+const hoverCode = ref('')
+const hoverAnchor = ref<{ x: number; y: number } | null>(null)
 
 const sorted = computed(() => {
   const arr = [...positions.positions]
@@ -29,38 +33,49 @@ function toggleSort(key: string) {
   else { sortKey.value = key; sortDir.value = -1 }
 }
 
-const selectAll = computed({
-  get: () => positions.positions.length > 0 && positions.selectedStocks.size === positions.positions.length,
-  set: (v) => v ? positions.selectAll(positions.positions.map(p => p.stock_code)) : positions.deselectAll(),
-})
-
-function openGridConfig(code: string) { gridStockCode.value = code; showGridDialog.value = true }
 function openAdvice(event: Event, code: string) { showAdvice(event as MouseEvent, code) }
 
 function hasActiveGrid(pos: any): boolean {
   return pos.grid_session_active === true || grid.isActiveForStock(pos.stock_code)
 }
 
+function showGridCard(event: MouseEvent, code: string) {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  hoverAnchor.value = { x: rect.left, y: rect.bottom + 6 }
+  hoverCode.value = code
+}
+function hideGridCard() { hoverCode.value = ''; hoverAnchor.value = null }
+
 const COLS = [
-  { k: 'stock_code',   l: '代码',     s: true,  c: 'tabular-nums' },
-  { k: 'stock_name',   l: '名称',     s: false, c: 'text-slate-500 max-w-[96px]' },
-  { k: 'change_percentage', l: '涨跌幅', s: true, c: 'text-right tabular-nums' },
-  { k: 'current_price',l: '现价',     s: true,  c: 'text-right tabular-nums' },
-  { k: 'cost_price',   l: '成本',     s: true,  c: 'text-right tabular-nums text-slate-500' },
-  { k: 'profit_ratio', l: '盈亏',     s: true,  c: 'text-right tabular-nums font-semibold' },
-  { k: 'market_value', l: '市值',     s: true,  c: 'text-right tabular-nums' },
-  { k: 'volume',       l: '持仓',     s: true,  c: 'text-right tabular-nums' },
-  { k: 'available',    l: '可用',     s: true,  c: 'text-right tabular-nums text-slate-500' },
-  { k: 'profit_triggered', l: '止盈',s: false, c: 'text-center' },
-  { k: 'highest_price',l: '最高',     s: false, c: 'text-right tabular-nums' },
-  { k: 'stop_loss_price', l: '止损',s: false, c: 'text-right tabular-nums text-slate-500' },
-  { k: 'open_date',    l: '建仓',     s: true,  c: 'text-slate-500 whitespace-nowrap' },
+  { k: 'stock_code',        l: '代码',   s: true,  c: 'tabular-nums' },
+  { k: 'stock_name',        l: '名称',   s: false, c: 'text-slate-500 max-w-[96px]' },
+  { k: 'change_percentage', l: '涨跌幅', s: true,  c: 'text-right tabular-nums' },
+  { k: 'current_price',     l: '现价',   s: true,  c: 'text-right tabular-nums' },
+  { k: 'cost_price',        l: '成本',   s: true,  c: 'text-right tabular-nums text-slate-500' },
+  { k: 'base_cost_price',   l: '基准',   s: true,  c: 'text-right tabular-nums text-slate-400' },
+  { k: 'profit_ratio',      l: '盈亏',   s: true,  c: 'text-right tabular-nums font-semibold' },
+  { k: 'profit_amount',     l: '浮盈',   s: true,  c: 'text-right tabular-nums' },
+  { k: 'market_value',      l: '市值',   s: true,  c: 'text-right tabular-nums' },
+  { k: 'volume',            l: '持仓',   s: true,  c: 'text-right tabular-nums' },
+  { k: 'available',         l: '可用',   s: true,  c: 'text-right tabular-nums text-slate-500' },
+  { k: 'profit_triggered',  l: '止盈',   s: false, c: 'text-center' },
+  { k: 'highest_price',     l: '最高',   s: false, c: 'text-right tabular-nums' },
+  { k: 'stop_loss_price',   l: '止损',   s: false, c: 'text-right tabular-nums text-slate-500' },
+  { k: 'open_date',         l: '建仓',   s: true,  c: 'text-slate-500 whitespace-nowrap' },
+  { k: 'stop_profit_enabled', l: '自动止盈', s: false, c: 'text-center' },
 ]
+
+/** 浮动盈亏金额：后端未给时按 (现价-成本)×数量 兜底 */
+function profitAmount(pos: any): number {
+  if (typeof pos.profit_amount === 'number') return pos.profit_amount
+  return ((pos.current_price || 0) - (pos.cost_price || 0)) * (pos.volume || 0)
+}
 
 function cellValue(pos: any, col: typeof COLS[0]): string {
   const v = pos[col.k]
   if (col.k === 'profit_ratio' || col.k === 'change_percentage') return fmtPercent(v)
-  if (col.k === 'current_price' || col.k === 'cost_price' || col.k === 'highest_price' || col.k === 'stop_loss_price') return fmtPrice(v)
+  if (col.k === 'profit_amount') return fmtMoney(profitAmount(pos), 0)
+  if (['current_price', 'cost_price', 'base_cost_price', 'highest_price', 'stop_loss_price'].includes(col.k)) return fmtPrice(v)
   if (col.k === 'market_value') return fmtMoney(v, 0)
   if (col.k === 'open_date') return (v || '').substring(0, 10) || '--'
   return v ?? '--'
@@ -76,6 +91,8 @@ function profitBg(v: number): string {
 function shortName(pos: any): string {
   return pos.stock_name || pos.stock_code
 }
+
+const age = computed(() => formatAge(positions.positionsUpdatedAt))
 </script>
 
 <template>
@@ -86,7 +103,10 @@ function shortName(pos: any): string {
         <span>持仓列表</span>
         <span class="badge-blue text-[10px]">{{ positions.positions.length }} 只</span>
       </div>
-      <span class="text-xs text-slate-400">总市值 <strong class="text-slate-700">{{ fmtMoney(positions.totalMarketValue) }}</strong></span>
+      <span class="text-xs text-slate-400">
+        总市值 <strong class="text-slate-700">{{ fmtMoney(positions.totalMarketValue) }}</strong>
+        <span class="ml-2 font-mono text-[10px]">{{ age }}</span>
+      </span>
     </div>
 
     <div class="md:hidden p-3 space-y-2">
@@ -98,9 +118,7 @@ function shortName(pos: any): string {
       <article v-for="pos in sorted" :key="pos.stock_code" class="mobile-card">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
-            <button @click="openGridConfig(pos.stock_code)" class="font-mono text-sm font-bold text-blue-700">
-              {{ pos.stock_code }}
-            </button>
+            <span class="font-mono text-sm font-bold text-slate-700">{{ pos.stock_code }}</span>
             <div class="mt-0.5 flex min-w-0 items-center gap-1.5">
               <span class="min-w-0 truncate text-xs text-slate-500 cursor-help" @mouseenter="openAdvice($event, pos.stock_code)" @mouseleave="hideAdvice()">{{ shortName(pos) }}</span>
               <button
@@ -115,13 +133,14 @@ function shortName(pos: any): string {
               >建议</button>
               <span v-if="hasActiveGrid(pos)" class="badge-green !text-[9px] !px-1.5 !py-0">网格</span>
               <span v-if="pos.profit_triggered" class="badge-amber !text-[9px] !px-1.5 !py-0">止盈</span>
+              <span v-if="pos.stop_profit_enabled === false" class="badge-slate !text-[9px] !px-1.5 !py-0" title="该股动态止盈止损已暂停">止盈关</span>
             </div>
           </div>
           <div class="flex-shrink-0 text-right">
-            <div :class="['font-mono text-base font-bold tabular-nums', profitClass(pos.profit_ratio || 0)]">
+            <div :class="['font-mono text-base font-bold tabular-nums', (pos.profit_ratio ?? 0) > 0 ? 'text-red-600' : (pos.profit_ratio ?? 0) < 0 ? 'text-emerald-600' : 'text-slate-500']">
               {{ fmtPercent(pos.profit_ratio || 0) }}
             </div>
-            <div :class="['mt-0.5 font-mono text-xs tabular-nums', profitClass(pos.change_percentage || 0)]">
+            <div :class="['mt-0.5 font-mono text-xs tabular-nums', (pos.change_percentage ?? 0) > 0 ? 'text-red-600' : (pos.change_percentage ?? 0) < 0 ? 'text-emerald-600' : 'text-slate-500']">
               今日 {{ fmtPercent(pos.change_percentage || 0) }}
             </div>
           </div>
@@ -137,25 +156,25 @@ function shortName(pos: any): string {
             <div class="truncate font-mono text-sm text-slate-700">{{ fmtPrice(pos.cost_price) }}</div>
           </div>
           <div class="rounded-md bg-slate-50 px-2 py-1.5">
-            <div class="text-[10px] text-slate-400">市值</div>
-            <div class="truncate font-mono text-sm text-slate-700">{{ fmtMoney(pos.market_value, 0) }}</div>
+            <div class="text-[10px] text-slate-400">浮盈</div>
+            <div class="truncate font-mono text-sm text-slate-700">{{ fmtMoney(profitAmount(pos), 0) }}</div>
           </div>
         </div>
 
         <div class="mt-3 flex items-center justify-between gap-2 text-xs text-slate-500">
           <span>持仓 <strong class="font-mono text-slate-700">{{ pos.volume }}</strong></span>
           <span>可用 <strong class="font-mono text-slate-700">{{ pos.available }}</strong></span>
-          <button @click="openGridConfig(pos.stock_code)" class="btn-outline btn-xs">网格</button>
+          <span>市值 <strong class="font-mono text-slate-700">{{ fmtMoney(pos.market_value, 0) }}</strong></span>
         </div>
       </article>
     </div>
 
     <div class="hidden md:block overflow-x-auto -mx-3 md:mx-0">
-      <div class="min-w-[800px] md:min-w-0">
+      <div class="min-w-[980px] md:min-w-0">
         <table class="w-full text-xs">
         <thead>
           <tr class="bg-slate-50/80 border-b border-slate-200">
-            <th class="pl-5 pr-2 py-2.5 w-10"><input type="checkbox" v-model="selectAll" class="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500" /></th>
+            <th class="pl-5 pr-2 py-2.5 w-10 text-[10px] font-semibold text-slate-400">网格</th>
             <th v-for="col in COLS" :key="col.k"
               :class="['px-2 py-2.5 font-semibold text-slate-500 whitespace-nowrap select-none', col.c,
                        col.s ? 'cursor-pointer hover:text-slate-800' : '']"
@@ -179,25 +198,32 @@ function shortName(pos: any): string {
           </tr>
           <tr v-for="pos in sorted" :key="pos.stock_code"
             :class="['border-b border-slate-100 hover:bg-slate-50/70 transition-colors group', profitBg(pos.profit_ratio)]">
-            <td class="pl-5 pr-2 py-2">
-              <input type="checkbox" :checked="positions.selectedStocks.has(pos.stock_code)"
-                @change="positions.toggleSelect(pos.stock_code, ($event.target as HTMLInputElement).checked)"
-                class="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 cursor-pointer opacity-60 group-hover:opacity-100 transition-opacity" />
+            <!-- 网格状态指示（悬停查看详情，无操作入口） -->
+            <td class="pl-5 pr-2 py-2 text-center">
+              <span v-if="hasActiveGrid(pos)"
+                class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500 cursor-help"
+                title="网格运行中 · 悬停查看详情"
+                @mouseenter="showGridCard($event, pos.stock_code)"
+                @mouseleave="hideGridCard()"></span>
+              <span v-else class="inline-block w-2.5 h-2.5 rounded-full bg-slate-200" title="无网格会话"></span>
             </td>
-            <td class="px-2 py-2 font-semibold font-mono">
-              <button @click="openGridConfig(pos.stock_code)" class="text-blue-700 hover:text-blue-500 hover:underline cursor-pointer inline-flex items-center gap-1">
-                {{ pos.stock_code }}
-                <span v-if="hasActiveGrid(pos)" class="badge-green !text-[9px] !px-1 !py-0 leading-none">网格</span>
-              </button>
-            </td>
+            <td class="px-2 py-2 font-semibold font-mono text-slate-700">{{ pos.stock_code }}</td>
             <td v-for="col in COLS.slice(1)" :key="col.k"
               :class="['px-2 py-2 whitespace-nowrap', col.c, col.k === 'stock_name' ? 'cursor-help' : '',
-                       (col.k === 'profit_ratio' || col.k === 'change_percentage') ? ((pos[col.k] ?? 0) > 0 ? 'text-red-600' : (pos[col.k] ?? 0) < 0 ? 'text-emerald-600' : 'text-slate-400') : '']"
+                       (col.k === 'profit_ratio' || col.k === 'change_percentage' || col.k === 'profit_amount')
+                         ? (((col.k === 'profit_amount' ? profitAmount(pos) : pos[col.k]) ?? 0) > 0 ? 'text-red-600'
+                            : ((col.k === 'profit_amount' ? profitAmount(pos) : pos[col.k]) ?? 0) < 0 ? 'text-emerald-600' : 'text-slate-400')
+                         : '']"
               @mouseenter="col.k === 'stock_name' && openAdvice($event, pos.stock_code)"
               @mouseleave="col.k === 'stock_name' && hideAdvice()">
               <span v-if="col.k === 'profit_triggered'" class="inline-flex items-center justify-center">
                 <svg v-if="pos.profit_triggered" class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="已触发首次止盈"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
                 <span v-else class="text-slate-300" title="未触发">—</span>
+              </span>
+              <span v-else-if="col.k === 'stop_profit_enabled'">
+                <span v-if="pos.stop_profit_enabled === false" class="badge-slate !text-[9px] !px-1.5" title="该股动态止盈止损已暂停（在 web1.0 中切换）">关</span>
+                <span v-else-if="pos.stop_profit_enabled === true" class="badge-green !text-[9px] !px-1.5" title="该股动态止盈止损已开启">开</span>
+                <span v-else class="text-slate-300" title="后端未提供该字段">--</span>
               </span>
               <span v-else-if="col.k === 'stock_name'" class="inline-flex min-w-0 max-w-full items-center gap-1.5">
                 <span class="min-w-0 truncate">{{ cellValue(pos, col) }}</span>
@@ -220,6 +246,6 @@ function shortName(pos: any): string {
       </div>
     </div>
 
-    <GridConfigDialog v-if="showGridDialog" :stock-code="gridStockCode" @close="showGridDialog = false; $emit('refresh')" />
+    <GridHoverCard v-if="hoverCode && hoverAnchor" :stock-code="hoverCode" :anchor="hoverAnchor" />
   </div>
 </template>

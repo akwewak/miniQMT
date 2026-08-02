@@ -25,6 +25,13 @@ from trading_executor import get_trading_executor
 from strategy import get_trading_strategy
 from config_manager import get_config_manager
 from grid_validation import validate_grid_config, validate_grid_template
+from order_utils import (
+    ORDER_TYPE_BUY,
+    format_order_time,
+    is_pending as order_is_pending,
+    sort_orders,
+    status_desc as order_status_desc,
+)
 import utils
 
 
@@ -711,6 +718,56 @@ def get_trade_records():
     except Exception as e:
         logger.error(f"获取交易记录时出错: {str(e)}")
         return jsonify({'status': 'error', 'message': f"获取交易记录时出错: {str(e)}"}), 500
+
+
+@app.route('/api/orders', methods=['GET'])
+def get_orders():
+    """获取当日委托列表（只读）。
+
+    监控视图需要感知"已报未成交"的在途委托——止盈卖单挂单期间，
+    交易记录里还没有它，仅靠持仓和成交无法察觉。
+    """
+    try:
+        position_manager = get_position_manager_instance()
+        qmt_trader = getattr(position_manager, 'qmt_trader', None)
+        if qmt_trader is None or getattr(qmt_trader, 'xt_trader', None) is None:
+            return jsonify({'status': 'success', 'data': []})
+
+        raw_orders = qmt_trader.xt_trader.query_stock_orders(qmt_trader.acc, cancelable_only=False)
+        data_manager = get_data_manager()
+
+        orders = []
+        for order in (raw_orders or []):
+            status = getattr(order, 'order_status', 0)
+            stock_code = getattr(order, 'stock_code', '') or ''
+            try:
+                stock_name = data_manager.get_stock_name(stock_code, allow_qmt_lookup=False)
+            except Exception:
+                stock_name = stock_code
+            orders.append({
+                'order_id': str(getattr(order, 'order_id', '') or ''),
+                'stock_code': stock_code,
+                'stock_name': stock_name or stock_code,
+                'trade_type': 'BUY' if getattr(order, 'order_type', ORDER_TYPE_BUY) == ORDER_TYPE_BUY else 'SELL',
+                'price': getattr(order, 'price', 0) or 0,
+                'volume': getattr(order, 'order_volume', 0) or 0,
+                'traded_volume': getattr(order, 'traded_volume', 0) or 0,
+                'status': status,
+                'status_desc': order_status_desc(status, getattr(order, 'status_msg', '')),
+                'is_pending': order_is_pending(status),
+                'order_time': format_order_time(getattr(order, 'order_time', None)),
+                'strategy': getattr(order, 'strategy_name', '') or '',
+            })
+
+        sort_orders(orders)
+
+        response = make_response(jsonify({'status': 'success', 'data': orders}))
+        response.headers['Content-Type'] = 'application/json; charset=utf-8'
+        return response
+    except Exception as e:
+        logger.error(f"获取委托列表时出错: {str(e)}")
+        return jsonify({'status': 'error', 'message': f"获取委托列表时出错: {str(e)}"}), 500
+
 
 # 配置管理API
 @app.route('/api/config', methods=['GET'])

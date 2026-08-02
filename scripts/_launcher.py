@@ -151,6 +151,30 @@ def cmd_list(_args) -> int:
     return 0
 
 
+def _account_flask_port(acc_id: str, all_ids=None) -> int:
+    """账号的 Flask 端口。规则与 config._apply_account_overrides 一致：
+    5000 + 账号在 account_config.json 中的索引。"""
+    if all_ids is None:
+        all_ids = [a["account_id"] for a in load_accounts()]
+    try:
+        return 5000 + all_ids.index(acc_id)
+    except ValueError:
+        return 5000
+
+
+def _is_port_in_use(port: int) -> bool:
+    """端口是否已被监听。用 connect 探测而非 netstat —— 更快且不依赖外部命令。"""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.3)
+    try:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 def cmd_start(args, web2: bool = False) -> int:
     accounts = filter_accounts(load_accounts(), args.accounts)
     if not accounts:
@@ -161,6 +185,8 @@ def cmd_start(args, web2: bool = False) -> int:
     if not MAIN_PY.exists():
         print(f"[错误] 找不到 main.py: {MAIN_PY}")
         return 1
+
+    all_ids = [a["account_id"] for a in load_accounts()]
 
     started = 0
     for acc in accounts:
@@ -192,8 +218,19 @@ def cmd_start(args, web2: bool = False) -> int:
         # 避免 config.py 默认值在两个进程"不一致"——以前曾出现 5000 实盘 / 5001
         # 模拟混搭的局面（用户在 5000 web UI 切换了实盘，5001 没切）。
         env["ENABLE_SIMULATION_MODE"] = "true" if args.simulation else "false"
+
+        flask_note = ""
         if getattr(args, "web2", False):
-            env["QMT_NO_FLASK"] = "1"
+            # web2.0 模式下仍需要 Flask：网关靠反向调用它读取
+            # ENABLE_AUTO_OPERATION 等只存在于主进程内存、不持久化的开关。
+            # 端口已被占用说明该账号的 Flask 已在跑（或端口被别的程序占了），
+            # 此时跳过启动避免端口冲突。
+            port = _account_flask_port(acc_id, all_ids)
+            if _is_port_in_use(port):
+                env["QMT_NO_FLASK"] = "1"
+                flask_note = f"  Flask={port}(已在运行,跳过)"
+            else:
+                flask_note = f"  Flask={port}(本机)"
 
         creationflags = 0x00000010  # CREATE_NEW_CONSOLE
         try:
@@ -215,7 +252,7 @@ def cmd_start(args, web2: bool = False) -> int:
             pass
 
         mode = "模拟" if args.simulation else "实盘"
-        print(f"  ✓ 已启动 {acc_id}  PID={proc.pid}  模式={mode}  QMT={qmt_path}")
+        print(f"  ✓ 已启动 {acc_id}  PID={proc.pid}  模式={mode}  QMT={qmt_path}{flask_note}")
         started += 1
         time.sleep(0.8)  # 错开启动，避免 QMT 客户端初始化竞争
 
@@ -1744,7 +1781,8 @@ def cmd_menu(_args) -> int:
         print("   [8] 启动所有账号 (模拟，启动时选择 web1.0/web2.0)")
         print("   [9] 启动指定账号 (选择实盘/模拟 + web1.0/web2.0)")
         print("        web1.0 = Flask :5000 起, 仅本机访问 (配置/监控用)")
-        print("        web2.0 = xtquant_manager :8888, 全网卡 (只读查询/对外)")
+        print("        web2.0 = xtquant_manager :8888, 全网卡 (只读监控)")
+        print("                 Flask 仍会启动(仅本机)供网关读取运行时开关")
         print()
         print("  [日常运行 - 停止]")
         print("   [a] 停止所有账号 (优雅, 30s 超时)")

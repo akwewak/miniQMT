@@ -287,5 +287,132 @@ class TestCmdReturnCodes(unittest.TestCase):
         self.assertNotEqual(_launcher.cmd_check_config(None), 0)
 
 
+class TestAccountFlaskPort(unittest.TestCase):
+    """账号 Flask 端口推导必须与 config._apply_account_overrides 一致。"""
+
+    def test_first_account_gets_5000(self):
+        self.assertEqual(_launcher._account_flask_port("A", ["A", "B"]), 5000)
+
+    def test_second_account_gets_5001(self):
+        self.assertEqual(_launcher._account_flask_port("B", ["A", "B"]), 5001)
+
+    def test_unknown_account_falls_back_to_5000(self):
+        self.assertEqual(_launcher._account_flask_port("Z", ["A", "B"]), 5000)
+
+    def test_reads_config_when_ids_not_supplied(self):
+        with patch.object(_launcher, "load_accounts",
+                          return_value=[{"account_id": "X"}, {"account_id": "Y"}]):
+            self.assertEqual(_launcher._account_flask_port("Y"), 5001)
+
+
+class TestPortInUse(unittest.TestCase):
+    def test_free_port_reports_not_in_use(self):
+        self.assertFalse(_launcher._is_port_in_use(59999))
+
+    def test_listening_port_reports_in_use(self):
+        import socket
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        try:
+            self.assertTrue(_launcher._is_port_in_use(port))
+        finally:
+            srv.close()
+
+    def test_closed_port_after_shutdown(self):
+        import socket
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        srv.close()
+        self.assertFalse(_launcher._is_port_in_use(port))
+
+
+class TestWeb2FlaskAutoStart(unittest.TestCase):
+    """web2.0 模式下的 Flask 处置
+
+    网关需要反向调用 Flask 才能读到 ENABLE_AUTO_OPERATION 等
+    只存在于主进程内存、不持久化的开关。因此 web2.0 模式不再一律
+    设 QMT_NO_FLASK=1，而是按端口占用情况决定：
+      - 端口空闲 → 启动 Flask（不设该变量）
+      - 端口已占 → 跳过（设 QMT_NO_FLASK=1），避免端口冲突
+    """
+
+    def setUp(self):
+        self.accounts = [
+            {"account_id": "ACC1", "qmt_path": "C:/qmt1"},
+            {"account_id": "ACC2", "qmt_path": "C:/qmt2"},
+        ]
+        self.captured = []
+
+        class _Proc:
+            pid = 4242
+
+        def _fake_popen(cmd, **kw):
+            self.captured.append(kw.get("env", {}))
+            return _Proc()
+
+        self.p_popen = patch.object(_launcher.subprocess, "Popen",
+                                    side_effect=_fake_popen)
+        self.p_accounts = patch.object(_launcher, "load_accounts",
+                                       return_value=self.accounts)
+        self.p_pid = patch.object(_launcher, "read_pid", return_value=None)
+        self.p_sleep = patch.object(_launcher.time, "sleep")
+        for p in (self.p_popen, self.p_accounts, self.p_pid, self.p_sleep):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _args(self, web2, accounts=None):
+        class _A:
+            pass
+        a = _A()
+        a.accounts = accounts
+        a.simulation = False
+        a.web2 = web2
+        return a
+
+    def _run(self, web2, port_in_use):
+        with patch.object(_launcher, "_is_port_in_use", return_value=port_in_use), \
+             patch.object(_launcher.Path, "mkdir"), \
+             patch.object(_launcher, "pid_file_for") as pf:
+            pf.return_value = Path(tempfile.gettempdir()) / "dummy_pid.txt"
+            with patch("sys.stdout", new=io.StringIO()):
+                _launcher.cmd_start(self._args(web2))
+        return self.captured
+
+    def test_web2_starts_flask_when_port_free(self):
+        envs = self._run(web2=True, port_in_use=False)
+        self.assertTrue(envs)
+        for env in envs:
+            self.assertNotIn("QMT_NO_FLASK", env,
+                             "端口空闲时应启动 Flask 供网关探测")
+
+    def test_web2_skips_flask_when_port_occupied(self):
+        envs = self._run(web2=True, port_in_use=True)
+        self.assertTrue(envs)
+        for env in envs:
+            self.assertEqual(env.get("QMT_NO_FLASK"), "1",
+                             "端口已占用时应跳过 Flask 避免冲突")
+
+    def test_web1_never_sets_no_flask(self):
+        envs = self._run(web2=False, port_in_use=False)
+        self.assertTrue(envs)
+        for env in envs:
+            self.assertNotIn("QMT_NO_FLASK", env)
+
+    def test_web1_ignores_port_state(self):
+        """web1.0 模式不做端口检查，QMT_NO_FLASK 始终不设"""
+        envs = self._run(web2=False, port_in_use=True)
+        for env in envs:
+            self.assertNotIn("QMT_NO_FLASK", env)
+
+    def test_account_env_still_set(self):
+        envs = self._run(web2=True, port_in_use=False)
+        self.assertEqual(envs[0]["QMT_ACCOUNT_ID"], "ACC1")
+        self.assertEqual(envs[1]["QMT_ACCOUNT_ID"], "ACC2")
+
+
 if __name__ == "__main__":
     unittest.main()

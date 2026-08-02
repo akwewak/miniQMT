@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
@@ -25,11 +26,11 @@ export default defineConfig({
     vue(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico'],
+      includeAssets: ['favicon.ico', 'icon-192.png', 'icon-512.png'],
       manifest: {
-        name: 'miniQMT 持仓管理',
+        name: 'miniQMT 持仓监控',
         short_name: 'miniQMT',
-        description: 'miniQMT 量化交易系统 Web 管理界面',
+        description: 'miniQMT 量化交易系统只读监控界面',
         theme_color: '#1e40af',
         background_color: '#f1f5f9',
         display: 'standalone',
@@ -61,5 +62,10 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    include: ['src/**/*.test.ts'],
   },
 })

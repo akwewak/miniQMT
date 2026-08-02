@@ -31,6 +31,13 @@ from .models import (
 )
 from .account import AccountConfig
 from .security import SecurityConfig, verify_api_key
+from order_utils import (
+    ORDER_TYPE_BUY,
+    format_order_time,
+    is_pending as order_is_pending,
+    sort_orders,
+    status_desc as order_status_desc,
+)
 
 try:
     from logger import get_logger
@@ -605,39 +612,51 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
                 return header_id
         return _first_account_id()
 
+    def _account_db_path(aid: str) -> str:
+        """账号级 SQLite 路径 data_<aid>/trading.db。"""
+        import os as _os
+        return _os.path.normpath(
+            _os.path.join(_os.path.dirname(__file__), "..", f"data_{aid}", "trading.db")
+        )
+
     def _load_sqlite_enrichment(aid: str) -> dict:
         """从 data_<aid>/trading.db 读取持久化的持仓元数据。
 
         position_manager 每 15 秒将内存数据同步到 SQLite，包含：
         stock_name / open_date / stop_loss_price / profit_triggered / highest_price
-        等精确的策略计算值，远优于手工估算。
+        / base_cost_price / stop_profit_enabled 等精确的策略计算值，远优于手工估算。
 
         Returns:
-            {stock_code: {stock_name, open_date, stop_loss_price,
-                          profit_triggered, highest_price}}，读取失败返回 {}。
+            {stock_code: {...}}，读取失败返回 {}。
         """
         import sqlite3
         import os as _os
-        db_path = _os.path.join(_os.path.dirname(__file__), "..", f"data_{aid}", "trading.db")
-        db_path = _os.path.normpath(db_path)
+        db_path = _account_db_path(aid)
         if not _os.path.exists(db_path):
             return {}
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT stock_code, stock_name, open_date, stop_loss_price, "
-                "profit_triggered, highest_price FROM positions"
-            ).fetchall()
+            # 用 SELECT * 而非显式列名：旧库缺少 base_cost_price /
+            # stop_profit_enabled 时不至于整条查询失败、退化成空字典
+            rows = conn.execute("SELECT * FROM positions").fetchall()
             conn.close()
             result = {}
             for r in rows:
+                cols = r.keys()
+
+                def _get(key, default=None):
+                    return r[key] if key in cols else default
+
                 result[r["stock_code"]] = {
-                    "stock_name": r["stock_name"] or "",
-                    "open_date": r["open_date"] or "",
-                    "stop_loss_price": r["stop_loss_price"] or 0,
-                    "profit_triggered": bool(r["profit_triggered"]),
-                    "highest_price": r["highest_price"] or 0,
+                    "stock_name": _get("stock_name") or "",
+                    "open_date": _get("open_date") or "",
+                    "stop_loss_price": _get("stop_loss_price") or 0,
+                    "profit_triggered": bool(_get("profit_triggered")),
+                    "highest_price": _get("highest_price") or 0,
+                    "base_cost_price": _get("base_cost_price") or 0,
+                    # 该列默认值为 1；旧库缺列时按"开启"处理，与 position_manager 一致
+                    "stop_profit_enabled": bool(_get("stop_profit_enabled", 1)),
                 }
             return result
         except Exception:
@@ -646,6 +665,22 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
     def _normalize_stock_code(code: str) -> str:
         """股票代码归一化为 6 位裸代码，用于跨接口匹配 003025 / 003025.SZ。"""
         return str(code or "").strip().split(".")[0]
+
+    def _inject_sqlite_meta(raw: list, aid: str) -> None:
+        """把 SQLite 持久化元数据与网格活跃标记就地注入 QMT 持仓 dict。"""
+        sqlite = _load_sqlite_enrichment(aid)
+        active_grid_codes = _active_grid_codes(aid)
+        for p in raw:
+            code = p.get("证券代码", "")
+            enr = sqlite.get(code, {})
+            p["_sqlite_name"]                 = enr.get("stock_name", "")
+            p["_sqlite_open_date"]            = enr.get("open_date", "")
+            p["_sqlite_stop_loss_price"]      = enr.get("stop_loss_price", 0)
+            p["_sqlite_profit_triggered"]     = enr.get("profit_triggered", False)
+            p["_sqlite_highest_price"]        = enr.get("highest_price", 0)
+            p["_sqlite_base_cost_price"]      = enr.get("base_cost_price", 0)
+            p["_sqlite_stop_profit_enabled"]  = enr.get("stop_profit_enabled", True)
+            p["_grid_session_active"]         = _normalize_stock_code(code) in active_grid_codes
 
     def _load_grid_sessions_from_sqlite(aid: str) -> list:
         """从 data_<aid>/trading.db 读取网格会话，供 Flask 兼容端点使用。"""
@@ -806,6 +841,8 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         sl_price = p.get("_sqlite_stop_loss_price")
         trig     = p.get("_sqlite_profit_triggered", False)
         high_p   = p.get("_sqlite_highest_price")
+        base_cp  = p.get("_sqlite_base_cost_price") or 0
+        sp_on    = p.get("_sqlite_stop_profit_enabled", True)
 
         if sl_price is None or sl_price == 0:
             sl_price = round(cost * 0.925, 2)  # fallback: 与 STOP_LOSS_RATIO=-0.075 对齐
@@ -828,6 +865,9 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             "open_date": (open_dt or "")[:10] or "--",
             "change_percentage": p.get("_tick_change_pct", 0),
             "grid_session_active": bool(p.get("_grid_session_active", False)),
+            # 补仓摊薄前的初次建仓成本；无记录时退回当前成本价
+            "base_cost_price": base_cp or cost,
+            "stop_profit_enabled": bool(sp_on),
         }
 
     def _map_trade_to_flask(t: dict) -> dict:
@@ -846,6 +886,145 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             "strategy": "manual",
         }
 
+    def _account_flask_url(aid: str):
+        """推导该账号 Flask 实例的本机地址。
+
+        端口规则与 config._apply_account_overrides 一致：5000 + 账号在
+        account_config.json 中的索引。
+
+        账号不在配置列表时返回 None（探测放弃 → 状态显示为未知）。
+        **不能**回落到默认 5000：那会读到另一个账号的状态并张冠李戴，
+        正是"看似真实实则错误"的值，比未知更危险。
+        """
+        try:
+            import config as _config
+            accounts = _config.get_all_accounts_config() or []
+            ids = [a.get("account_id", "") for a in accounts]
+            if aid not in ids:
+                return None
+            return "http://127.0.0.1:%d" % (5000 + ids.index(aid))
+        except Exception:
+            return None
+
+    # 反向探测的短缓存：避免每次 /api/status 都打一次 Flask
+    _flask_probe_cache = {}
+    _FLASK_PROBE_TTL = 5.0
+    _FLASK_PROBE_TIMEOUT = 1.0
+
+    def _probe_flask_settings(aid: str):
+        """反向调用该账号的 Flask /api/status，取运行时内存态开关。
+
+        ENABLE_AUTO_OPERATION / ENABLE_SIMULATION_MODE 按设计不持久化
+        （见 config_manager.apply_configs_to_runtime 的注释：总闸每次启动
+        需手动确认），只存在于主进程内存里。网关是独立进程，import config
+        只会读到自己那份默认值 —— 那是个"看似真实实则错误"的值，
+        比显示未知更危险。因此只能向主进程要。
+
+        Flask 不可达时返回 None（调用方回落为"未知"），**绝不猜测**。
+        注意 web2.0 启动模式下 launcher 会设 QMT_NO_FLASK=1 跳过 Flask，
+        此时本探测必然失败，属预期行为。
+        """
+        import time as _time
+
+        cached = _flask_probe_cache.get(aid)
+        if cached and (_time.time() - cached[0]) < _FLASK_PROBE_TTL:
+            return cached[1]
+
+        result = None
+        base = _account_flask_url(aid)
+        if base:
+            try:
+                import urllib.request
+                import json as _json
+                with urllib.request.urlopen(
+                    base + "/api/status", timeout=_FLASK_PROBE_TIMEOUT
+                ) as resp:
+                    body = _json.loads(resp.read().decode("utf-8"))
+                if body.get("status") == "success":
+                    result = body.get("settings") or {}
+            except Exception:
+                result = None  # 不可达/超时/格式异常 → 未知
+
+        _flask_probe_cache[aid] = (_time.time(), result)
+        return result
+
+    def _load_account_settings(aid: str) -> dict:
+        """获取账号真实的运行时开关状态。
+
+        两个来源互补：
+
+        1. **账号 SQLite** `system_config` — 已持久化的开关
+           （ENABLE_AUTO_TRADING / ENABLE_GRID_TRADING / 买卖权限）
+        2. **反向调用该账号 Flask** — 仅存在于主进程内存、不持久化的开关
+           （ENABLE_AUTO_OPERATION 总闸、ENABLE_SIMULATION_MODE、持仓监控线程）
+
+        绝不硬编码 True —— 监控界面显示假的"自动ON"比不显示更危险。
+        两个来源都拿不到就返回 None，由前端展示为"未知"。
+        """
+        import json as _json
+        import sqlite3
+        import os as _os
+
+        unknown = {
+            "isMonitoring": None,
+            "enableAutoTrading": None,
+            "enableGridTrading": None,
+            "positionMonitorRunning": None,
+            "allowBuy": None,
+            "allowSell": None,
+            "simulationMode": None,
+        }
+
+        # ── 来源 2：主进程内存态（优先，最新且含不持久化项）──
+        live = _probe_flask_settings(aid)
+
+        def _live(key):
+            if not live or key not in live or live[key] is None:
+                return None
+            return bool(live[key])
+
+        # ── 来源 1：SQLite 持久化配置 ──
+        raw = {}
+        db_path = _account_db_path(aid)
+        if _os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                rows = conn.execute(
+                    "SELECT config_key, config_value FROM system_config"
+                ).fetchall()
+                conn.close()
+                for key, value in rows:
+                    try:
+                        raw[key] = _json.loads(value)
+                    except Exception:
+                        raw[key] = value
+            except Exception:
+                raw = {}
+
+        if not raw and live is None:
+            return unknown
+
+        def _flag(key):
+            return bool(raw[key]) if key in raw else None
+
+        def _pick(live_key, db_key=None):
+            """内存态优先（可能被运行时修改过），回落到持久化值。"""
+            v = _live(live_key)
+            if v is not None:
+                return v
+            return _flag(db_key) if db_key else None
+
+        return {
+            # 只存在于主进程内存，SQLite 无此项 → 拿不到就是未知
+            "isMonitoring": _live("isMonitoring"),
+            "simulationMode": _live("simulationMode"),
+            "positionMonitorRunning": _live("positionMonitorRunning"),
+            "enableAutoTrading": _pick("enableAutoTrading", "ENABLE_AUTO_TRADING"),
+            "enableGridTrading": _pick("enableGridTrading", "ENABLE_GRID_TRADING"),
+            "allowBuy": _pick("allowBuy", "ENABLE_ALLOW_BUY"),
+            "allowSell": _pick("allowSell", "ENABLE_ALLOW_SELL"),
+        }
+
     @app.get("/api/status", tags=["兼容"])
     async def flask_status(request: Request):
         """Flask 兼容: /api/status → 返回指定账号的状态（顶层字段格式）"""
@@ -854,9 +1033,10 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             return JSONResponse({"status": "error", "error": "无已注册账号"})
         try:
             asset = _get_manager().query_asset(aid)
+            settings = _load_account_settings(aid)
             return JSONResponse({
                 "status": "success",
-                "isMonitoring": True,
+                "isMonitoring": settings["isMonitoring"],
                 "account": {
                     "id": aid,
                     "availableBalance": asset.get("可用金额", 0),
@@ -864,14 +1044,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
                     "totalAssets": asset.get("总资产", 0),
                     "timestamp": "",
                 },
-                "settings": {
-                    "isMonitoring": True,
-                    "enableAutoTrading": True,
-                    "positionMonitorRunning": True,
-                    "allowBuy": True,
-                    "allowSell": True,
-                    "simulationMode": False,
-                },
+                "settings": settings,
             })
         except Exception:
             raise HTTPException(status_code=404, detail=f"账号不存在: {aid}")
@@ -884,18 +1057,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             return JSONResponse({"status": "error", "error": "无已注册账号"})
         try:
             raw = _get_manager().query_positions(aid)
-            sqlite = _load_sqlite_enrichment(aid)
-            active_grid_codes = _active_grid_codes(aid)
-            # 将 SQLite 持久化字段注入到 QMT 持仓 dict 中
-            for p in raw:
-                code = p.get("证券代码", "")
-                enr = sqlite.get(code, {})
-                p["_sqlite_name"]              = enr.get("stock_name", "")
-                p["_sqlite_open_date"]         = enr.get("open_date", "")
-                p["_sqlite_stop_loss_price"]   = enr.get("stop_loss_price", 0)
-                p["_sqlite_profit_triggered"]  = enr.get("profit_triggered", False)
-                p["_sqlite_highest_price"]     = enr.get("highest_price", 0)
-                p["_grid_session_active"]      = _normalize_stock_code(code) in active_grid_codes
+            _inject_sqlite_meta(raw, aid)
             _enrich_positions_with_tick(raw, _get_manager())
             positions = [_map_position_to_flask(p) for p in raw]
             total_mv = sum(p["market_value"] for p in positions)
@@ -934,17 +1096,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             return JSONResponse({"status": "success", "data": [], "data_version": 0, "no_change": False})
         try:
             raw = _get_manager().query_positions(aid)
-            sqlite = _load_sqlite_enrichment(aid)
-            active_grid_codes = _active_grid_codes(aid)
-            for p in raw:
-                code = p.get("证券代码", "")
-                enr = sqlite.get(code, {})
-                p["_sqlite_name"]              = enr.get("stock_name", "")
-                p["_sqlite_open_date"]         = enr.get("open_date", "")
-                p["_sqlite_stop_loss_price"]   = enr.get("stop_loss_price", 0)
-                p["_sqlite_profit_triggered"]  = enr.get("profit_triggered", False)
-                p["_sqlite_highest_price"]     = enr.get("highest_price", 0)
-                p["_grid_session_active"]      = _normalize_stock_code(code) in active_grid_codes
+            _inject_sqlite_meta(raw, aid)
             _enrich_positions_with_tick(raw, _get_manager())
             positions = [_map_position_to_flask(p) for p in raw]
             return JSONResponse({
@@ -983,19 +1135,78 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         })
 
     @app.get("/api/config", tags=["兼容"])
-    async def flask_config():
-        """Flask 兼容: /api/config → 返回默认配置（data/ranges 为顶层字段）"""
+    async def flask_config(request: Request):
+        """Flask 兼容: /api/config → 从账号 SQLite 读取真实已持久化的参数。
+
+        早期实现返回一组写死的默认值（35000/5.0/7.0...），监控界面因此
+        展示的是与后端无关的假参数。现在只回真实值，读不到的键返回 None，
+        由前端渲染为"--"。
+        """
+        import json as _json
+        import sqlite3
+        import os as _os
+
+        aid = _get_request_account_id(request)
+        raw = {}
+        if aid:
+            db_path = _account_db_path(aid)
+            if _os.path.exists(db_path):
+                try:
+                    conn = sqlite3.connect(db_path)
+                    rows = conn.execute(
+                        "SELECT config_key, config_value FROM system_config"
+                    ).fetchall()
+                    conn.close()
+                    for key, value in rows:
+                        try:
+                            raw[key] = _json.loads(value)
+                        except Exception:
+                            raw[key] = value
+                except Exception:
+                    raw = {}
+
+        def _num(key, scale=1.0, absolute=False):
+            if key not in raw:
+                return None
+            try:
+                v = float(raw[key]) * scale
+            except (TypeError, ValueError):
+                return None
+            return abs(v) if absolute else v
+
+        def _flag(key):
+            return bool(raw[key]) if key in raw else None
+
+        # 不持久化的开关只能向主进程要（带 5 秒缓存，不会每次都打 Flask）
+        _settings = _load_account_settings(aid) if aid else {}
+
+        # BUY_GRID_LEVEL_1 存的是比例系数(如 0.95)，前端展示的是跌幅百分比
+        stop_loss_buy = None
+        if "BUY_GRID_LEVEL_1" in raw:
+            try:
+                stop_loss_buy = abs(float(raw["BUY_GRID_LEVEL_1"]) - 1) * 100
+            except (TypeError, ValueError):
+                stop_loss_buy = None
+
         return JSONResponse({
             "status": "success",
             "data": {
-                "singleBuyAmount": 35000,
-                "firstProfitSell": 5.0, "firstProfitSellEnabled": True,
-                "stockGainSellPencent": 60.0, "firstProfitSellPencent": True,
-                "allowBuy": True, "allowSell": True,
-                "stopLossBuy": 5.0, "stopLossBuyEnabled": True,
-                "stockStopLoss": 7.0, "StopLossEnabled": True,
-                "singleStockMaxPosition": 70000, "totalMaxPosition": 400000,
-                "globalAllowBuySell": True, "simulationMode": False,
+                "singleBuyAmount": _num("POSITION_UNIT"),
+                "firstProfitSell": _num("INITIAL_TAKE_PROFIT_RATIO", 100),
+                "firstProfitSellEnabled": _flag("ENABLE_DYNAMIC_STOP_PROFIT"),
+                "stockGainSellPencent": _num("INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE", 100),
+                "allowBuy": _flag("ENABLE_ALLOW_BUY"),
+                "allowSell": _flag("ENABLE_ALLOW_SELL"),
+                "stopLossBuy": stop_loss_buy,
+                "stopLossBuyEnabled": _flag("ENABLE_STOP_LOSS_BUY"),
+                "stockStopLoss": _num("STOP_LOSS_RATIO", 100, absolute=True),
+                "singleStockMaxPosition": _num("MAX_POSITION_VALUE"),
+                "totalMaxPosition": _num("MAX_TOTAL_POSITION_RATIO", 1000000),
+                "globalAllowBuySell": _flag("ENABLE_AUTO_TRADING"),
+                "globalAllowGridTrading": _flag("ENABLE_GRID_TRADING"),
+                # 这两项不持久化，只能向主进程 Flask 取；不可达时为 None(未知)
+                "globalAutoOperation": _settings.get("isMonitoring"),
+                "simulationMode": _settings.get("simulationMode"),
             },
             "ranges": {},
         })
@@ -1040,4 +1251,166 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             "success": True,
             "sessions": sessions,
             "total": len(sessions),
+        })
+
+    @app.get("/api/orders", tags=["兼容"])
+    async def flask_orders(request: Request):
+        """Flask 兼容: /api/orders → 当日委托（含在途未成交）。
+
+        监控视图靠它感知"已报未成交"的挂单——止盈卖单在成交前不会进入
+        trade_records，仅看持仓和成交记录是察觉不到的。
+        """
+        aid = _get_request_account_id(request)
+        if not aid:
+            return JSONResponse({"status": "success", "data": []})
+        try:
+            raw = _get_manager().query_orders(aid) or []
+        except Exception:
+            return JSONResponse({"status": "success", "data": []})
+
+        names = {
+            code: meta.get("stock_name", "")
+            for code, meta in _load_sqlite_enrichment(aid).items()
+        }
+
+        orders = []
+        for o in raw:
+            status = o.get("委托状态", o.get("order_status", 0)) or 0
+            code = o.get("证券代码") or o.get("stock_code") or ""
+            order_type = o.get("委托类型", o.get("order_type", ORDER_TYPE_BUY))
+            orders.append({
+                "order_id": str(o.get("订单编号") or o.get("order_id") or ""),
+                "stock_code": code,
+                "stock_name": names.get(code) or code,
+                "trade_type": "BUY" if order_type == ORDER_TYPE_BUY else "SELL",
+                "price": o.get("委托价格", o.get("price", 0)) or 0,
+                "volume": o.get("委托数量", o.get("order_volume", 0)) or 0,
+                "traded_volume": o.get("成交数量", o.get("traded_volume", 0)) or 0,
+                "status": status,
+                "status_desc": order_status_desc(status, o.get("状态描述", "")),
+                "is_pending": order_is_pending(status),
+                "order_time": format_order_time(o.get("报单时间")),
+                "strategy": o.get("策略名称") or "",
+            })
+
+        sort_orders(orders)
+        return JSONResponse({"status": "success", "data": orders})
+
+    @app.get("/api/grid/ledger/{session_id}", tags=["兼容"])
+    async def flask_grid_ledger(request: Request, session_id: int,
+                                limit: int = 50, offset: int = 0):
+        """Flask 兼容: /api/grid/ledger/<id> → 网格真实账本（只读）。
+
+        直接对账号 SQLite 执行只读查询，不实例化 GridDatabase——后者的
+        __init__ 会建表，监控端不应写入被监控账号的数据库。
+        SQL 与 grid_database._get_grid_ledger_summary_unlocked 保持一致。
+        """
+        import sqlite3
+        import os as _os
+
+        aid = _get_request_account_id(request)
+        empty = {"success": False, "status": "error", "error": "账本数据不可用"}
+        if not aid:
+            return JSONResponse(empty)
+
+        db_path = _account_db_path(aid)
+        if not _os.path.exists(db_path):
+            return JSONResponse(empty)
+
+        limit = min(max(limit or 50, 1), 500)
+        offset = max(offset or 0, 0)
+
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                session_row = conn.execute(
+                    "SELECT * FROM grid_trading_sessions WHERE id=?", (session_id,)
+                ).fetchone()
+                if session_row is None:
+                    return JSONResponse(
+                        {"success": False, "status": "error",
+                         "error": f"会话{session_id}不存在"},
+                        status_code=404,
+                    )
+                session = dict(session_row)
+                current_price = session.get("current_center_price") or session.get("center_price")
+
+                lot_row = dict(conn.execute("""
+                    SELECT COUNT(*) AS lot_count,
+                           COALESCE(SUM(original_volume), 0) AS bought_volume,
+                           COALESCE(SUM(remaining_volume), 0) AS open_volume,
+                           COALESCE(SUM(remaining_volume * buy_price), 0) AS open_cost
+                    FROM grid_lots WHERE session_id=?
+                """, (session_id,)).fetchone())
+
+                match_row = dict(conn.execute("""
+                    SELECT COUNT(*) AS match_count,
+                           COALESCE(SUM(CASE WHEN match_type='matched'
+                                        THEN volume ELSE 0 END), 0) AS matched_volume,
+                           COALESCE(SUM(CASE WHEN match_type='unmatched'
+                                        THEN volume ELSE 0 END), 0) AS unmatched_volume,
+                           COALESCE(SUM(CASE WHEN match_type='matched'
+                                        THEN realized_pnl ELSE 0 END), 0) AS realized_pnl
+                    FROM grid_lot_matches WHERE session_id=?
+                """, (session_id,)).fetchone())
+
+                lots = [dict(r) for r in conn.execute(
+                    "SELECT * FROM grid_lots WHERE session_id=? ORDER BY opened_at ASC, id ASC",
+                    (session_id,)).fetchall()]
+                matches = [dict(r) for r in conn.execute(
+                    "SELECT * FROM grid_lot_matches WHERE session_id=? "
+                    "ORDER BY matched_at ASC, id ASC", (session_id,)).fetchall()]
+                trades = [dict(r) for r in conn.execute(
+                    "SELECT * FROM grid_trades WHERE session_id=? "
+                    "ORDER BY trade_time DESC, id DESC LIMIT ? OFFSET ?",
+                    (session_id, limit, offset)).fetchall()]
+                total_count = conn.execute(
+                    "SELECT COUNT(*) FROM grid_trades WHERE session_id=?",
+                    (session_id,)).fetchone()[0]
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error(f"读取网格账本失败: {exc}")
+            return JSONResponse(empty)
+
+        price = float(current_price) if current_price else None
+        open_volume = float(lot_row["open_volume"] or 0)
+        open_cost = float(lot_row["open_cost"] or 0.0)
+        open_market_value = open_volume * price if price and price > 0 else 0.0
+        unrealized_pnl = open_market_value - open_cost
+        realized_pnl = float(match_row["realized_pnl"] or 0.0)
+
+        summary = {
+            "has_ledger": bool(lot_row["lot_count"] or match_row["match_count"]),
+            "lot_count": int(lot_row["lot_count"] or 0),
+            "match_count": int(match_row["match_count"] or 0),
+            "bought_volume": int(lot_row["bought_volume"] or 0),
+            "open_volume": int(open_volume),
+            "matched_volume": int(match_row["matched_volume"] or 0),
+            "unmatched_volume": int(match_row["unmatched_volume"] or 0),
+            "open_cost": open_cost,
+            "open_market_value": open_market_value,
+            "realized_pnl": realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
+            "true_pnl": realized_pnl + unrealized_pnl,
+        }
+
+        session["session_id"] = session.get("id")
+        return JSONResponse({
+            "success": True,
+            "status": "success",
+            "session_id": session_id,
+            "session": session,
+            "current_price": price,
+            "summary": summary,
+            "lots": lots,
+            "matches": matches,
+            "trades": trades,
+            "total_count": total_count,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + len(trades) < total_count,
+            },
         })

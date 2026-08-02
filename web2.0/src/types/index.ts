@@ -15,14 +15,30 @@ export interface Position {
   stop_loss_price: number
   open_date: string
   grid_session_active: boolean
+  /** 补仓摊薄前的初次建仓成本 */
+  base_cost_price?: number
+  /** 个股级动态止盈止损开关（只读展示） */
+  stop_profit_enabled?: boolean
 }
 
+/** 归一化后的持仓汇总指标。total_profit_ratio 统一为百分比数（5.23 表示 5.23%）。 */
 export interface PositionMetrics {
   total_market_value: number
   total_profit: number
   total_profit_ratio: number
   position_count: number
   stock_count: number
+}
+
+/** 后端原始 metrics：Flask 用 profit_ratio，网关用 total_profit_ratio，两者均为小数。 */
+export interface RawPositionMetrics {
+  total_market_value?: number
+  total_profit?: number
+  total_profit_ratio?: number
+  profit_ratio?: number
+  position_count?: number
+  stock_count?: number
+  total_positions?: number
 }
 
 // ===== 账户相关 =====
@@ -35,34 +51,36 @@ export interface AccountInfo {
 }
 
 // ===== 系统状态 =====
+/** 后端未提供该字段时为 null（网关模式下部分开关不可知），UI 显示"未知"。 */
+export type TriState = boolean | null
+
 export interface SystemStatus {
-  isMonitoring: boolean
-  enableAutoTrading: boolean
-  enableGridTrading: boolean
-  positionMonitorRunning: boolean
-  allowBuy: boolean
-  allowSell: boolean
-  simulationMode: boolean
+  isMonitoring: TriState
+  enableAutoTrading: TriState
+  enableGridTrading: TriState
+  positionMonitorRunning: TriState
+  allowBuy: TriState
+  allowSell: TriState
+  simulationMode: TriState
   connected: boolean
 }
 
-// ===== 配置 =====
+// ===== 配置（只读展示，缺失键为 undefined → 渲染成 "--"）=====
 export interface ConfigData {
   singleBuyAmount: number
   firstProfitSell: number
   firstProfitSellEnabled: boolean
   stockGainSellPencent: number
-  firstProfitSellPencent: boolean
   allowBuy: boolean
   allowSell: boolean
   stopLossBuy: number
   stopLossBuyEnabled: boolean
   stockStopLoss: number
-  StopLossEnabled: boolean
   singleStockMaxPosition: number
   totalMaxPosition: number
   globalAllowBuySell: boolean
   globalAllowGridTrading: boolean
+  globalAutoOperation: boolean
   simulationMode: boolean
 }
 
@@ -84,13 +102,21 @@ export interface TradeRecord {
   strategy_label?: string
 }
 
-// ===== 买卖操作 =====
-export type BuyStrategy = 'random_pool' | 'custom_stock'
-
-export interface BuyRequest {
-  strategy: BuyStrategy
-  quantity: number
-  stocks: string[]
+// ===== 委托（含在途未成交）=====
+export interface OrderRecord {
+  order_id: string
+  stock_code: string
+  stock_name: string
+  trade_type: 'BUY' | 'SELL'
+  price: number
+  volume: number
+  traded_volume: number
+  status: number
+  status_desc: string
+  /** 已报未成交/部成 —— 监控视图重点关注对象 */
+  is_pending: boolean
+  order_time: string | null
+  strategy: string
 }
 
 // ===== 网格交易 =====
@@ -246,12 +272,12 @@ export interface SSEMessage {
     total_asset: number
   }
   monitoring?: {
-    isMonitoring: boolean
-    autoTradingEnabled: boolean
-    gridTradingEnabled: boolean
-    allowBuy: boolean
-    allowSell: boolean
-    simulationMode: boolean
+    isMonitoring?: boolean
+    autoTradingEnabled?: boolean
+    gridTradingEnabled?: boolean
+    allowBuy?: boolean
+    allowSell?: boolean
+    simulationMode?: boolean
   }
   positions_update?: {
     version: number

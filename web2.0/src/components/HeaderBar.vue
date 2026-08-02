@@ -1,34 +1,52 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useSystemStore } from '../stores/system'
-import { useConfigStore } from '../stores/config'
 import { usePositionsStore } from '../stores/positions'
 import { useSSE } from '../composables/useSSE'
-import { usePolling } from '../composables/usePolling'
-import * as xqApi from '../api/xtquant'
-import * as flaskApi from '../api/flask'
 import { isGatewayMode } from '../api/accounts'
-import type { BuyStrategy } from '../types'
 import type { AccountEntry } from '../api/accounts'
+import type { TriState } from '../types'
 import ConnectionSettings from './ConnectionSettings.vue'
+import StateBadge from './StateBadge.vue'
 import { useAdviceTooltip } from '../composables/useAdviceTooltip'
+import { formatAge, freshnessOf, freshnessClass } from '../utils/freshness'
 
 const { show: showAdvice, hide: hideAdvice } = useAdviceTooltip()
 
 const system = useSystemStore()
-const config = useConfigStore()
 const positions = usePositionsStore()
-const { healthy: sseHealthy, connect: sseConnect } = useSSE()
-const { start: startPolling, stop: stopPolling } = usePolling()
+const { healthy: sseHealthy } = useSSE()
 
 const showAccountDialog = ref(false)
 const showConnSettings = ref(false)
 const showDropdown = ref(false)
 const editForm = ref<AccountEntry>({ id: '', label: '', flaskUrl: '' })
 const dropdownRef = ref<HTMLElement | null>(null)
-const stopProfitEnabled = ref(false)
-const stopProfitLoading = ref(false)
 const gatewayMode = ref(isGatewayMode())
+
+// 每秒重算一次，让"xx 秒前"真正走动
+const now = ref(Date.now())
+let clock: ReturnType<typeof setInterval> | null = null
+
+const connectionAge = computed(() => formatAge(system.connectionUpdatedAt, now.value))
+const connectionFreshness = computed(() => freshnessOf(system.connectionUpdatedAt, undefined, now.value))
+const statusAge = computed(() => formatAge(system.statusUpdatedAt, now.value))
+const statusFreshness = computed(() => freshnessOf(system.statusUpdatedAt, undefined, now.value))
+
+/** 数据整体是否失联——任一核心数据块 dead 就该显眼提示 */
+const dataStale = computed(() =>
+  freshnessOf(system.statusUpdatedAt, undefined, now.value) === 'dead' ||
+  freshnessOf(positions.positionsUpdatedAt, undefined, now.value) === 'dead'
+)
+
+const SWITCHES: { key: string; label: string; get: () => TriState }[] = [
+  { key: 'auto',  label: '自动操作', get: () => system.isMonitoring },
+  { key: 'buy',   label: '允许买',   get: () => system.allowBuy },
+  { key: 'sell',  label: '允许卖',   get: () => system.allowSell },
+  { key: 'sim',   label: '模拟交易', get: () => system.simulationMode },
+  { key: 'stopP', label: '自动止盈', get: () => system.autoTrading },
+  { key: 'grid',  label: '自动网格', get: () => system.gridTrading },
+]
 
 function toggleDropdown() { showDropdown.value = !showDropdown.value }
 function closeDropdown() { showDropdown.value = false }
@@ -36,6 +54,7 @@ function onSwitchAccount(accId: string) { system.switchAccount(accId); closeDrop
 function openAdd() { editForm.value = { id: '', label: '', flaskUrl: '' }; showAccountDialog.value = true; closeDropdown() }
 function openEdit(acc: AccountEntry) { editForm.value = { ...acc }; showAccountDialog.value = true; closeDropdown() }
 function saveAccount() { if (!editForm.value.id || !editForm.value.label) return; system.addAccount({ ...editForm.value }); showAccountDialog.value = false }
+
 async function onConnectionChanged() {
   gatewayMode.value = isGatewayMode()
   await system.syncAccountsFromGateway()
@@ -44,59 +63,14 @@ async function onConnectionChanged() {
 }
 function onClickOutside(e: MouseEvent) { if (dropdownRef.value && !dropdownRef.value.contains(e.target as Node)) closeDropdown() }
 
-function toggleMonitoring() {
-  const next = !system.isMonitoring
-  system.toggleMonitor(next).then(() => { if (next) startPolling(); else stopPolling() })
-}
-async function toggleStopProfit() {
-  stopProfitLoading.value = true; const next = !stopProfitEnabled.value
-  await xqApi.toggleStopProfit(next); stopProfitEnabled.value = next; stopProfitLoading.value = false
-}
-async function toggleConfigBool(key: string) {
-  const previous = Boolean((config.config as any)[key])
-  const next = !previous
-  ;(config.config as any)[key] = next
-  const ok = await config.saveConfig({ [key]: next } as any)
-  if (!ok) (config.config as any)[key] = previous
-}
-async function loadStopProfitStatus() { try { const d = await xqApi.getStopProfitStatus(); if (d?.config) stopProfitEnabled.value = d.config.enabled } catch {} }
-
-// Buy actions
-const buyStrategy = ref<BuyStrategy>('random_pool')
-const buyQty = ref(1)
-const buying = ref(false); const clearing = ref(false); const importing = ref(false); const initializing = ref(false)
-const showBuyDialog = ref(false)
-const buyDialogTitle = ref(''); const buyDialogStocks = ref(''); const buyIsRandom = ref(true)
-
-async function handleBuy() {
-  if (buyStrategy.value === 'random_pool') {
-    const pool = await flaskApi.getStockPool()
-    if (pool.length === 0) { alert('备选池为空'); return }
-    buyIsRandom.value = true; buyDialogTitle.value = `从备选池随机买入 ${buyQty.value} 只`; buyDialogStocks.value = pool.join(', ')
-  } else {
-    buyIsRandom.value = false; buyDialogTitle.value = `自定义股票买入 ${buyQty.value} 只`; buyDialogStocks.value = ''
-  }
-  showBuyDialog.value = true
-}
-
-async function doBuyConfirm() {
-  buying.value = true
-  const stocks = buyDialogStocks.value.split(/[,，\s]+/).filter(s => s.trim())
-  const r = await flaskApi.executeBuy(buyStrategy.value, buyQty.value, stocks, config.configData)
-  buying.value = false; showBuyDialog.value = false
-  if (r.success) { positions.dataVersion = 0; window.dispatchEvent(new Event('refresh-data')) } else { alert(r.message || '买入失败') }
-}
-
-async function doClear() { clearing.value = true; await flaskApi.clearLogs(); clearing.value = false; window.dispatchEvent(new Event('refresh-data')) }
-async function doImport() { importing.value = true; await flaskApi.importData(); importing.value = false; window.dispatchEvent(new Event('refresh-data')) }
-async function doInit() {
-  if (!confirm('确定重新初始化持仓数据？将从 QMT 重新同步。')) return
-  initializing.value = true; await flaskApi.initHoldings(config.configData)
-  initializing.value = false; positions.dataVersion = 0; window.dispatchEvent(new Event('refresh-data'))
-}
-
-onMounted(() => { document.addEventListener('click', onClickOutside); loadStopProfitStatus() })
-onUnmounted(() => document.removeEventListener('click', onClickOutside))
+onMounted(() => {
+  document.addEventListener('click', onClickOutside)
+  clock = setInterval(() => { now.value = Date.now() }, 1000)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', onClickOutside)
+  if (clock) clearInterval(clock)
+})
 </script>
 
 <template>
@@ -108,7 +82,10 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
           <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-md shadow-blue-100 flex-shrink-0">
             <span class="text-white font-black text-[10px]">MQ</span>
           </div>
-          <h1 class="text-sm md:text-base font-bold text-slate-800 leading-tight">miniQMT<span class="text-slate-400 font-normal text-[10px] ml-0.5">2.0</span></h1>
+          <h1 class="text-sm md:text-base font-bold text-slate-800 leading-tight">
+            miniQMT<span class="text-slate-400 font-normal text-[10px] ml-0.5">2.0</span>
+          </h1>
+          <span class="badge-slate !text-[9px] !px-1.5 hidden sm:inline" title="web2.0 为只读监控端，所有写操作请使用 web1.0">只读监控</span>
         </div>
 
         <!-- Account switcher -->
@@ -151,63 +128,32 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
       <span class="metric-tile !min-w-[112px] !px-2.5 !py-1.5">总资产 <strong class="block truncate text-slate-700">¥{{ (system.account.totalAssets ?? 0).toLocaleString() }}</strong></span>
     </div>
 
-    <!-- Row 2: Controls (left) + Status badges (right) -->
+    <!-- Row 2: 只读状态徽章 + 连接/新鲜度指示 -->
     <div class="px-3 md:px-6 pb-2 flex items-center justify-between gap-2 flex-wrap">
-      <!-- Control toggles -->
-      <div class="touch-strip no-scrollbar flex-1 min-w-0">
-        <button v-if="!gatewayMode" @click="toggleMonitoring" :class="['min-h-9 px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors', system.isMonitoring ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100']">{{ system.isMonitoring ? '停止自动操作' : '开始自动操作' }}</button>
-        <button v-if="!gatewayMode" @click="toggleStopProfit" :disabled="stopProfitLoading" :class="['min-h-9 px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors', stopProfitEnabled ? 'bg-amber-50 text-amber-600 hover:bg-amber-100' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100']">{{ stopProfitLoading ? '...' : (stopProfitEnabled ? '禁用动态止盈' : '开启动态止盈') }}</button>
-        <span v-if="gatewayMode" class="inline-flex min-h-9 items-center text-[11px] text-slate-400 bg-slate-50 px-3 py-1.5 rounded-md" title="网关模式不支持自动操作总开关和动态止盈控制，请使用 Flask 直连模式">网关模式 · 只读监控+下单</span>
-        <span v-if="!gatewayMode" class="w-px h-4 bg-slate-200 mx-0.5 hidden sm:inline"></span>
-        <template v-if="!gatewayMode">
-        <label class="flex min-h-9 items-center gap-1 px-3 py-1.5 rounded-md text-[11px] cursor-pointer hover:bg-slate-100 transition-colors select-none"><input type="checkbox" :checked="config.config.allowBuy" @change="toggleConfigBool('allowBuy')" class="w-3 h-3 rounded accent-blue-600" />买</label>
-        <label class="flex min-h-9 items-center gap-1 px-3 py-1.5 rounded-md text-[11px] cursor-pointer hover:bg-slate-100 transition-colors select-none"><input type="checkbox" :checked="config.config.allowSell" @change="toggleConfigBool('allowSell')" class="w-3 h-3 rounded accent-blue-600" />卖</label>
-        <label class="flex min-h-9 items-center gap-1 px-3 py-1.5 rounded-md text-[11px] cursor-pointer hover:bg-slate-100 transition-colors select-none" title="模拟交易模式"><input type="checkbox" :checked="config.config.simulationMode" @change="toggleConfigBool('simulationMode')" class="w-3 h-3 rounded accent-amber-500" /><span :class="config.config.simulationMode ? 'text-amber-600 font-medium' : ''">模拟交易</span></label>
-        <label class="flex min-h-9 items-center gap-1 px-3 py-1.5 rounded-md text-[11px] cursor-pointer hover:bg-slate-100 transition-colors select-none" title="动态止盈止损自动执行开关"><input type="checkbox" :checked="config.config.globalAllowBuySell" @change="toggleConfigBool('globalAllowBuySell')" class="w-3 h-3 rounded accent-blue-600" />允许自动止盈</label>
-        <label class="flex min-h-9 items-center gap-1 px-3 py-1.5 rounded-md text-[11px] cursor-pointer hover:bg-slate-100 transition-colors select-none" title="网格交易自动执行开关"><input type="checkbox" :checked="config.config.globalAllowGridTrading" @change="toggleConfigBool('globalAllowGridTrading')" class="w-3 h-3 rounded accent-blue-600" />允许自动网格</label>
-        </template>
+      <div class="touch-strip no-scrollbar flex-1 min-w-0 gap-1.5">
+        <StateBadge v-for="s in SWITCHES" :key="s.key" :label="s.label" :value="s.get()" />
       </div>
 
-      <!-- Status badges (right) -->
       <div class="flex items-center gap-1.5 ml-auto flex-shrink-0">
-        <span :class="['badge text-[10px]', system.isMonitoring ? 'badge-green' : 'badge-red']"><span :class="system.isMonitoring ? 'dot-green' : 'dot-red'"></span>{{ system.isMonitoring ? '自动ON' : '自动OFF' }}</span>
-        <span :class="['badge text-[10px]', system.connected ? 'badge-green' : 'badge-amber']"><span :class="system.connected ? 'dot-green' : 'dot-amber'"></span>QMT{{ system.connected ? '·OK' : '·断' }}</span>
-        <span class="hidden sm:inline" :class="['badge text-[10px]', sseHealthy ? 'badge-green' : 'badge-amber']" :title="sseHealthy ? 'SSE实时推送正常' : 'SSE断开, 使用轮询(功能不受影响)'">SSE</span>
-        <span v-if="system.lastUpdateTime" class="text-[10px] text-slate-400 font-mono hidden sm:inline">{{ system.lastUpdateTime }}</span>
+        <span :class="['badge text-[10px]', system.connected ? 'badge-green' : 'badge-red']"
+          :title="`QMT 连接状态 · 最后检查 ${connectionAge}`">
+          <span :class="system.connected ? 'dot-green' : 'dot-red'"></span>QMT{{ system.connected ? '·OK' : '·断' }}
+        </span>
+        <span class="hidden sm:inline" :class="['badge text-[10px]', sseHealthy ? 'badge-green' : 'badge-slate']"
+          :title="sseHealthy ? 'SSE 实时推送正常' : 'SSE 不可用，依赖轮询（数据仍在更新）'">SSE</span>
+        <span :class="['text-[10px] font-mono hidden sm:inline', freshnessClass(statusFreshness)]"
+          :title="`系统状态最后更新 ${statusAge}`">{{ statusAge }}</span>
+        <span v-if="connectionFreshness === 'dead'" class="badge badge-red text-[10px]" title="连接状态长时间未刷新">连接检查停滞</span>
       </div>
     </div>
 
-    <!-- Row 3: Buy actions (网关模式下禁用—需Flask后端) -->
-    <div v-if="!gatewayMode" class="px-3 md:px-6 pb-2.5 touch-strip no-scrollbar text-[12px]">
-      <select v-model="buyStrategy" class="input-field !w-auto !min-h-9 !py-1 !text-[11px]">
-        <option value="random_pool">备选池随机</option>
-        <option value="custom_stock">自定义股票</option>
-      </select>
-      <input v-model.number="buyQty" type="number" min="1" max="100" class="input-field !w-16 !min-h-9 !py-1 !text-[11px] text-center" />
-      <button @click="handleBuy" :disabled="buying" class="btn-primary btn-xs">{{ buying ? '...' : '买入' }}</button>
-      <span class="w-px h-8 bg-slate-200 mx-0.5"></span>
-      <button @click="doClear" :disabled="clearing" class="btn-outline btn-xs">清空今日</button>
-      <button @click="doImport" :disabled="importing" class="btn-outline btn-xs">导入配置</button>
-      <button @click="doInit" :disabled="initializing" class="btn-danger btn-xs">初始化持仓</button>
+    <!-- 数据失联横幅：监控端最重要的告警 -->
+    <div v-if="dataStale" class="px-3 md:px-6 pb-2">
+      <div class="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-[11px] text-red-700">
+        ⚠ 数据已超过 90 秒未更新，界面显示的可能是陈旧快照。请检查后端服务与网络连接。
+      </div>
     </div>
   </header>
-
-  <!-- Buy dialog -->
-  <Teleport to="body">
-    <div v-if="showBuyDialog" class="modal-overlay" @click.self="showBuyDialog = false">
-      <div class="modal-content w-[520px] max-w-[96vw]">
-        <div class="px-6 py-4 border-b border-slate-100"><h3 class="text-lg font-semibold text-slate-800">{{ buyDialogTitle }}</h3></div>
-        <div class="p-6">
-          <label class="label-text">{{ buyIsRandom ? '股票列表（可编辑）' : '股票代码（逗号或换行分隔）' }}</label>
-          <textarea v-model="buyDialogStocks" rows="6" class="input-field font-mono text-sm" :placeholder="buyIsRandom ? '' : '000001.SZ, 600036.SH'"></textarea>
-        </div>
-        <div class="px-6 py-3 bg-slate-50/80 rounded-b-lg flex justify-end gap-2">
-          <button @click="showBuyDialog = false" class="btn-ghost">取消</button>
-          <button @click="doBuyConfirm" :disabled="buying" class="btn-primary">{{ buying ? '提交中...' : '确定买入' }}</button>
-        </div>
-      </div>
-    </div>
-  </Teleport>
 
   <!-- Account edit dialog -->
   <Teleport to="body">

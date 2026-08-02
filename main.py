@@ -652,11 +652,14 @@ def main():
                 logger.warning(f"⚠️ 卖出监控器失败:{str(e)[:30]}")
                 logger.info("系统继续运行")
 
-        # 启动Web服务器（web2.0 模式下跳过 Flask，用 xtquant_manager 托管界面）
+        # 启动Web服务器。
+        # web2.0 模式下界面由 xtquant_manager 托管，但 Flask 仍会启动：
+        # 网关需要反向调用它读取 ENABLE_AUTO_OPERATION 等只存在于本进程
+        # 内存、不持久化的开关。launcher 仅在端口已被占用时才设 QMT_NO_FLASK。
         if not os.environ.get("QMT_NO_FLASK"):
             start_web_server_thread(position_manager)
         else:
-            logger.info("web2.0 模式 — 跳过 Flask Web 服务器（由 xtquant_manager 托管）")
+            logger.info("跳过 Flask Web 服务器（QMT_NO_FLASK=1，端口已被占用或显式禁用）")
 
         # 等待退出信号
         logger.info("✅ 系统启动完成")

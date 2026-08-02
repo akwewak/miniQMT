@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useGridStore } from '../stores/grid'
-import { isGatewayMode } from '../api/accounts'
 import type { GridLedgerDetail, GridLot, GridLotMatch, GridSession, GridTrade } from '../types'
 import { fmtMoney, fmtNumber, fmtPercent, fmtPrice, fmtTime, profitClass } from '../utils/format'
+import { formatAge } from '../utils/freshness'
 
+/** 网格会话只读面板：展示状态与真实账本，不提供启停/暂停等操作。 */
 const grid = useGridStore()
 const selectedSession = ref<GridSession | null>(null)
 
@@ -37,25 +38,11 @@ const selectedTradeTotal = computed(() => {
   return grid.tradeTotalsBySession[selectedSession.value.session_id] ?? selectedTrades.value.length
 })
 
+const age = computed(() => formatAge(grid.updatedAt))
+
+/** 会话是否处于"自动"状态（只读展示；暂停切换请在 web1.0 操作） */
 function isSessionAutoEnabled(session: GridSession) {
   return session.enabled !== false
-}
-
-function canToggleSession(session: GridSession) {
-  return !isGatewayMode() && session.status === 'active'
-}
-
-async function toggleSessionEnabled(session: GridSession) {
-  if (!canToggleSession(session)) return
-  const next = !isSessionAutoEnabled(session)
-  const r = await grid.setSessionEnabled(session.session_id, next)
-  if (!r?.success) {
-    alert(r?.error || '网格开关更新失败')
-    return
-  }
-  if (selectedSession.value?.session_id === session.session_id) {
-    selectedSession.value = { ...selectedSession.value, enabled: next }
-  }
 }
 
 const totalPnl = computed(() =>
@@ -158,8 +145,8 @@ function tradeTypeClass(type: string) {
         <span v-if="grid.activeSessions.length" class="badge-green text-[10px]">{{ grid.activeSessions.length }} 个运行中</span>
       </div>
       <div class="flex items-center gap-3 text-xs text-slate-400">
+        <span class="font-mono text-[10px]">{{ age }}</span>
         <span>汇总盈亏 <strong :class="['font-mono', profitClass(totalPnl)]">{{ fmtMoney(totalPnl) }}</strong></span>
-        <button @click="grid.fetchSessions()" :disabled="grid.loading" class="btn-ghost btn-xs">{{ grid.loading ? '刷新中' : '刷新' }}</button>
       </div>
     </div>
 
@@ -208,10 +195,11 @@ function tradeTypeClass(type: string) {
         <div class="mt-3 flex items-center justify-between gap-2 text-xs text-slate-500">
           <span class="min-w-0 truncate">资金 {{ fmtMoney(session.current_investment || 0, 0) }}</span>
           <div class="flex items-center gap-2">
-            <label v-if="canToggleSession(session)" class="flex min-h-8 items-center gap-1 rounded-md px-2 text-[11px] text-slate-500 hover:bg-slate-100" title="关闭后保留会话，不再发新网格单">
-              <input type="checkbox" :checked="isSessionAutoEnabled(session)" @change="toggleSessionEnabled(session)" class="h-3 w-3 rounded accent-blue-600" />
-              自动
-            </label>
+            <span v-if="session.status === 'active'"
+              :class="['badge !text-[9px]', isSessionAutoEnabled(session) ? 'badge-green' : 'badge-amber']"
+              :title="isSessionAutoEnabled(session) ? '网格自动执行中' : '已暂停（保留会话，不发新单）· 切换请用 web1.0'">
+              {{ isSessionAutoEnabled(session) ? '自动' : '暂停' }}
+            </span>
             <button @click="openDetail(session)" class="btn-outline btn-xs">查看账本</button>
           </div>
         </div>
@@ -280,10 +268,11 @@ function tradeTypeClass(type: string) {
             </td>
             <td class="px-4 py-2.5 text-right">
               <div class="flex items-center justify-end gap-2">
-                <label v-if="canToggleSession(session)" class="flex min-h-8 items-center gap-1 rounded-md px-2 text-[11px] text-slate-500 hover:bg-slate-100" title="关闭后保留会话，不再发新网格单">
-                  <input type="checkbox" :checked="isSessionAutoEnabled(session)" @change="toggleSessionEnabled(session)" class="h-3 w-3 rounded accent-blue-600" />
-                  自动
-                </label>
+                <span v-if="session.status === 'active'"
+                  :class="['badge !text-[9px]', isSessionAutoEnabled(session) ? 'badge-green' : 'badge-amber']"
+                  :title="isSessionAutoEnabled(session) ? '网格自动执行中' : '已暂停（保留会话，不发新单）· 切换请用 web1.0'">
+                  {{ isSessionAutoEnabled(session) ? '自动' : '暂停' }}
+                </span>
                 <button @click="openDetail(session)" class="btn-outline btn-xs">详情</button>
               </div>
             </td>
@@ -304,10 +293,11 @@ function tradeTypeClass(type: string) {
             </p>
           </div>
           <div class="flex items-center gap-2">
-            <label v-if="canToggleSession(selectedSession)" class="flex min-h-8 items-center gap-1 rounded-md px-2 text-[11px] text-slate-500 hover:bg-slate-100" title="关闭后保留会话，不再发新网格单">
-              <input type="checkbox" :checked="isSessionAutoEnabled(selectedSession)" @change="toggleSessionEnabled(selectedSession)" class="h-3 w-3 rounded accent-blue-600" />
-              自动
-            </label>
+            <span v-if="selectedSession.status === 'active'"
+              :class="['badge !text-[9px]', isSessionAutoEnabled(selectedSession) ? 'badge-green' : 'badge-amber']"
+              :title="isSessionAutoEnabled(selectedSession) ? '网格自动执行中' : '已暂停（保留会话，不发新单）· 切换请用 web1.0'">
+              {{ isSessionAutoEnabled(selectedSession) ? '自动' : '暂停' }}
+            </span>
             <button @click="closeDetail" class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors text-xl">&times;</button>
           </div>
         </div>

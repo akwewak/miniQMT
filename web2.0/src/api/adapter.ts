@@ -1,5 +1,11 @@
 import { getFlaskUrl, getXtquantUrl, getApiToken, loadConnection, getCurrentAccountId } from './accounts'
 
+/**
+ * 只读 HTTP 适配层。
+ *
+ * 刻意只导出 apiGet：web2.0 是纯监控端，不应存在任何写请求通道。
+ * 需要下单/改配置请使用 web1.0（Flask 直连，仅绑本机）。
+ */
 export async function apiGet(path: string): Promise<any> {
   const url = resolveUrl(path)
   const headers: Record<string, string> = {}
@@ -12,23 +18,6 @@ export async function apiGet(path: string): Promise<any> {
     if (!resp.ok) return { status: 'error', error: `HTTP ${resp.status}` }
     const data = await resp.json()
     // 标准化 xtquant_manager ApiResponse (success: bool) → Flask 格式 (status: string)
-    return normalizeResponse(data)
-  } catch (e: any) {
-    return { status: 'error', error: e.message || 'Network error' }
-  }
-}
-
-export async function apiPost(path: string, body?: any): Promise<any> {
-  const url = resolveUrl(path)
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  const token = getApiToken()
-  if (token) headers['X-API-Token'] = token
-  const accountId = getCurrentAccountId()
-  if (accountId) headers['X-Account-Id'] = accountId
-  try {
-    const resp = await fetch(url, { method: 'POST', headers, body: body ? JSON.stringify(body) : undefined })
-    if (!resp.ok) return { status: 'error', error: `HTTP ${resp.status}` }
-    const data = await resp.json()
     return normalizeResponse(data)
   } catch (e: any) {
     return { status: 'error', error: e.message || 'Network error' }

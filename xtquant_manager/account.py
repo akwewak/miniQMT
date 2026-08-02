@@ -634,6 +634,10 @@ class XtQuantAccount:
                 "委托数量": o.order_volume,
                 "委托价格": o.price,
                 "委托状态": o.order_status,
+                # 监控端需要这三项才能展示在途进度与挂单时间
+                "成交数量": getattr(o, "traded_volume", 0) or 0,
+                "报单时间": getattr(o, "order_time", None),
+                "状态描述": getattr(o, "status_msg", "") or "",
             })
         return result
 

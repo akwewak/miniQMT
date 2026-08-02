@@ -164,7 +164,10 @@
       "modules": [
         "test.test_web_api_complete",
         "test.test_web1_grid_dialog_static",
-        "test.test_market_health_api"
+        "test.test_market_health_api",
+        "test.test_order_utils",
+        "test.test_xqm_monitor_endpoints",
+        "test.test_xqm_flask_compat"
       ],
       "priority": "critical"
     },
@@ -322,7 +325,9 @@
         "test.test_tushare_adapter",
         "test.test_qmt_ipc_trader",
         "test.test_qmt_ipc_executor",
-        "test.test_qmt_ipc_position_manager_integration"
+        "test.test_qmt_ipc_position_manager_integration",
+        "test.test_order_utils",
+        "test.test_xqm_monitor_endpoints"
       ],
       "priority": "critical"
     }

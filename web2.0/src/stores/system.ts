@@ -4,6 +4,9 @@ import * as flaskApi from '../api/flask'
 import { loadAccounts, saveAccounts, getCurrentAccountId, setCurrentAccountId, discoverAccounts } from '../api/accounts'
 import type { AccountEntry } from '../api/accounts'
 
+/** 三态开关：true/false 为后端真实值，null 表示后端未提供（网关模式常见）。 */
+export type TriState = boolean | null
+
 export const useSystemStore = defineStore('system', () => {
   const connected = ref(false)
   const accounts = ref<AccountEntry[]>(loadAccounts())
@@ -11,14 +14,19 @@ export const useSystemStore = defineStore('system', () => {
   const account = ref({
     id: '--', availableBalance: 0, maxHoldingValue: 0, totalAssets: 0, timestamp: '--'
   })
-  const isMonitoring = ref(false)
-  const autoTrading = ref(false)
-  const gridTrading = ref(true)
-  const allowBuy = ref(true)
-  const allowSell = ref(true)
-  const simulationMode = ref(false)
-  const positionMonitorRunning = ref(false)
+
+  // 全部为只读展示状态。null = 后端未提供，UI 显示"未知"而非假装成关闭
+  const isMonitoring = ref<TriState>(null)
+  const autoTrading = ref<TriState>(null)
+  const gridTrading = ref<TriState>(null)
+  const allowBuy = ref<TriState>(null)
+  const allowSell = ref<TriState>(null)
+  const simulationMode = ref<TriState>(null)
+  const positionMonitorRunning = ref<TriState>(null)
+
   const lastUpdateTime = ref('')
+  const statusUpdatedAt = ref(0)
+  const connectionUpdatedAt = ref(0)
 
   const currentAccount = computed(() =>
     accounts.value.find(a => a.id === currentAccountId.value) || accounts.value[0]
@@ -76,31 +84,34 @@ export const useSystemStore = defineStore('system', () => {
     if (r.account) account.value = r.account
     const s = r.settings
     if (s) {
-      isMonitoring.value = s.isMonitoring
-      autoTrading.value = s.enableAutoTrading
-      gridTrading.value = s.enableGridTrading ?? true
-      allowBuy.value = s.allowBuy
-      allowSell.value = s.allowSell
-      simulationMode.value = s.simulationMode
-      positionMonitorRunning.value = s.positionMonitorRunning
+      isMonitoring.value = tri(s.isMonitoring)
+      autoTrading.value = tri(s.enableAutoTrading)
+      gridTrading.value = tri(s.enableGridTrading)
+      allowBuy.value = tri(s.allowBuy)
+      allowSell.value = tri(s.allowSell)
+      simulationMode.value = tri(s.simulationMode)
+      positionMonitorRunning.value = tri(s.positionMonitorRunning)
     }
+    statusUpdatedAt.value = Date.now()
     lastUpdateTime.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   }
 
   async function fetchConnection() {
     connected.value = await flaskApi.getConnectionStatus()
-  }
-
-  async function toggleMonitor(on: boolean) {
-    await flaskApi.toggleMonitor(on)
-    isMonitoring.value = on
+    connectionUpdatedAt.value = Date.now()
   }
 
   return {
     connected, accounts, currentAccountId, currentAccount, account,
     isMonitoring, autoTrading, gridTrading, allowBuy, allowSell,
     simulationMode, positionMonitorRunning, lastUpdateTime,
+    statusUpdatedAt, connectionUpdatedAt,
     switchAccount, addAccount, removeAccount, syncAccountsFromGateway,
-    fetchStatus, fetchConnection, toggleMonitor,
+    fetchStatus, fetchConnection,
   }
 })
+
+/** undefined/缺失 → null（未知），其余按布尔解读。 */
+function tri(v: unknown): TriState {
+  return v === null || v === undefined ? null : Boolean(v)
+}

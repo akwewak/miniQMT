@@ -37,12 +37,13 @@ export function useSSE() {
             system.account.totalAssets = msg.account_info.total_asset
           }
           if (msg.monitoring) {
-            system.autoTrading = msg.monitoring.autoTradingEnabled
+            system.autoTrading = msg.monitoring.autoTradingEnabled ?? system.autoTrading
             system.gridTrading = msg.monitoring.gridTradingEnabled ?? system.gridTrading
-            system.allowBuy = msg.monitoring.allowBuy
-            system.allowSell = msg.monitoring.allowSell
-            system.simulationMode = msg.monitoring.simulationMode
+            system.allowBuy = msg.monitoring.allowBuy ?? system.allowBuy
+            system.allowSell = msg.monitoring.allowSell ?? system.allowSell
+            system.simulationMode = msg.monitoring.simulationMode ?? system.simulationMode
           }
+          system.statusUpdatedAt = Date.now()
           system.lastUpdateTime = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
           if (msg.positions_update?.changed) {
             setTimeout(() => {

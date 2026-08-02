@@ -3,6 +3,7 @@
 """
 import os
 import pandas as pd
+import re
 import sqlite3
 import time
 from collections import defaultdict, deque
@@ -737,38 +738,145 @@ class DataManager:
         except Exception as e:
             logger.error(f"DB迁移失败（不影响运行,但会持续报字段缺失）: {e}")
 
+    # quick_check 报告里定位受损 B-tree 的行格式: "Tree 3 page 528 cell 49: ..."
+    _CORRUPT_TREE_RE = re.compile(r'^Tree (\d+) page', re.MULTILINE)
+
     def _repair_indexes_if_needed(self):
-        """检查并修复损坏的数据库索引（快速完整性检查）"""
+        """检查并修复损坏的数据库结构（快速完整性检查）。
+
+        区分两类损坏，用不同手段修复：
+
+        - **索引** B-tree 损坏 → REINDEX 即可重建。
+        - **表** B-tree 损坏（rowid out of order）→ REINDEX 和 VACUUM 都**无效**，
+          必须导出数据后重建整张表。
+
+        历史缺陷：早期实现对所有损坏一律 REINDEX。当受损的是 stock_daily_data
+        表自身时，REINDEX 会因扫描到乱序 rowid 而误报
+        "UNIQUE constraint failed"，随后的去重逻辑又统计不到任何真实重复
+        （表里本来就没有重复），于是直接 raise —— 修复从未生效，
+        每次启动都重复刷同一条 WARNING。
+
+        该损坏并非只是噪音：受损表上 `SELECT COUNT(*)` 与实际全表扫描
+        读到的行数会不一致（B-tree 乱序导致部分数据被重复遍历）。
+        """
         try:
             result = self.conn.execute("PRAGMA quick_check").fetchone()
-            if result and result[0] != 'ok':
-                logger.warning(f"检测到数据库索引异常: {result[0]}，执行 REINDEX 修复...")
-                try:
-                    self.conn.execute("REINDEX")
-                    self.conn.commit()
-                except sqlite3.IntegrityError as e:
-                    if "stock_daily_data.stock_code" not in str(e) or "stock_daily_data.date" not in str(e):
-                        raise
-                    removed = self._deduplicate_stock_daily_data()
-                    if removed > 0:
-                        logger.warning(f"已清理 stock_daily_data 重复日线记录 {removed} 条，重新执行 REINDEX...")
-                        self.conn.execute("REINDEX")
-                        self.conn.commit()
-                    else:
-                        raise
-                # 再次验证
-                result2 = self.conn.execute("PRAGMA quick_check").fetchone()
-                if result2 and result2[0] == 'ok':
-                    logger.info("数据库索引修复成功")
-                else:
-                    logger.error(f"数据库索引修复后仍有异常: {result2[0] if result2 else '未知'}")
+            if not result or result[0] == 'ok':
+                logger.debug("数据库完整性检查通过")
+                return
+
+            report = result[0]
+            corrupt_tables = self._find_corrupt_tables(report)
+            first_line = report.split('\n')[0]
+
+            if corrupt_tables:
+                logger.warning(
+                    f"检测到数据表结构损坏: {first_line} "
+                    f"(受损表: {', '.join(corrupt_tables)})，执行表重建修复..."
+                )
+                for table in corrupt_tables:
+                    self._rebuild_table(table)
             else:
-                logger.debug("数据库索引完整性检查通过")
+                logger.warning(f"检测到数据库索引异常: {first_line}，执行 REINDEX 修复...")
+                self.conn.execute("REINDEX")
+                self.conn.commit()
+
+            result2 = self.conn.execute("PRAGMA quick_check").fetchone()
+            if result2 and result2[0] == 'ok':
+                logger.info("数据库完整性修复成功")
+            else:
+                # 仍未修好时给出可操作的指引，而不是每次静默重复告警
+                logger.error(
+                    f"数据库修复后仍有异常: "
+                    f"{result2[0].split(chr(10))[0] if result2 else '未知'}。"
+                    f"建议停止系统后手动执行: "
+                    f"sqlite3 {self.db_path} \".recover\" | sqlite3 recovered.db"
+                )
         except Exception as e:
-            logger.warning(f"数据库索引检查失败（不影响运行）: {str(e)}")
+            logger.warning(f"数据库完整性检查失败（不影响运行）: {str(e)}")
+
+    def _find_corrupt_tables(self, report):
+        """从 quick_check 报告中解析出受损的**表**名（排除索引）。
+
+        报告用 rootpage 号标识受损 B-tree（"Tree 3 page ..."），
+        通过 sqlite_master.rootpage 反查它属于表还是索引。
+        """
+        tables = []
+        try:
+            cursor = self.conn.cursor()
+            for rootpage in set(self._CORRUPT_TREE_RE.findall(report)):
+                rows = cursor.execute(
+                    "SELECT type, name FROM sqlite_master WHERE rootpage=?",
+                    (int(rootpage),)
+                ).fetchall()
+                for obj_type, name in rows:
+                    if obj_type == 'table' and name not in tables:
+                        tables.append(name)
+        except Exception as e:
+            logger.warning(f"解析受损对象失败: {e}")
+        return tables
+
+    def _rebuild_table(self, table):
+        """导出数据 → 重建表 → 回填，修复表 B-tree 损坏。
+
+        受损表的全表扫描可能读出重复行（同一批数据被重复遍历），
+        因此回填用 INSERT OR REPLACE 依赖主键天然去重。
+        """
+        try:
+            cursor = self.conn.cursor()
+            ddl_row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (table,)
+            ).fetchone()
+            if not ddl_row or not ddl_row[0]:
+                logger.error(f"无法获取表 {table} 的 DDL，跳过重建")
+                return
+
+            ddl = ddl_row[0]
+            indexes = [
+                r[0] for r in cursor.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' "
+                    "AND tbl_name=? AND sql IS NOT NULL", (table,)
+                ).fetchall()
+            ]
+
+            cols = [r[1] for r in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
+            col_list = ', '.join(f'"{c}"' for c in cols)
+            rows = cursor.execute(f"SELECT {col_list} FROM {table}").fetchall()
+
+            tmp_name = f"{table}__rebuild_tmp"
+            cursor.execute(f"DROP TABLE IF EXISTS {tmp_name}")
+            cursor.execute(f"DROP TABLE {table}")
+            cursor.execute(ddl)
+            placeholders = ','.join('?' * len(cols))
+            cursor.executemany(
+                f"INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders})",
+                rows
+            )
+            for idx_sql in indexes:
+                try:
+                    cursor.execute(idx_sql)
+                except Exception as e:
+                    logger.warning(f"重建索引失败({table}): {e}")
+            self.conn.commit()
+
+            kept = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            dropped = len(rows) - kept
+            msg = f"表 {table} 已重建, 保留 {kept} 行"
+            if dropped > 0:
+                msg += f"（扫描到 {len(rows)} 行，去除 {dropped} 行损坏导致的重复遍历结果）"
+            logger.info(msg)
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"重建表 {table} 失败: {e}")
 
     def _deduplicate_stock_daily_data(self):
-        """清理 stock_daily_data 中违反 (stock_code, date) 唯一性的重复日线记录。"""
+        """清理 stock_daily_data 中违反 (stock_code, date) 唯一性的重复日线记录。
+
+        注意：此方法解决"真实存在的重复数据"，不用于修复 B-tree 损坏。
+        B-tree 损坏时表本身没有重复，COUNT 只是被乱序 rowid 骗了；
+        该场景现在由 _rebuild_table 处理。
+        """
         try:
             cursor = self.conn.cursor()
             duplicate_count = cursor.execute("""
@@ -795,6 +903,8 @@ class DataManager:
             return int(duplicate_count)
         except Exception as e:
             logger.warning(f"清理 stock_daily_data 重复记录失败: {e}")
+            return 0
+
             return 0
     
     # def _init_xtquant(self):

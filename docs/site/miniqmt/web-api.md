@@ -77,8 +77,26 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 | GET | `/api/positions` | 当前持仓列表（含 SQLite 持久化字段：名称/建仓日/止损价） | ✅ 完整 |
 | GET | `/api/positions-all` | 全部持仓详情 | ✅ 完整 |
 | GET | `/api/trade-records` | 交易记录（优先读 SQLite `trade_records`，`trade_time` 统一格式化为 `YYYY-MM-DD HH:MM:SS`） | ✅ 完整 |
+| GET | `/api/orders` | **当日委托列表**（含在途未成交），在途委托排在前面 | ✅ 完整 |
 | POST | `/api/initialize_positions` | 初始化持仓数据 🔑 需 Token | ❌ |
 | POST | `/api/holdings/init` | 初始化持股配置（返回体含 `status`，供 web1.0 按钮判定成败） 🔑 需 Token | ❌ |
+
+### `/api/orders` 字段
+
+交易记录只含**已成交**，看不到挂单中的止盈卖单——这是监控视图的盲区，`/api/orders` 用于补齐。
+
+| 字段 | 说明 |
+|------|------|
+| `order_id` | 委托编号 |
+| `stock_code` / `stock_name` | 代码 / 名称（名称来自账号 SQLite） |
+| `trade_type` | `BUY`(23) / `SELL`(24) |
+| `price` / `volume` / `traded_volume` | 委托价 / 委托量 / 已成交量 |
+| `status` / `status_desc` | 状态码 / 中文描述（优先用 QMT 的 `status_msg`） |
+| `is_pending` | 是否在途，状态码 ∈ {48,49,50,51,52,55} |
+| `order_time` | 报单时间，`YYYY-MM-DD HH:MM:SS`（QMT 原值是 Unix 时间戳） |
+
+状态码与 `position_manager._has_pending_orders_fallback` 的活跃集合保持一致，
+常量收口在 [order_utils.py](order_utils.py)，两条链路（Flask / 网关）共用。
 
 !!! note "交易记录口径"
     实盘网格在 `GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True` 时，`/api/trade-records` 只返回真实成交确认后的 `trade_records`。已报未成交的网格委托只体现在 `grid_orders` / 网格会话状态中，不会以 `ORDER_xxx` 形式伪装成成交。
@@ -124,7 +142,7 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 | GET | `/api/grid/session/<session_id>` | 按会话 ID 查详情 | ❌ |
 | GET | `/api/grid/sessions` | 所有网格会话 | ✅ 只读 |
 | GET | `/api/grid/trades/<session_id>` | 网格交易记录 | ❌ |
-| GET | `/api/grid/ledger/<session_id>` | 网格真实账本详情（批次、FIFO 配对、盈亏汇总） | ❌ |
+| GET | `/api/grid/ledger/<session_id>` | 网格真实账本详情（批次、FIFO 配对、盈亏汇总） | ✅ 只读 |
 | GET | `/api/grid/status/<stock_code>` | 网格快速状态 | ❌ |
 | GET | `/api/grid/checkbox-states` | 所有股票网格勾选状态 | ❌ |
 | GET | `/api/grid/checkbox-state/<stock_code>` | 单只股票网格勾选状态 | ❌ |

@@ -11,8 +11,10 @@ import { computed, onMounted, onUnmounted, watch } from 'vue'
 import HeaderBar from './components/HeaderBar.vue'
 import SimulationBanner from './components/SimulationBanner.vue'
 import ConfigPanel from './components/ConfigPanel.vue'
+import TierSwitches from './components/TierSwitches.vue'
 import HoldingsTable from './components/HoldingsTable.vue'
 import GridStatusPanel from './components/GridStatusPanel.vue'
+import PendingOrders from './components/PendingOrders.vue'
 import OrderLog from './components/OrderLog.vue'
 import AdviceTooltip from './components/AdviceTooltip.vue'
 
@@ -25,11 +27,6 @@ const { start: startPolling } = usePolling()
 
 const mobilePnl = computed(() => positions.metrics.total_profit ?? 0)
 const mobilePnlRatio = computed(() => positions.metrics.total_profit_ratio ?? 0)
-
-async function refreshAll() {
-  await grid.fetchSessions()
-  await Promise.all([positions.fetchPositions(), positions.fetchTrades()])
-}
 
 async function init() {
   const conn = loadConnection()
@@ -45,12 +42,12 @@ async function init() {
 
 onMounted(() => {
   init(); setTimeout(() => sseConnect(), 1000); startPolling()
-  window.addEventListener('refresh-data', refreshAll)
 })
-onUnmounted(() => window.removeEventListener('refresh-data', refreshAll))
+onUnmounted(() => {})
 
 watch(() => system.currentAccountId, () => {
-  positions.dataVersion = 0; positions.positions = []; positions.trades = []; grid.sessions = []
+  positions.reset(); grid.reset()
+  config.config = {}; config.updatedAt = 0
   init(); sseConnect()
 })
 </script>
@@ -79,12 +76,14 @@ watch(() => system.currentAccountId, () => {
           <div class="metric-value">{{ positions.positions.length }} 只</div>
         </div>
         <div class="metric-tile">
-          <div class="metric-label">网格</div>
-          <div class="metric-value">{{ grid.activeSessions.length }} 个运行</div>
+          <div class="metric-label">在途委托</div>
+          <div :class="['metric-value', positions.pendingOrders.length ? 'text-amber-600' : '']">{{ positions.pendingOrders.length }} 笔</div>
         </div>
       </section>
       <ConfigPanel />
-      <HoldingsTable @refresh="refreshAll" />
+      <TierSwitches />
+      <HoldingsTable />
+      <PendingOrders />
       <GridStatusPanel />
       <OrderLog />
     </main>
