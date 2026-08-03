@@ -48,12 +48,13 @@ const SWITCHES: { key: string; label: string; get: () => TriState }[] = [
   { key: 'grid',  label: '自动网格', get: () => system.gridTrading },
 ]
 
-function toggleDropdown() { showDropdown.value = !showDropdown.value }
+function toggleDropdown() { hideAdvice(); showDropdown.value = !showDropdown.value }
 function closeDropdown() { showDropdown.value = false }
 function onSwitchAccount(accId: string) { system.switchAccount(accId); closeDropdown() }
 function openAdd() { editForm.value = { id: '', label: '', flaskUrl: '' }; showAccountDialog.value = true; closeDropdown() }
 function openEdit(acc: AccountEntry) { editForm.value = { ...acc }; showAccountDialog.value = true; closeDropdown() }
 function saveAccount() { if (!editForm.value.id || !editForm.value.label) return; system.addAccount({ ...editForm.value }); showAccountDialog.value = false }
+function openMarketAdvice(event: Event) { closeDropdown(); showAdvice(event, '399001.SZ') }
 
 async function onConnectionChanged() {
   gatewayMode.value = isGatewayMode()
@@ -90,7 +91,7 @@ onUnmounted(() => {
 
         <!-- Account switcher -->
         <div class="relative" ref="dropdownRef">
-          <button @click="toggleDropdown" class="flex min-h-9 max-w-[150px] sm:max-w-none items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200/60 hover:bg-blue-100 transition-colors" @mouseenter="showAdvice($event, '399001.SZ')" @mouseleave="hideAdvice()">
+          <button @click="toggleDropdown" class="flex min-h-9 max-w-[150px] sm:max-w-none items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200/60 hover:bg-blue-100 transition-colors">
             <span class="dot-green"></span>
             <span class="truncate">{{ system.currentAccount.label || system.currentAccount.id }}</span>
             <svg class="w-3 h-3 opacity-40 transition-transform" :class="showDropdown ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
@@ -107,6 +108,16 @@ onUnmounted(() => {
             <div class="border-t border-slate-100 px-1.5 py-1"><button @click="openAdd" class="w-full text-left px-3 py-1.5 rounded-lg text-xs text-blue-600 hover:bg-blue-50">+ 添加账户</button></div>
           </div>
         </div>
+        <button
+          type="button"
+          class="inline-flex h-5 flex-shrink-0 items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 text-[10px] font-semibold leading-none text-amber-700 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-300"
+          title="MACD 操作建议"
+          @mouseenter="openMarketAdvice($event)"
+          @mouseleave="hideAdvice()"
+          @focus="openMarketAdvice($event)"
+          @blur="hideAdvice()"
+          @click.stop="openMarketAdvice($event)"
+        >操作建议</button>
 
         <button @click="showConnSettings = true" class="w-9 h-9 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors flex-shrink-0" title="连接设置">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
