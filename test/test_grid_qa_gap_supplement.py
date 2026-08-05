@@ -526,6 +526,70 @@ class TestPositionSnapshotDegradation(unittest.TestCase):
 
         print("[OK] SP-3e: 无snapshot降级调用get_position")
 
+    def test_position_cleared_requires_two_confirmations_when_enabled(self):
+        """SP-3f: 运行期清仓退出需要连续两轮确认，避免持仓刷新窗口误停。"""
+        session = self._create_session()
+
+        first = self.manager._check_exit_conditions(
+            session,
+            current_price=10.0,
+            position_snapshot=None,
+            position_snapshot_provided=True,
+            confirm_position_cleared=True
+        )
+        second = self.manager._check_exit_conditions(
+            session,
+            current_price=10.0,
+            position_snapshot=None,
+            position_snapshot_provided=True,
+            confirm_position_cleared=True
+        )
+
+        self.assertIsNone(first)
+        self.assertEqual(second, 'position_cleared')
+
+    def test_position_cleared_confirmation_resets_when_position_returns(self):
+        """SP-3g: 一次空快照后恢复持仓，应重置清仓确认计数。"""
+        session = self._create_session()
+
+        first = self.manager._check_exit_conditions(
+            session,
+            current_price=10.0,
+            position_snapshot={'volume': 0},
+            position_snapshot_provided=True,
+            confirm_position_cleared=True
+        )
+        recovered = self.manager._check_exit_conditions(
+            session,
+            current_price=10.0,
+            position_snapshot={'volume': 500, 'cost_price': 10.0},
+            position_snapshot_provided=True,
+            confirm_position_cleared=True
+        )
+        next_empty = self.manager._check_exit_conditions(
+            session,
+            current_price=10.0,
+            position_snapshot=None,
+            position_snapshot_provided=True,
+            confirm_position_cleared=True
+        )
+
+        self.assertIsNone(first)
+        self.assertIsNone(recovered)
+        self.assertIsNone(next_empty)
+
+    def test_check_grid_signals_does_not_stop_on_first_empty_prefetch(self):
+        """SP-3h: check_grid_signals 首次预取空持仓时不停止活跃网格。"""
+        session = self._create_session()
+        stock_key = self.manager._normalize_code(session.stock_code)
+        self.position_manager.get_position.return_value = None
+
+        signal = self.manager.check_grid_signals(session.stock_code, 10.0)
+
+        self.assertIsNone(signal)
+        self.assertIn(stock_key, self.manager.sessions)
+        self.position_manager.get_position.assert_called_once_with(session.stock_code)
+
 
 # =========================================================================
 # SP-4: _normalize_code 键一致性测试

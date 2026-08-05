@@ -112,6 +112,11 @@ class DatabaseManager:
             ON trade_records(trade_time)
         """)
 
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_trade_records_identity
+            ON trade_records(trade_id, stock_code, trade_type, trade_time, price, volume, amount)
+        """)
+
         self.conn.commit()
         logger.debug("基础表初始化完成")
 

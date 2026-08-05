@@ -635,6 +635,10 @@ class DataManager:
             strategy TEXT
         )
         ''')
+        cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_trade_records_identity
+        ON trade_records(trade_id, stock_code, trade_type, trade_time, price, volume, amount)
+        ''')
         
         # 创建持仓表
         cursor.execute('''

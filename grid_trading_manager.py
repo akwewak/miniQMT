@@ -326,6 +326,26 @@ class GridTradingManager:
         except (TypeError, ValueError):
             return default
 
+    def _clear_position_cleared_confirmation(self, session: GridSession) -> None:
+        key = self._normalize_code(self._session_field(session, 'stock_code', ''))
+        if key:
+            self._position_cleared_confirmations.pop(key, None)
+
+    def _confirm_position_cleared(self, session: GridSession) -> bool:
+        key = self._normalize_code(self._session_field(session, 'stock_code', ''))
+        if not key:
+            return False
+        count = self._position_cleared_confirmations.get(key, 0) + 1
+        self._position_cleared_confirmations[key] = count
+        if count < 2:
+            stock_code = self._session_field(session, 'stock_code', '')
+            logger.warning(
+                f"[GRID] _check_exit_conditions: {stock_code} 首次检测到持仓为空，"
+                "等待下轮确认后再退出"
+            )
+            return False
+        return True
+
     @staticmethod
     def _extract_order_id(result) -> str:
         """兼容 executor 返回 dict/str 的订单号"""
@@ -432,6 +452,7 @@ class GridTradingManager:
         self.last_sell_prices: Dict[int, float] = {}  # {session_id: trigger_price} 每次成功卖出时的触发价，支持自适应冷却缩短
         self.pending_grid_orders: Dict[str, dict] = {}  # 实盘委托待成交确认: {order_id: pending_info}
         self.submitting_grid_orders: Dict[str, dict] = {}  # 锁外下单保护: {submit_id: order_plan}
+        self._position_cleared_confirmations: Dict[str, int] = {}
         self.lock = threading.RLock()  # 使用可重入锁,支持嵌套调用
         self.reconcile_lock = threading.Lock()  # 防止运行期 pending 对账并发进入
         self.last_order_reconcile_time = 0.0
@@ -726,6 +747,7 @@ class GridTradingManager:
                         except Exception as db_err:
                             logger.warning(f"[GRID] DB 修正写回失败(可忽略，下次重启再修正): {db_err}")
                     self.sessions[stock_code_key] = session
+                    self._position_cleared_confirmations.pop(stock_code_key, None)
                     # 使用数据库中保存的价格,避免在启动时调用position_manager
                     if position and isinstance(position, dict) and position.get('current_price'):
                         current_price = position.get('current_price')
@@ -1312,6 +1334,7 @@ class GridTradingManager:
                 end_time=end_time
             )
             self.sessions[stock_code_key] = session
+            self._position_cleared_confirmations.pop(stock_code_key, None)
             logger.debug(f"[GRID] start_grid_session: [阶段2] 内存会话对象创建完成")
 
             # 创建PriceTracker
@@ -1584,6 +1607,7 @@ class GridTradingManager:
         if stock_code_key in self.sessions:
             del self.sessions[stock_code_key]
             logger.debug(f"[GRID] _stop_grid_session_unlocked: 从sessions中移除 {stock_code} (key={stock_code_key})")
+        self._position_cleared_confirmations.pop(stock_code_key, None)
         if session_id in self.trackers:
             del self.trackers[session_id]
             logger.debug(f"[GRID] _stop_grid_session_unlocked: 从trackers中移除 session_id={session_id}")
@@ -1621,7 +1645,9 @@ class GridTradingManager:
         return final_stats
 
     def _check_exit_conditions(self, session: GridSession, current_price: float,
-                               position_snapshot=None) -> Optional[str]:
+                               position_snapshot=None, position_snapshot_provided: bool = False,
+                               confirm_position_cleared: bool = False,
+                               position_lookup_failed: bool = False) -> Optional[str]:
         """检查退出条件,返回退出原因或None
 
         Args:
@@ -1705,15 +1731,30 @@ class GridTradingManager:
 
         # 4. 持仓清空（优先使用锁外预取的快照，避免锁内调用外部依赖导致死锁）
         # A-3修复：若调用方提供了 position_snapshot，直接使用；否则降级为直接调用（向后兼容）。
-        if position_snapshot is not None:
+        if position_lookup_failed:
+            logger.warning(
+                f"[GRID] _check_exit_conditions: {session.stock_code} 持仓查询失败，"
+                "跳过本轮清仓退出判断"
+            )
+            self._clear_position_cleared_confirmation(session)
+            logger.debug(f"[GRID] _check_exit_conditions: 未触发任何退出条件")
+            return None
+
+        if position_snapshot_provided:
+            position = position_snapshot
+        elif position_snapshot is not None:
             position = position_snapshot
         else:
             position = self.position_manager.get_position(session.stock_code)
         volume = position.get('volume', 0) if position else 0
         logger.debug(f"[GRID] _check_exit_conditions: 持仓检测 volume={volume}")
         if not position or volume == 0:
+            if confirm_position_cleared and not self._confirm_position_cleared(session):
+                logger.debug(f"[GRID] _check_exit_conditions: 未触发任何退出条件")
+                return None
             logger.info(f"[GRID] _check_exit_conditions: {session.stock_code} 持仓已清空, 触发退出")
             return 'position_cleared'
+        self._clear_position_cleared_confirmation(session)
 
         logger.debug(f"[GRID] _check_exit_conditions: 未触发任何退出条件")
         return None
@@ -1803,10 +1844,14 @@ class GridTradingManager:
         # 修复: 在获取 self.lock 之前先读取持仓快照，通过参数传入 _check_exit_conditions，
         # 避免锁内执行可能引发锁序反转的外部调用。
         position_snapshot = None
+        position_snapshot_provided = False
+        position_lookup_failed = False
         try:
             position_snapshot = self.position_manager.get_position(stock_code)
+            position_snapshot_provided = True
         except Exception as e:
-            logger.warning(f"[GRID] check_grid_signals: 锁外预取持仓失败(将视为无持仓): {e}")
+            position_lookup_failed = True
+            logger.warning(f"[GRID] check_grid_signals: 锁外预取持仓失败(本轮跳过清仓退出判断): {e}")
 
         with self.lock:
             session = self.sessions.get(self._normalize_code(stock_code))
@@ -1823,7 +1868,14 @@ class GridTradingManager:
             logger.debug(f"[GRID] check_grid_signals: 找到活跃会话 session_id={session.id}, status={session.status}")
 
             # 1. 检查退出条件（传入锁外预取的持仓快照）
-            exit_reason = self._check_exit_conditions(session, current_price, position_snapshot=position_snapshot)
+            exit_reason = self._check_exit_conditions(
+                session,
+                current_price,
+                position_snapshot=position_snapshot,
+                position_snapshot_provided=position_snapshot_provided,
+                confirm_position_cleared=True,
+                position_lookup_failed=position_lookup_failed
+            )
             if exit_reason:
                 logger.info(f"[GRID] check_grid_signals: {stock_code} 触发退出条件 reason={exit_reason}")
                 # RISK-4修复：捕获 ValueError，防止并发场景下（如 Web API 同时手动停止）

@@ -47,6 +47,7 @@ class TradingExecutor:
         
         # 交易锁，防止并发交易
         self.trade_lock = threading.Lock()
+        self._trade_record_lock = threading.RLock()
         
         # 模拟交易订单ID计数器
         self.sim_order_counter = 0
@@ -668,12 +669,61 @@ class TradingExecutor:
             logger.error(f"订单成交兜底确认写流水失败: order_id={order_id}, error={e}")
             return False
 
-    def _trade_record_exists(self, trade_id):
+    @staticmethod
+    def _normalize_trade_record_stock_code(stock_code):
+        return str(stock_code or '').split('.')[0]
+
+    @staticmethod
+    def _trade_record_date(trade_time):
+        if isinstance(trade_time, datetime):
+            return trade_time.strftime('%Y-%m-%d')
+        text = str(trade_time or '').replace('T', ' ')
+        return text[:10] if len(text) >= 10 else datetime.now().strftime('%Y-%m-%d')
+
+    def _trade_record_identity_params(self, stock_code, trade_time, trade_type,
+                                      price, volume, amount, trade_id):
+        return (
+            str(trade_id),
+            self._normalize_trade_record_stock_code(stock_code),
+            str(trade_type),
+            self._trade_record_date(trade_time),
+            round(float(price or 0), 4),
+            int(volume or 0),
+            round(float(amount or 0), 2),
+        )
+
+    def _trade_record_identity_where(self):
+        return """
+            trade_id=?
+            AND (
+                CASE
+                    WHEN instr(stock_code, '.') > 0
+                    THEN substr(stock_code, 1, instr(stock_code, '.') - 1)
+                    ELSE stock_code
+                END
+            )=?
+            AND trade_type=?
+            AND substr(replace(COALESCE(CAST(trade_time AS TEXT), ''), 'T', ' '), 1, 10)=?
+            AND ABS(COALESCE(price, 0) - ?) < 0.0001
+            AND CAST(COALESCE(volume, 0) AS INTEGER)=?
+            AND ABS(COALESCE(amount, 0) - ?) < 0.01
+        """
+
+    def _trade_record_exists(self, trade_id, stock_code=None, trade_time=None,
+                             trade_type=None, price=None, volume=None, amount=None):
         if trade_id is None:
             return False
         try:
             cursor = self.conn.cursor()
-            cursor.execute("SELECT 1 FROM trade_records WHERE trade_id=? LIMIT 1", (str(trade_id),))
+            if all(value is not None for value in (stock_code, trade_time, trade_type, price, volume, amount)):
+                cursor.execute(
+                    f"SELECT 1 FROM trade_records WHERE {self._trade_record_identity_where()} LIMIT 1",
+                    self._trade_record_identity_params(
+                        stock_code, trade_time, trade_type, price, volume, amount, trade_id
+                    )
+                )
+            else:
+                cursor.execute("SELECT 1 FROM trade_records WHERE trade_id=? LIMIT 1", (str(trade_id),))
             return cursor.fetchone() is not None
         except Exception as e:
             logger.warning(f"检查交易流水是否已存在失败: trade_id={trade_id}, error={e}")
@@ -682,9 +732,10 @@ class TradingExecutor:
     def _save_trade_record(self, stock_code, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy='default', allow_qmt_name_lookup=True):
         """保存交易记录到数据库"""
         try:
-            if self._trade_record_exists(trade_id):
-                logger.info(f"交易记录已存在，跳过重复写入: trade_id={trade_id}")
-                return True
+            record_lock = getattr(self, '_trade_record_lock', None)
+            if record_lock is None:
+                record_lock = threading.RLock()
+                self._trade_record_lock = record_lock
 
             # 获取股票名称
             try:
@@ -695,19 +746,55 @@ class TradingExecutor:
             except TypeError:
                 stock_name = self.data_manager.get_stock_name(stock_code)
 
-            logger.info(f"保存交易记录: {stock_code}({stock_name}) {trade_type} 价:{price:.2f} 量:{volume} 金额:{amount:.2f} 策略:{strategy}")
-            
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                INSERT INTO trade_records 
-                (stock_code, stock_name, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (stock_code, stock_name, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy))
-            
-            self.conn.commit()
-            logger.info(f"保存交易记录成功: {stock_code}({stock_name}), {trade_type}, 价: {price:.2f}, 量: {volume}, 策略: {strategy}")
-            return True
-        
+            with record_lock:
+                identity_params = None
+                if trade_id is not None:
+                    identity_params = self._trade_record_identity_params(
+                        stock_code, trade_time, trade_type, price, volume, amount, trade_id
+                    )
+                    if self._trade_record_exists(
+                            trade_id, stock_code, trade_time, trade_type, price, volume, amount):
+                        logger.info(
+                            f"交易记录已存在，跳过重复写入: trade_id={trade_id}, "
+                            f"stock={stock_code}, type={trade_type}, volume={volume}, price={price:.2f}"
+                        )
+                        return True
+
+                logger.info(f"保存交易记录: {stock_code}({stock_name}) {trade_type} 价:{price:.2f} 量:{volume} 金额:{amount:.2f} 策略:{strategy}")
+
+                cursor = self.conn.cursor()
+                if identity_params is not None:
+                    cursor.execute(f"""
+                        INSERT INTO trade_records
+                        (stock_code, stock_name, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy)
+                        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM trade_records
+                            WHERE {self._trade_record_identity_where()}
+                        )
+                    """, (
+                        stock_code, stock_name, trade_time, trade_type, price, volume,
+                        amount, str(trade_id), commission, strategy,
+                        *identity_params
+                    ))
+                    if cursor.rowcount == 0:
+                        logger.info(
+                            f"交易记录已存在，跳过重复写入: trade_id={trade_id}, "
+                            f"stock={stock_code}, type={trade_type}, volume={volume}, price={price:.2f}"
+                        )
+                        self.conn.commit()
+                        return True
+                else:
+                    cursor.execute("""
+                        INSERT INTO trade_records
+                        (stock_code, stock_name, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (stock_code, stock_name, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy))
+
+                self.conn.commit()
+                logger.info(f"保存交易记录成功: {stock_code}({stock_name}), {trade_type}, 价: {price:.2f}, 量: {volume}, 策略: {strategy}")
+                return True
+
         except Exception as e:
             logger.error(f"保存交易记录时出错: {str(e)}")
             self.conn.rollback()

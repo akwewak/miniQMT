@@ -1159,13 +1159,18 @@ class TestGridPriceSimulation(unittest.TestCase):
             self.position_manager.set_volume(STOCK_A, 0)
             print(f"  持仓数量已设为0")
 
-            # 触发check，应检测到持仓清空退出
+            # 运行期清仓退出需要连续两轮确认，避免持仓刷新窗口误停
             signal = self.grid_manager.check_grid_signals(STOCK_A, INITIAL_PRICE)
-            self.assertIsNone(signal, "持仓清空后应退出")
-            self.assertNotIn(STOCK_A_KEY, self.grid_manager.sessions,
-                             "持仓清空后会话应已停止")
+            self.assertIsNone(signal, "首次空持仓只记录确认，不应产生交易信号")
+            self.assertIn(STOCK_A_KEY, self.grid_manager.sessions,
+                          "首次空持仓不应立即停止会话")
 
-            print(f"  [OK] 持仓清零，会话自动停止")
+            signal = self.grid_manager.check_grid_signals(STOCK_A, INITIAL_PRICE)
+            self.assertIsNone(signal, "二次确认持仓清空后应退出")
+            self.assertNotIn(STOCK_A_KEY, self.grid_manager.sessions,
+                             "二次确认持仓清空后会话应已停止")
+
+            print(f"  [OK] 持仓清零，连续两轮确认后会话自动停止")
             self._pass(test_name)
 
         except Exception as e:

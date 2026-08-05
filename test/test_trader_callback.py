@@ -138,7 +138,7 @@ class TestTraderCallback(TestBase):
         executor.data_manager = MagicMock()
         executor.data_manager.get_stock_name.return_value = "测试股"
         executor.position_manager = MagicMock()
-        executor.conn = sqlite3.connect(":memory:")
+        executor.conn = sqlite3.connect(":memory:", check_same_thread=False)
         executor.conn.execute("""
             CREATE TABLE trade_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,6 +158,7 @@ class TestTraderCallback(TestBase):
         executor.order_cache = {}
         executor.callbacks = {}
         executor.trade_lock = threading.Lock()
+        executor._trade_record_lock = threading.RLock()
         return executor
 
     def _make_name_resolving_data_manager(self):
@@ -1027,6 +1028,71 @@ class TestTraderCallback(TestBase):
         self.assertEqual(rows[0][3], 600)
         self.assertEqual(rows[0][4], "DEAL_940572801")
         self.assertEqual(rows[0][5], "auto_partial")
+
+    def test_h3a_reused_trade_id_for_different_stock_is_not_skipped(self):
+        """QMT 编号跨股票复用时，不应被全局 trade_id 去重误跳过。"""
+        executor = self._make_live_executor()
+
+        self.assertTrue(executor._save_trade_record(
+            stock_code="002083.SZ",
+            trade_time="2026-07-29 09:54:39",
+            trade_type="BUY",
+            price=10.67,
+            volume=2300,
+            amount=24541.0,
+            trade_id="1477443585",
+            commission=0.0,
+            strategy="grid"
+        ))
+        self.assertTrue(executor._save_trade_record(
+            stock_code="300454.SZ",
+            trade_time="2026-08-05 10:11:15",
+            trade_type="SELL",
+            price=128.0,
+            volume=100,
+            amount=12800.0,
+            trade_id="1477443585",
+            commission=0.0,
+            strategy="grid"
+        ))
+
+        rows = executor.conn.execute(
+            "SELECT stock_code, trade_type, volume, trade_id FROM trade_records ORDER BY id"
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][0], "002083.SZ")
+        self.assertEqual(rows[1][0], "300454.SZ")
+
+    def test_h3aa_concurrent_duplicate_trade_record_writes_once(self):
+        """同一成交回报并发重复到达时，只写入一条 trade_records。"""
+        executor = self._make_live_executor()
+        errors = []
+
+        def write_once():
+            try:
+                executor._save_trade_record(
+                    stock_code="300454.SZ",
+                    trade_time="2026-08-05 10:14:05",
+                    trade_type="SELL",
+                    price=127.50,
+                    volume=200,
+                    amount=25500.0,
+                    trade_id="74640105000030409438",
+                    commission=0.0,
+                    strategy="auto_partial"
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=write_once) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        count = executor.conn.execute("SELECT COUNT(*) FROM trade_records").fetchone()[0]
+        self.assertEqual(count, 1)
 
     def test_h3b_unmatched_live_deal_writes_external_trade_record(self):
         """非本机 pending 的实盘成交回报应按 external 补写流水，并保持幂等。"""
