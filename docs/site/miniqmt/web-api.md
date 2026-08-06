@@ -128,6 +128,17 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 !!! note "网关下单走 v1 接口"
     xtquant_manager 网关模式下，下单使用 `/api/v1/accounts/{account_id}/orders`。web2.0 在网关模式下通过 v1 接口下单，而不是调用 Flask 的 `/api/actions/execute_buy`。
 
+!!! info "模拟模式下的行为差异"
+    `ENABLE_SIMULATION_MODE=True` 时该端点的链路为
+    `execute_buy` → `manual_buy` → `buy_stock` → `simulate_buy_position`，与实盘相比有三点差异：
+
+    - **股票代码后缀**：模拟模式经 `Methods.add_xt_suffix` **补全**后缀（`000001` → `000001.SZ`）；实盘模式则**去除**后缀。
+    - **交易时间**：模拟模式强制放行，不受 `config.is_trade_time()` 限制，非交易时段也能下单。
+    - **策略标识**：写入 `trade_records.strategy` 的值为 `M_simu`（实盘为 `M_real`）。
+
+    `ENABLE_ALLOW_BUY=False` 时，模拟与实盘同样在 `manual_buy` 层被拦截，返回 `success_count=0`。
+    模拟成交只写内存持仓与 SQLite `trade_records`，不落 SQLite `positions` 表。
+
 ---
 
 ## 网格交易 API

@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+### Fixed
+- **模拟模式补仓完全失效**：`strategy.execute_add_position_strategy()` 的模拟分支以 `volume=` / `price=` 调用 `position_manager.simulate_buy_position()`，而该方法签名为 `(stock_code, buy_volume, buy_price, strategy)`。关键字参数名不匹配导致每次模拟补仓都抛 `TypeError`，异常被外层 `except` 吞掉、只留一行 error 日志，因此长期未被发现。已改为 `buy_volume=` / `buy_price=`。
+- **模拟分支补仓不受冷却期约束**：2 分钟冷却时间戳 `last_trade_time[cool_key]` 原先只在实盘分支写入，模拟分支 `if success: return True` 直接返回，导致模拟模式可无限次连续补仓，与实盘行为不一致。已在模拟分支补齐冷却期写入，与实盘分支对齐。
+
+### Tests
+- 新增 `simulation_trading_e2e` 测试组（4 个模块、53 个用例），补齐模拟交易模式此前的测试盲区 —— `simulate_buy_position` / `simulate_sell_position` 此前无任何专项测试，`test_system_integration.py` 中名为"模拟买卖流程"的用例实际只验证 `MockQmtTrader` 自身账本，未触及 `position_manager` 模拟链路：
+    - `test_simulation_position_core.py`（19 例）— 加权平均成本、买入 0.0003 / 卖出 0.0013 手续费精度、首次部分卖出的获利分摊与 `profit_triggered` 置位、双层存储隔离（模拟持仓只落内存、流水落 SQLite）、超卖 / 零量 / 负量 / `available` 不足 / 未持仓等边界拒绝（每例三重断言：返回 False、余额未变、流水未增）。
+    - `test_simulation_web_execute_buy.py`（10 例）— `POST /api/actions/execute_buy` 端到端串联 `Methods.add_xt_suffix` → `manual_buy` → `buy_stock` → `simulate_buy_position`（不 mock 中间层），覆盖代码后缀格式化、`M_simu` 策略标识、`ENABLE_ALLOW_BUY` 门控、模拟模式无视交易时间、`random_pool` / `custom_stock` 选股策略。
+    - `test_simulation_strategy_execution.py`（14 例）— 策略层四条模拟分支（补仓 / 止损 / 半仓止盈 / 全仓止盈），含上述两个缺陷的回归锚点，以及 `sell_ratio` 取自 `INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE`（小数 0.6）的公式锚定。
+    - `test_simulation_mode_switch.py`（10 例）— `simulationMode` 运行时切换（重建内存库、清理 `qmt_trader`、不持久化）、`SIMULATION_BALANCE` 逐用例隔离的夹具自检、模拟模式账户口径（`available` / `total_asset` / 返回真实 `account_id` 而非 `'SIMULATION'`）。
+- 修复新增测试引入的跨模块串扰：`run_integration_regression_tests.py` 会先 `__import__` 全部测试模块、之后才开始跑用例。L2/L4 原先在模块顶层把 `sys.modules['easy_qmt_trader']` 替换为 `MagicMock` 并留待 `tearDownModule` 还原，导致 `test_trader_callback` 的 `patch("easy_qmt_trader.XtQuantTrader")` 打在 Mock 上而非真实模块。已将 mock 作用域收紧到 `try/finally`，import 完成即刻还原。
+- 使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test/run_integration_regression_tests.py --all-with-fast` 完整回归：**32 组、121 模块、2319 用例，2319 通过，0 失败，0 错误，0 跳过，成功率 100%**，耗时 964.4 秒。
+
+### Docs
+- `testing.md` / `CLAUDE.md` 同步测试分组表与统计到本次实测结果（32 组、121 模块、2319 用例；`fast` 子集 39 模块、890 用例）。
+
 ## [3.8.5] - 2026-08-01
 
 > 本版本聚焦**实盘稳定性修复**：消除外部成交回报引发的 xttrader 死锁、修正 Tushare 日期入参导致的静默降级、兼容交易记录混合时间格式，并修正 web1.0 两处按钮行为与文案。

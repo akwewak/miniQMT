@@ -154,12 +154,18 @@ class TradingStrategy:
                 # 模拟买入
                 success = self.position_manager.simulate_buy_position(
                     stock_code=stock_code,
-                    volume=volume,
-                    price=current_price
+                    buy_volume=volume,
+                    buy_price=current_price
                 )
                 
                 if success:
                     logger.info(f"[模拟交易] {stock_code} 补仓执行完成，数量: {volume}")
+
+                    if not hasattr(self, 'last_trade_time'):
+                        self.last_trade_time = {}
+                    self.last_trade_time[cool_key] = datetime.now()
+                    logger.info(f"{stock_code} 补仓成功，设置2分钟冷却期")
+
                     return True
             else:
                 # 实盘交易：调用交易接口

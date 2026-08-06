@@ -177,7 +177,7 @@ Flask 直连模式下，顶部控制条包含以下控件（部分仅后端存�
 | 控件 | 后端字段/配置 | 作用 |
 |------|---------------|------|
 | 开始/停止自动操作按钮 | `ENABLE_AUTO_OPERATION`（API 兼容字段 `isMonitoring`） | 全局自动操作总开关，只运行时生效不持久化；关闭时动态止盈止损和网格交易都不再产生新单 |
-| 模拟交易模式 | `ENABLE_SIMULATION_MODE` | 切换实盘/模拟模式 |
+| 模拟交易模式 | `ENABLE_SIMULATION_MODE` | 切换实盘/模拟模式，**只运行时生效不持久化**；切换会重建内存持仓库，切到模拟时释放 `qmt_trader`、切到实盘时异步重连 QMT |
 | 允许自动止盈 | `ENABLE_AUTO_TRADING`（保存配置字段 `globalAllowBuySell`） | 动态止盈止损自动执行开关，持久化 |
 | 允许自动网格 | `ENABLE_GRID_TRADING`（保存配置字段 `globalAllowGridTrading`） | 网格模块自动执行开关，持久化 |
 | 买 / 卖 | `ENABLE_ALLOW_BUY` / `ENABLE_ALLOW_SELL` | 手动和自动交易的方向权限 |

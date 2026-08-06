@@ -101,6 +101,7 @@ python test/run_integration_regression_tests.py --group grid_comprehensive  # �
 python test/run_integration_regression_tests.py --group grid_bug_regression # Bug回归验证
 python test/run_integration_regression_tests.py --group grid_full_range_coverage  # 全区间覆盖
 python test/run_integration_regression_tests.py --group grid_true_pnl       # 真实盈亏账本
+python test/run_integration_regression_tests.py --group simulation_trading_e2e  # 模拟交易端到端
 
 # 其他选项
 python test/run_integration_regression_tests.py --all --retry-failed   # 失败重试
@@ -687,7 +688,7 @@ thread_monitor.get_status()
 
 ## 测试框架架构
 
-测试代码位于 [test/](test/) 目录，使用标准 `unittest`。当前回归配置见 [test/integration_test_config.json](test/integration_test_config.json)，包含 31 个测试组（含 `fast` 快速子集）。
+测试代码位于 [test/](test/) 目录，使用标准 `unittest`。当前回归配置见 [test/integration_test_config.json](test/integration_test_config.json)，包含 32 个测试组（含 `fast` 快速子集）。
 
 ### 测试基础设施
 
@@ -729,9 +730,10 @@ thread_monitor.get_status()
 | `grid_simulation` | high | 价格模拟测试（30个用例） |
 | `qmt_ipc_fallback` | high | 大QMT文件IPC降级通道（客户端/执行器/集成） |
 | `qmt_rpc` | high | 大QMT RPC 交易后端（契约兼容、只读门禁、回调/委托映射） |
-| `fast` | critical | 快速验证子集（当前配置 33 个模块、717 个用例） |
+| `simulation_trading_e2e` | critical | 模拟交易模式端到端（核心链路/Web下单/策略四分支/模式切换） |
+| `fast` | critical | 快速验证子集（当前配置 39 个模块、890 个用例） |
 
-**测试统计（当前配置）**: 31组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 31组、107个模块、1933个用例，100% 通过；具体以本地运行报告为准。
+**测试统计（当前配置）**: 32组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次（2026-08-06）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 32组、121个模块、2319个用例，100% 通过；具体以本地运行报告为准。
 
 ### 编写新测试的规范
 

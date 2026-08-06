@@ -2,14 +2,15 @@
 
 ## 概述
 
-项目测试代码位于 [test/](https://github.com/weihong-su/miniQMT/tree/main/test) 目录，使用标准 `unittest`。当前回归配置见 `test/integration_test_config.json`，包含 31 个测试组（含 `fast` 快速子集）。
+项目测试代码位于 [test/](https://github.com/weihong-su/miniQMT/tree/main/test) 目录，使用标准 `unittest`。当前回归配置见 `test/integration_test_config.json`，包含 32 个测试组（含 `fast` 快速子集）。
 
-最近一次（2026-08-01）使用 `--all-with-fast` 实测：**31 组、108 模块、2014 用例、2014 通过、0 失败、0 错误、0 跳过，成功率 100%**，耗时 871.99 秒。
+最近一次（2026-08-06）使用 `--all-with-fast` 实测：**32 组、121 模块、2319 用例、2319 通过、0 失败、0 错误、0 跳过，成功率 100%**，耗时 964.4 秒。
 
 ## 测试统计速查
 
 | 版本 | 日期 | 非fast组 | 含fast | 通过率 |
 |------|------|----------|--------|--------|
+| Unreleased | 2026-08-06 | 32 组, 121 模块, 2319 用例 | 2319 | 100% |
 | v3.8.5 | 2026-08-01 | 31 组, 108 模块, 2014 用例 | 2014 | 100% |
 | v3.8.4 | 2026-07-28 | 31 组, 108 模块, 2004 用例 | 2004 | 100% |
 | v3.8.1 | 2026-07-17 | 31 组, 107 模块, 1933 用例 | 1933 | 100% |
@@ -56,6 +57,7 @@ python test/run_integration_regression_tests.py --group grid_bug_regression
 python test/run_integration_regression_tests.py --group grid_true_pnl
 python test/run_integration_regression_tests.py --group qmt_ipc_fallback
 python test/run_integration_regression_tests.py --group qmt_rpc
+python test/run_integration_regression_tests.py --group simulation_trading_e2e
 python test/run_integration_regression_tests.py --group multi_account_isolation
 python test/run_integration_regression_tests.py --group launcher_deployment
 ```
@@ -126,7 +128,8 @@ python test/run_all_grid_tests.py
 | `grid_simulation` | high | 价格模拟测试 |
 | `qmt_ipc_fallback` | high | 大QMT 文件 IPC 客户端、执行器、PositionManager 集成 |
 | `qmt_rpc` | high | 大QMT RPC 交易后端契约、只读门禁、回调和委托映射 |
-| `fast` | critical | 5 分钟快速验证子集（当前 33 个模块、750 个用例） |
+| `simulation_trading_e2e` | critical | 模拟交易模式端到端（核心链路 / Web 下单 / 策略四分支 / 模式切换） |
+| `fast` | critical | 5 分钟快速验证子集（当前 39 个模块、890 个用例） |
 
 ---
 
