@@ -498,7 +498,7 @@ def simulate_buy_position(self, ...):
 **解决**:
 - 检查 `validate_trading_signal()` 和 `mark_signal_processed()` 调用链
 - 查看日志中的信号验证详情
-- 确认 `signal_timestamps` 机制正常工作
+- 确认信号有效期过滤正常工作：信号入队时写入 `latest_signals[stock_code]['timestamp']`，`get_pending_signals()` 会过滤超过 300 秒的过期信号
 
 ### 2. 模拟交易持仓不更新
 
@@ -592,7 +592,7 @@ monitor.register_thread(
 - `POST /api/grid/stop/<session_id>` - 停止指定网格会话
 - `GET /api/grid/sessions` - 获取所有网格会话（网关模式只读兼容）
 - `GET /api/grid/trades/<session_id>` - 获取网格成交记录
-- `GET /api/grid/ledger/<session_id>` - 获取网格真实账本详情（批次、FIFO配对、盈亏汇总）
+- `GET /api/grid/ledger/<session_id>` - 获取网格真实账本详情（批次、LIFO配对、盈亏汇总）
 - `GET /api/grid/status/<stock_code>` - 获取指定股票网格状态
 
 **配置管理**:
@@ -726,7 +726,7 @@ thread_monitor.get_status()
 | `indicator_calculator` | high | 技术指标计算器全方法验证 |
 | `grid_qa_gap_supplement` | critical | QA缺口补充（信号优先级/最小卖出/position_snapshot降级） |
 | `grid_full_range_coverage` | critical | 全网格区间覆盖（114个用例，A-K 11个套件） |
-| `grid_true_pnl` | critical | 网格 True P&L / FIFO 真实盈亏验证 |
+| `grid_true_pnl` | critical | 网格 True P&L / LIFO 真实盈亏验证 |
 | `grid_simulation` | high | 价格模拟测试（30个用例） |
 | `qmt_ipc_fallback` | high | 大QMT文件IPC降级通道（客户端/执行器/集成） |
 | `qmt_rpc` | high | 大QMT RPC 交易后端（契约兼容、只读门禁、回调/委托映射） |

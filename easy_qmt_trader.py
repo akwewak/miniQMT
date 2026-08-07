@@ -28,6 +28,25 @@ class MyXtQuantTraderCallback(XtQuantTraderCallback):
         self.order_callbacks = []
         self.trade_callbacks = []       # 成交回报外部回调列表
         self.disconnect_callbacks = []  # 断连事件外部回调列表（Fail-Safe 用）
+        self.detached = False           # 失效标记：重连后旧 callback 置为 True
+
+    def detach(self):
+        """
+        使本 callback 的「连接状态类」推送失效。
+
+        重连场景：connect() 会创建全新 callback，但旧 XtQuantTrader 仍持有旧 callback
+        （stop() 超时时旧 trader 不会被回收）。旧 trader 底层延迟触发 on_disconnected
+        会把新连接刚设好的 qmt_connected 错误置回 False，并清零重连冷却，
+        进而引发不必要的 stop/connect 周期。
+
+        刻意「只切状态信号，不切成交回报」：
+        - on_disconnected / on_stock_order 属连接状态类，迟到即有害 → 失效并清空
+        - on_stock_trade 是真实成交（资金变动），迟到仍有价值，且落库层按 trade_id
+          幂等去重，重复投递无害 → 保留转发，避免真成交被丢弃
+        """
+        self.detached = True
+        self.order_callbacks = []
+        self.disconnect_callbacks = []
 
     def on_disconnected(self):
         """
@@ -35,6 +54,9 @@ class MyXtQuantTraderCallback(XtQuantTraderCallback):
         立即通知所有已注册的外部断连回调，使 PositionManager 能第一时间
         将 qmt_connected 设为 False，无需等待监控循环连续超时 3 次（约 15 秒）。
         """
+        if self.detached:
+            logger.info("已失效的旧 callback 收到断连推送，忽略（不影响当前连接）")
+            return
         logger.error("⚠ QMT连接断开，正在通知外部模块...")
         for cb in self.disconnect_callbacks:
             try:
@@ -48,6 +70,9 @@ class MyXtQuantTraderCallback(XtQuantTraderCallback):
         :return:
         """
         logger.info(f"委托回报: 股票代码={order.stock_code}, 委托状态={order.order_status}, 系统订单号={order.order_sysid}")
+        if self.detached:
+            logger.info("已失效的旧 callback 收到委托回报，忽略")
+            return
         for cb in self.order_callbacks:
             try:
                 cb(order)
@@ -333,6 +358,16 @@ class easy_qmt_trader:
         # 🔧 Fail-Safe 修复: 先清理旧连接，防止重复调用时资源泄漏
         old_trader = getattr(self, 'xt_trader', None)
         if old_trader:
+            # 先让旧 callback 失效再停止：stop() 可能超时（daemon 线程不会被杀），
+            # 旧 trader 及其 callback 会继续存活并延迟触发 on_disconnected，把新连接
+            # 刚设好的 qmt_connected 错误置回 False。必须在 stop 之前 detach。
+            old_callback = getattr(old_trader, 'callback', None) or getattr(self, '_callback', None)
+            if old_callback is not None and hasattr(old_callback, 'detach'):
+                try:
+                    old_callback.detach()
+                    logger.info('已使旧 callback 失效，避免其延迟推送干扰新连接')
+                except Exception as e:
+                    logger.warning(f'旧 callback detach 失败 (忽略): {e}')
             self._stop_trader_with_timeout(old_trader, '旧 XtQuantTrader 实例')
             self.xt_trader = None
 

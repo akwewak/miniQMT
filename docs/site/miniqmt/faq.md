@@ -8,7 +8,7 @@
 
 - 检查 `validate_trading_signal()` 和 `mark_signal_processed()` 调用链
 - 查看日志中的信号验证详情
-- 确认 `signal_timestamps` 机制正常工作
+- 确认信号有效期过滤正常工作：信号入队时写入 `latest_signals[stock_code]['timestamp']`，`get_pending_signals()` 会过滤超过 300 秒的过期信号
 
 ---
 

@@ -124,7 +124,7 @@ python test/run_all_grid_tests.py
 | `indicator_calculator` | high | 技术指标计算器全方法验证 |
 | `grid_qa_gap_supplement` | critical | 网格 QA 缺口补充 |
 | `grid_full_range_coverage` | critical | 全网格价格区间覆盖（114 个用例，A-K 11 个套件） |
-| `grid_true_pnl` | critical | True P&L / FIFO 真实盈亏验证 |
+| `grid_true_pnl` | critical | True P&L / LIFO 真实盈亏验证 |
 | `grid_simulation` | high | 价格模拟测试 |
 | `qmt_ipc_fallback` | high | 大QMT 文件 IPC 客户端、执行器、PositionManager 集成 |
 | `qmt_rpc` | high | 大QMT RPC 交易后端契约、只读门禁、回调和委托映射 |

@@ -184,8 +184,7 @@ class PositionManager:
 
         # 添加信号状态管理
         self.signal_lock = threading.Lock()
-        self.latest_signals = {}  # 存储最新检测到的信号
-        self.signal_timestamps = {}  # 信号时间戳
+        self.latest_signals = {}  # 存储最新检测到的信号（含 timestamp 字段，用于过期过滤）
 
         # 🔑 新增：委托单跟踪管理
         self.pending_orders_lock = threading.Lock()

@@ -1309,7 +1309,7 @@ class TestTraderCallback(TestBase):
         old_timeout = getattr(config, "QMT_STOP_TIMEOUT", None)
         try:
             config.QMT_STOP_TIMEOUT = 0.05
-            with patch("easy_qmt_trader.XtQuantTrader", return_value=NewTrader()):
+            with self._patch_xtquant_trader(NewTrader()):
                 start = time.time()
                 result = trader.connect()
                 elapsed = time.time() - start
@@ -1321,6 +1321,173 @@ class TestTraderCallback(TestBase):
 
         self.assertIsNotNone(result)
         self.assertLess(elapsed, 0.2, "旧 trader.stop() 卡住时 connect() 也不应长时间阻塞")
+
+    # ── I2~I5: 重连后旧 callback 不得干扰新连接（P0-2 回归） ────────────────
+    #
+    # 缺陷场景：connect() 每次创建全新 callback，但旧 XtQuantTrader 仍持有旧 callback。
+    # 若 stop() 超时（daemon 线程无法被杀），旧 trader 及其 callback 继续存活，
+    # 底层延迟触发 on_disconnected → 把新连接刚设好的 qmt_connected 错误置回 False，
+    # 并清零重连冷却，引发不必要的 stop/connect 周期（可级联）。
+
+    class _HangingOldTrader:
+        """stop() 卡死的旧 trader，用于复现 detach 时机问题。"""
+        def __init__(self, callback=None):
+            self.callback = callback
+
+        def stop(self):
+            time.sleep(0.3)
+
+    class _StubNewTrader:
+        def register_callback(self, callback):
+            self.callback = callback
+
+        def start(self):
+            pass
+
+        def connect(self):
+            return 0
+
+        def subscribe(self, account):
+            return 0
+
+    def _make_trader_with_old_callback(self):
+        """构造一个已有旧 callback 的 easy_qmt_trader，返回 (trader, old_callback)。"""
+        trader = easy_qmt_trader(path="dummy", account="25105132")
+        old_callback = MyXtQuantTraderCallback({})
+        old_trader = self._HangingOldTrader(callback=old_callback)
+        trader.xt_trader = old_trader
+        trader._callback = old_callback
+        return trader, old_callback
+
+    def _patch_xtquant_trader(self, stub):
+        """
+        在 easy_qmt_trader 真实模块的 globals 上替换 XtQuantTrader。
+
+        不能用 patch("easy_qmt_trader.XtQuantTrader")：其他测试
+        （test_qmt_ipc_position_manager_integration）会把 sys.modules["easy_qmt_trader"]
+        永久替换为 stub 模块，按模块名 patch 会打到那个 stub 上，真实模块仍用真
+        XtQuantTrader，导致 connect() 真去连 QMT 并返回 -1（全量跑时偶发失败）。
+        通过 connect.__globals__ 拿到真实模块的 globals，可绕过 sys.modules 污染。
+        """
+        return patch.dict(
+            easy_qmt_trader.connect.__globals__,
+            {"XtQuantTrader": lambda *a, **kw: stub}
+        )
+
+    def test_i2_stale_callback_disconnect_does_not_clobber_new_connection(self):
+        """核心回归：旧 callback 延迟触发 on_disconnected 不得影响新连接状态。"""
+        trader, old_callback = self._make_trader_with_old_callback()
+
+        # 模拟 PositionManager 在旧连接上注册的断连回调
+        state = {"qmt_connected": True, "reconnect_cooldown": 999.0}
+
+        def _on_disconnect():
+            state["qmt_connected"] = False
+            state["reconnect_cooldown"] = 0.0
+
+        old_callback.disconnect_callbacks.append(_on_disconnect)
+
+        old_timeout = getattr(config, "QMT_STOP_TIMEOUT", None)
+        try:
+            config.QMT_STOP_TIMEOUT = 0.05  # 强制 stop() 超时，旧 trader 存活
+            with self._patch_xtquant_trader(self._StubNewTrader()):
+                self.assertIsNotNone(trader.connect(), "重连应成功")
+        finally:
+            if old_timeout is None:
+                delattr(config, "QMT_STOP_TIMEOUT")
+            else:
+                config.QMT_STOP_TIMEOUT = old_timeout
+
+        # 新连接已建立后，旧 trader 底层延迟触发断连推送
+        old_callback.on_disconnected()
+
+        self.assertTrue(
+            state["qmt_connected"],
+            "旧 callback 的延迟断连推送不得把新连接标记为断连"
+        )
+        self.assertEqual(
+            state["reconnect_cooldown"], 999.0,
+            "旧 callback 的延迟断连推送不得清零重连冷却（否则引发重连风暴）"
+        )
+
+    def test_i3_detach_marks_callback_and_clears_state_callbacks(self):
+        """detach() 应置失效标记并清空「连接状态类」回调列表。"""
+        callback = MyXtQuantTraderCallback({})
+        callback.disconnect_callbacks.append(lambda: None)
+        callback.order_callbacks.append(lambda o: None)
+        self.assertFalse(callback.detached, "初始状态不应为 detached")
+
+        callback.detach()
+
+        self.assertTrue(callback.detached)
+        self.assertEqual(callback.disconnect_callbacks, [])
+        self.assertEqual(callback.order_callbacks, [])
+
+    def test_i4_detached_callback_ignores_disconnect_and_order_pushes(self):
+        """即使回调列表被重新填充，detached 标记也必须拦住状态类推送（竞态兜底）。"""
+        callback = MyXtQuantTraderCallback({})
+        callback.detach()
+
+        # 模拟「detach 与底层推送并发」——列表在 detach 后又被写入
+        hits = []
+        callback.disconnect_callbacks.append(lambda: hits.append("disconnect"))
+        callback.order_callbacks.append(lambda o: hits.append("order"))
+
+        stale_order = _FakeOrder(stock_code="600000.SH", order_status=56, order_id=1)
+        stale_order.order_sysid = "SYS_1"  # on_stock_order 日志需要该字段
+        callback.on_disconnected()
+        callback.on_stock_order(stale_order)
+
+        self.assertEqual(
+            hits, [],
+            "detached callback 必须忽略断连/委托推送，标记优先于列表内容"
+        )
+
+    def test_i5_detached_callback_still_forwards_real_deals(self):
+        """刻意保留：成交回报是真实资金变动，迟到仍须转发（落库层按 trade_id 幂等）。"""
+        callback = MyXtQuantTraderCallback({})
+        received = []
+        callback.trade_callbacks.append(lambda t: received.append(t.order_id))
+
+        callback.detach()
+        callback.on_stock_trade(_FakeTrade(stock_code="600000.SH", order_id=12345))
+
+        self.assertEqual(
+            received, [12345],
+            "detach 不应丢弃真实成交回报，否则可能永久丢失一笔成交流水"
+        )
+
+    def test_i6_connect_detaches_old_callback_before_stopping_old_trader(self):
+        """detach 必须发生在 stop() 之前，否则 stop 卡住期间窗口仍然敞开。"""
+        trader = easy_qmt_trader(path="dummy", account="25105132")
+        old_callback = MyXtQuantTraderCallback({})
+        order_of_events = []
+
+        original_detach = old_callback.detach
+
+        def _tracked_detach():
+            order_of_events.append("detach")
+            original_detach()
+
+        old_callback.detach = _tracked_detach
+
+        class _RecordingOldTrader:
+            def __init__(self, callback):
+                self.callback = callback
+
+            def stop(self):
+                order_of_events.append("stop")
+
+        trader.xt_trader = _RecordingOldTrader(old_callback)
+        trader._callback = old_callback
+
+        with self._patch_xtquant_trader(self._StubNewTrader()):
+            trader.connect()
+
+        self.assertEqual(
+            order_of_events, ["detach", "stop"],
+            "必须先 detach 旧 callback 再 stop 旧 trader"
+        )
 
 
 if __name__ == "__main__":

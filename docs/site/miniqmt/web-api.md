@@ -153,7 +153,7 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 | GET | `/api/grid/session/<session_id>` | 按会话 ID 查详情 | ❌ |
 | GET | `/api/grid/sessions` | 所有网格会话 | ✅ 只读 |
 | GET | `/api/grid/trades/<session_id>` | 网格交易记录 | ❌ |
-| GET | `/api/grid/ledger/<session_id>` | 网格真实账本详情（批次、FIFO 配对、盈亏汇总） | ✅ 只读 |
+| GET | `/api/grid/ledger/<session_id>` | 网格真实账本详情（批次、LIFO 配对、盈亏汇总） | ✅ 只读 |
 | GET | `/api/grid/status/<stock_code>` | 网格快速状态 | ❌ |
 | GET | `/api/grid/checkbox-states` | 所有股票网格勾选状态 | ❌ |
 | GET | `/api/grid/checkbox-state/<stock_code>` | 单只股票网格勾选状态 | ❌ |
@@ -178,7 +178,7 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
     `POST /api/grid/session/<session_id>/enabled` 请求体为 `{"enabled": true|false}`。关闭后保留会话和账本，只暂停后续新网格单；停止会话仍使用 `/api/grid/stop...`。
 
 !!! tip "统一盈亏快照"
-    Flask 直连下，`/api/grid/session/<...>`、`/api/grid/sessions`、`/api/grid/status/<stock_code>` 返回的会话数据含 `pnl_snapshot` 字段：基于 FIFO 账本计算的真实盈亏（`realized_pnl` / `unrealized_pnl` / `total_pnl` / `profit_ratio`），账本不可用时自动降级并以 `is_degraded` 标记。`/api/grid/ledger/<session_id>` 进一步返回 `summary`、`lots`、`matches`、`trades` 和分页信息，供前端账本详情面板展示。详见[网格交易 · 真实盈亏账本](grid-trading.md)。
+    Flask 直连下，`/api/grid/session/<...>`、`/api/grid/sessions`、`/api/grid/status/<stock_code>` 返回的会话数据含 `pnl_snapshot` 字段：基于 LIFO 账本计算的真实盈亏（`realized_pnl` / `unrealized_pnl` / `total_pnl` / `profit_ratio`），账本不可用时自动降级并以 `is_degraded` 标记。`/api/grid/ledger/<session_id>` 进一步返回 `summary`、`lots`、`matches`、`trades` 和分页信息，供前端账本详情面板展示。详见[网格交易 · 真实盈亏账本](grid-trading.md)。
 
 ### `/api/grid/session/<stock_code>` tooltip 字段
 
