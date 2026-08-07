@@ -353,6 +353,15 @@ DYNAMIC_TAKE_PROFIT = [
     (0.20, 0.87),
     (0.30, 0.85),
 ]
+
+# 动态信号保活 (防止瞬时止盈信号在被策略线程消费前丢失)
+# 监控线程 3 秒检测一次，策略线程单只股票消费周期约 10+持仓数+股票池数 秒；
+# 首次止盈是"跨过即触发"的瞬时信号，价格回踩会让下一轮检测返回 None。
+# 开启后已入队未消费的信号在窗口内不被删除；执行前再按 MAX_AGE 做时效兜底，
+# 避免以过旧的价格快照下单。
+ENABLE_DYNAMIC_SIGNAL_KEEPALIVE = True   # 信号保活开关
+DYNAMIC_SIGNAL_KEEPALIVE_SECONDS = 90    # 保活窗口(秒)
+DYNAMIC_SIGNAL_MAX_AGE_SECONDS = 120     # 执行前信号最大年龄(秒)，超过判定过期
 ```
 
 ## 数据库表结构
@@ -768,6 +777,7 @@ thread_monitor.get_status()
 | `qmt_ipc_fallback` | high | 大QMT文件IPC降级通道（客户端/执行器/集成） |
 | `qmt_rpc` | high | 大QMT RPC 交易后端（契约兼容、只读门禁、回调/委托映射） |
 | `simulation_trading_e2e` | critical | 模拟交易模式端到端（核心链路/Web下单/策略四分支/模式切换） |
+| `p1_fixes` | high | 重连缓存刷新/QMT自恢复探测/信号保活与时效兜底/超时泄漏可观测 |
 | `fast` | critical | 快速验证子集（当前配置 39 个模块、890 个用例） |
 
 **测试统计（当前配置）**: 32组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次（2026-08-06）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 32组、121个模块、2319个用例，100% 通过，耗时 964.4 秒；具体以本地运行报告为准。

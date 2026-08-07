@@ -326,6 +326,11 @@ class PositionManager:
                         logger.info('[RECONNECT] 已重新注册 disconnect_callback')
                     except Exception as e:
                         logger.warning(f'[RECONNECT] 重新注册 disconnect_callback 失败 (非致命): {e}')
+                    # 强制下一轮监控重新从 QMT 拉取真实持仓：
+                    # 断连期间可能发生外部成交，此时 last_position_update_time 仍是断连前的旧值，
+                    # 不置零则 get_all_positions() 最长 QMT_POSITION_QUERY_INTERVAL(10秒) 内
+                    # 继续返回断连前的缓存快照，止盈止损会基于错误持仓判断。
+                    self.last_position_update_time = 0
                     logger.info(f'[RECONNECT] QMT {("连接" if mode=="connect" else "重连")}成功，恢复正常运行')
                 else:
                     self.qmt_connected = False
@@ -386,6 +391,33 @@ class PositionManager:
         # 锁外启动后台重连，避免阻塞监控线程
         logger.warning('[RECONNECT] 开始尝试重连 QMT xttrader 接口...')
         return self._start_qmt_connect_worker(mode="reconnect", reason="auto_reconnect")
+
+    def _probe_qmt_recovered(self):
+        """
+        主动探测 QMT 是否已自行恢复（不执行重连）。
+
+        用于 qmt_connected=False 但 QMT 实际已可用的场景（进程崩溃后自动重启等）。
+        必须用 ping_xttrader() 这类真实探针：它走 query_stock_asset，QMT 应答才返回 True。
+        不能用「持仓查询返回空」当依据——position() 在断连时同样返回空 DataFrame，
+        与「真的没有持仓」无法区分，据此自恢复会造成假健康。
+
+        重连进行中时一律返回 False，避免与 _start_qmt_connect_worker 抢着改 qmt_connected。
+        """
+        if config.ENABLE_SIMULATION_MODE:
+            return False
+        if getattr(config, 'ENABLE_XTQUANT_MANAGER', False):
+            return False
+        with self._reconnect_lock:
+            if self._reconnect_in_progress:
+                return False
+        trader = self.qmt_trader
+        if trader is None or not hasattr(trader, 'ping_xttrader'):
+            return False
+        try:
+            return bool(trader.ping_xttrader())
+        except Exception as e:
+            logger.debug(f'[MONITOR] QMT 恢复探测异常(视为未恢复): {e}')
+            return False
 
     def _on_qmt_disconnect(self):
         """
@@ -2624,6 +2656,25 @@ class PositionManager:
             return ok
 
         try:
+            # 信号时效兜底：执行时使用的是信号生成时的 current_price 快照，
+            # 信号保活（ENABLE_DYNAMIC_SIGNAL_KEEPALIVE）会让瞬时信号多存活一段时间，
+            # 若不加年龄上限，过旧的信号可能以明显偏离现价的价格下单。
+            # 网格信号有自己的复核（_validate_grid_signal_before_execute），此处只管动态信号。
+            if not str(signal_type or '').startswith('grid_'):
+                max_age = getattr(config, 'DYNAMIC_SIGNAL_MAX_AGE_SECONDS', 120)
+                if max_age and max_age > 0:
+                    with self.signal_lock:
+                        queued = self.latest_signals.get(stock_code)
+                        queued_ts = queued.get('timestamp') if queued else None
+                    if isinstance(queued_ts, datetime):
+                        age = (datetime.now() - queued_ts).total_seconds()
+                        if age > max_age:
+                            logger.warning(
+                                f"[信号过期] {stock_code} {signal_type} 已入队 {age:.1f}s "
+                                f"> {max_age}s，价格快照过旧，拒绝执行"
+                            )
+                            return _result(False, "failed", "signal_expired")
+
             # 全仓止盈信号是否允许跳过活跃委托单检查（默认不允许）
             allow_skip_pending_check = (
                 signal_type == 'take_profit_full'
@@ -3903,6 +3954,35 @@ class PositionManager:
             logger.debug(f"{stock_code} 读取 stop_profit_enabled 失败，默认视为开启: {e}")
             return True
 
+    def _should_keep_alive_signal_unlocked(self, stock_code):
+        """
+        判断已入队的动态信号是否应在「本轮未检测到信号」时保留。
+
+        调用方必须已持有 self.signal_lock。
+
+        仅保留同时满足以下条件的信号：
+          1. 保活开关开启
+          2. 已存在待消费的动态信号（grid_ 前缀的网格信号不归本函数管）
+          3. 信号年龄在 DYNAMIC_SIGNAL_KEEPALIVE_SECONDS 窗口内
+
+        窗口外返回 False，让调用方按原逻辑删除，避免过期信号长期滞留。
+        """
+        if not getattr(config, 'ENABLE_DYNAMIC_SIGNAL_KEEPALIVE', True):
+            return False
+        existing = self.latest_signals.get(stock_code)
+        if not existing:
+            return False
+        if str(existing.get('type', '')).startswith('grid_'):
+            return False
+        keepalive = getattr(config, 'DYNAMIC_SIGNAL_KEEPALIVE_SECONDS', 90)
+        if not keepalive or keepalive <= 0:
+            return False
+        timestamp = existing.get('timestamp')
+        if not isinstance(timestamp, datetime):
+            return False
+        age = (datetime.now() - timestamp).total_seconds()
+        return 0 <= age <= keepalive
+
     def _detect_and_enqueue_dynamic_signal(self, stock_code, current_price):
         """检测动态止盈止损信号并写入 latest_signals（含开关门控）。
 
@@ -3941,6 +4021,11 @@ class PositionManager:
                         'timestamp': datetime.now()
                     }
                     logger.info(f"🔔 {stock_code} 检测到信号: {signal_type},等待策略处理")
+                elif self._should_keep_alive_signal_unlocked(stock_code):
+                    # 本轮未检测到信号，但已有信号尚未被策略线程消费且仍在保活窗口内：
+                    # 保留而非删除。首次止盈等"跨过即触发"的瞬时信号，价格回踩一次就会
+                    # 让本轮返回 None，若直接删除，该信号在策略线程取走前就永久消失。
+                    logger.debug(f"{stock_code} 本轮无信号，但已入队信号在保活窗口内，保留待消费")
                 else:
                     self.latest_signals.pop(stock_code, None)
             return signal_type
@@ -4087,19 +4172,32 @@ class PositionManager:
                         # qmt_connected=False 由 on_disconnected 立即设置，说明 QMT 进程已断连。
                         # get_all_positions() 内部吞掉了 qmt_trader.position() 的异常，
                         # 返回的是旧缓存数据——不能视为真实成功，也不能将 qmt_connected 翻回 True。
-                        consecutive_errors += 1
-                        logger.warning(
-                            f'[MONITOR] QMT 已断连，缓存数据不计为成功'
-                            f'（{consecutive_errors}/{getattr(config, "QMT_RECONNECT_ON_ERRORS", 3)}）'
-                        )
-                        if consecutive_errors >= getattr(config, 'QMT_RECONNECT_ON_ERRORS', 3):
-                            logger.error(
-                                f'❌ [MONITOR_CRITICAL] 连续{consecutive_errors}次QMT断连，触发重连'
+                        #
+                        # 但 QMT 可能已自行恢复（进程被杀后自动重启等）。此时若不主动探测，
+                        # 会一直按断连计数并触发一次本可避免的完整 stop/connect 重连——而 stop()
+                        # 每次都有卡死风险（旧 trader 残留）。因此先用 ping 主动确认：
+                        # ping 是真实的 query_stock_asset 探针，返回 True 说明 QMT 确已应答。
+                        # 注意不能用"持仓为空"当作恢复依据——position() 在断连时同样返回空
+                        # DataFrame，与"真的没有持仓"无法区分。
+                        if self._probe_qmt_recovered():
+                            self.qmt_connected = True
+                            consecutive_errors = 0
+                            self.last_position_update_time = 0  # 强制下轮拉真实持仓
+                            logger.info('[MONITOR] 探测到 QMT 已自行恢复，标记连接正常（免去一次冗余重连）')
+                        else:
+                            consecutive_errors += 1
+                            logger.warning(
+                                f'[MONITOR] QMT 已断连，缓存数据不计为成功'
+                                f'（{consecutive_errors}/{getattr(config, "QMT_RECONNECT_ON_ERRORS", 3)}）'
                             )
-                            self._attempt_qmt_reconnect()
-                        time.sleep(5)
-                        last_loop_time = time.time()
-                        continue
+                            if consecutive_errors >= getattr(config, 'QMT_RECONNECT_ON_ERRORS', 3):
+                                logger.error(
+                                    f'❌ [MONITOR_CRITICAL] 连续{consecutive_errors}次QMT断连，触发重连'
+                                )
+                                self._attempt_qmt_reconnect()
+                            time.sleep(5)
+                            last_loop_time = time.time()
+                            continue
 
                     # QMT 连通（或模拟模式）：重置错误计数，不在此处写 qmt_connected
                     # qmt_connected=True 由 _attempt_qmt_reconnect() 在重连成功后设置

@@ -342,9 +342,18 @@
         "test.test_simulation_position_core",
         "test.test_simulation_web_execute_buy",
         "test.test_simulation_strategy_execution",
-        "test.test_simulation_mode_switch"
+        "test.test_simulation_mode_switch",
+        "test.test_p1_fixes"
       ],
       "priority": "critical"
+    },
+    "p1_fixes": {
+      "name": "P1修复回归",
+      "description": "重连缓存刷新/QMT自恢复探测/信号保活与时效兜底/超时泄漏可观测",
+      "modules": [
+        "test.test_p1_fixes"
+      ],
+      "priority": "high"
     }
   },
   "reporting": {
@@ -366,4 +375,4 @@
     "retry_delay": 1,
     "retry_on_error_only": true
   }
-}
+}

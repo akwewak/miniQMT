@@ -129,6 +129,7 @@ python test/run_all_grid_tests.py
 | `qmt_ipc_fallback` | high | 大QMT 文件 IPC 客户端、执行器、PositionManager 集成 |
 | `qmt_rpc` | high | 大QMT RPC 交易后端契约、只读门禁、回调和委托映射 |
 | `simulation_trading_e2e` | critical | 模拟交易模式端到端（核心链路 / Web 下单 / 策略四分支 / 模式切换） |
+| `p1_fixes` | high | 重连缓存刷新 / QMT 自恢复探测 / 信号保活与时效兜底 / 超时泄漏可观测 |
 | `fast` | critical | 5 分钟快速验证子集（当前 39 个模块、890 个用例） |
 
 ---

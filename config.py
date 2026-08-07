@@ -409,6 +409,17 @@ INITIAL_TAKE_PROFIT_RATIO = 0.06   # 首次止盈触发阈值：盈利6%时触�
 INITIAL_TAKE_PROFIT_PULLBACK_RATIO = 0.005  # 回撤比例：0.5%（可配置）
 INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE = 0.6  # 首次止盈卖出比例
 
+# 动态止盈止损信号保活（防止瞬时信号在被策略线程消费前丢失）
+# 背景：监控线程每 MONITOR_LOOP_INTERVAL(3秒) 检测一次，而策略线程单只股票的实际
+# 消费周期约 10 + 持仓数 + 股票池数 秒。首次止盈是"跨过即触发"的瞬时信号，
+# 若价格随后回踩，原实现会在下一轮检测直接把已入队信号删除，导致该卖的单子整个消失。
+# 开启后：已入队但未被消费的动态信号在保活窗口内不被"无信号"覆盖删除。
+# 注意窗口不宜过长——执行时使用的是信号生成时的价格快照，过旧的信号会以偏离的价格下单，
+# 故由 DYNAMIC_SIGNAL_MAX_AGE_SECONDS 在执行前做最终时效兜底。
+ENABLE_DYNAMIC_SIGNAL_KEEPALIVE = True   # 是否启用动态信号保活
+DYNAMIC_SIGNAL_KEEPALIVE_SECONDS = 90    # 保活窗口(秒)：期间不因"当前无信号"而删除
+DYNAMIC_SIGNAL_MAX_AGE_SECONDS = 120     # 执行前信号最大年龄(秒)，超过则判定过期不执行
+
 # 🔑 委托单超时管理配置
 ENABLE_PENDING_ORDER_AUTO_CANCEL = True  # 是否启用委托单超时自动撤单
 PENDING_ORDER_TIMEOUT_MINUTES = 5        # 委托单超时时间（分钟），默认5分钟
