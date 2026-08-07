@@ -6,21 +6,43 @@
 
 ## [Unreleased]
 
+## [3.8.6] - 2026-08-07
+
+> 本版本聚焦**重连状态一致性与信号可靠性**：修复重连瞬间旧 callback 污染新连接、瞬时止盈信号在被消费前丢失两类隐蔽缺陷，补齐重连后的持仓刷新与 QMT 自恢复探测，并让无法回收的超时线程变得可观测。同时包含此前未发布的模拟模式补仓修复。
+
 ### Fixed
+- **重连后旧 callback 污染新连接状态**：`easy_qmt_trader.connect()` 每次重连都创建全新 `MyXtQuantTraderCallback`，但 `register_callback()` 只设置新 trader 自己的 `.callback`，旧 `XtQuantTrader.callback` 仍持有旧 callback 及其 `disconnect_callbacks`（内含 `PositionManager._on_qmt_disconnect` 绑定方法）。当 `_stop_trader_with_timeout()` 超时放弃等待时（daemon 线程无法被强制终止），旧 trader 连同回调继续存活，其延迟触发的 `on_disconnected` 会把新连接刚设好的 `qmt_connected` 错误置回 `False`，并把重连冷却清零，引发一次本可避免的 stop/connect 周期——而每次 `stop()` 都有再次卡死的风险，可级联放大。新增 `MyXtQuantTraderCallback.detach()` 与 `detached` 失效标记，`connect()` 在停止旧 trader **之前**先 detach（尽早关闭窗口）。刻意只切「连接状态类」推送（`on_disconnected` / `on_stock_order`），**保留 `on_stock_trade` 转发**：成交回报是真实资金变动，迟到仍有价值，且落库层按 `trade_id` 幂等去重，一并拦截反而可能永久丢失一笔成交流水。
+- **瞬时止盈信号在被消费前丢失**：持仓监控每 `MONITOR_LOOP_INTERVAL`（3 秒）检测一次并覆盖式写入 `latest_signals`，而策略线程单只股票的实际消费周期约 `10 + 持仓数 + 股票池数` 秒（`_strategy_loop` 轮内每股 `sleep(1)`）。首次止盈是「跨过即触发」的瞬时信号：价格冲到 +6% 入队后回踩到 +5.9%，下一轮 `check_trading_signals()` 返回 `None`，原实现直接 `pop` 删除，策略线程取时队列已空——**该卖 60% 的单子整个消失且不会补触发**，直到价格再次上穿。新增信号保活：已入队未消费的动态信号在保活窗口内不因「本轮无信号」被删除（`grid_` 前缀信号走独立链路，不受影响）。
+- **重连成功后持仓缓存未刷新**：`_start_qmt_connect_worker()` 成功分支只置 `qmt_connected` 并重注册回调，未置零 `last_position_update_time`，导致最长 `QMT_POSITION_QUERY_INTERVAL`（10 秒）内继续使用断连前的持仓快照；若断连期间发生外部成交，止盈止损会基于错误持仓判断。
+- **QMT 自行恢复后仍触发冗余重连**：QMT 进程崩溃后自动重启时 `position()` 已能返回真实数据，但 `qmt_connected` 仍为 `False`，需累计 3 次错误才触发一次完整 stop/connect——而 `stop()` 每次都有卡死风险（正是上述旧 callback 缺陷的触发前提）。新增 `PositionManager._probe_qmt_recovered()`，用 `ping_xttrader()`（真实 `query_stock_asset` 探针）确认 QMT 确已应答后自恢复。**刻意不以「持仓查询返回空」作为依据**——`position()` 在断连时同样返回空 DataFrame，与「真的没有持仓」无法区分，据此自恢复会造成假健康。重连进行中 / 模拟模式 / 网关模式一律不探测。
 - **模拟模式补仓完全失效**：`strategy.execute_add_position_strategy()` 的模拟分支以 `volume=` / `price=` 调用 `position_manager.simulate_buy_position()`，而该方法签名为 `(stock_code, buy_volume, buy_price, strategy)`。关键字参数名不匹配导致每次模拟补仓都抛 `TypeError`，异常被外层 `except` 吞掉、只留一行 error 日志，因此长期未被发现。已改为 `buy_volume=` / `buy_price=`。
 - **模拟分支补仓不受冷却期约束**：2 分钟冷却时间戳 `last_trade_time[cool_key]` 原先只在实盘分支写入，模拟分支 `if success: return True` 直接返回，导致模拟模式可无限次连续补仓，与实盘行为不一致。已在模拟分支补齐冷却期写入，与实盘分支对齐。
 
+### Added
+- **动态信号执行前时效兜底**：信号执行使用的是生成时的 `current_price` 快照，而 `validate_trading_signal()` 此前对止盈类信号没有价格漂移防护。若只做上述信号保活，会把「丢单」换成「以过旧价格下单」。故同时在 `validate_trading_signal()` 入口加入信号年龄检查，超龄一律拒绝并返回 `signal_expired`（网格信号有自己的 `_validate_grid_signal_before_execute`，不重复拦截）。设计参照网格侧已验证的复核范式。
+- 新增配置：`ENABLE_DYNAMIC_SIGNAL_KEEPALIVE`（默认 `True`）、`DYNAMIC_SIGNAL_KEEPALIVE_SECONDS`（默认 90 秒）、`DYNAMIC_SIGNAL_MAX_AGE_SECONDS`（默认 120 秒）。三者关闭/调整即可回退到原行为。
+- **超时泄漏线程可观测**：`run_with_timeout()` 的 `future.cancel()` 无法取消已开始执行的任务，`cancel_futures` 也不中断运行中线程；QMT 卡死时每次超时都会泄漏一个线程，无人值守长跑持续累积。Python 无法强制终止线程，故不作「已修复」的假象处理，改为新增 `get_leaked_call_count()` / `reset_leaked_call_count()` 并按间隔（每 10 次）告警，使问题可观测、可诊断。
+
 ### Tests
+- 新增 `test/test_p1_fixes.py`（16 用例）与 `p1_fixes` 测试组：覆盖重连缓存刷新（成功置零 / 失败不置零）、QMT 自恢复探测（ping 成功 / 失败 / 异常 / 重连中 / 模拟 / 网关六种路径）、信号保活（窗口内保留 / 超窗清除 / 开关关闭回退 / 网格信号不受影响）、执行前时效兜底（过期拒绝 / 新鲜放行）、超时泄漏计数（正常不计 / 超时计入 / 多次累加）。
+- `test/test_trader_callback.py` 新增 `test_i2`~`test_i6`（5 用例）：旧 callback 延迟断连不污染新连接、`detach()` 语义、detached 后仍转发真实成交、detach 必须早于 stop。
+- **负向对照验证**：逐项还原为修复前行为后，P0/P1 相关用例共 9 个失败（含核心的 `test_i2_stale_callback_disconnect_does_not_clobber_new_connection` 与 `test_p1_4_fresh_signal_survives_price_retrace`），确认新增用例确实能捕获对应缺陷，而非只会变绿的空测试。
+- 修复既有测试隔离缺陷：`test_i1` 在全量回归中失败（`git stash` 验证：不带本次改动同样失败）。根因是 `test_qmt_ipc_position_manager_integration` 永久替换 `sys.modules["easy_qmt_trader"]` 为 stub，导致 `patch("easy_qmt_trader.XtQuantTrader")` 打在 stub 上、真实模块仍用真 `XtQuantTrader` 而去连真实 QMT。改用 `connect.__globals__` 定位真实模块 globals，绕过 `sys.modules` 污染。
 - 新增 `simulation_trading_e2e` 测试组（4 个模块、53 个用例），补齐模拟交易模式此前的测试盲区 —— `simulate_buy_position` / `simulate_sell_position` 此前无任何专项测试，`test_system_integration.py` 中名为"模拟买卖流程"的用例实际只验证 `MockQmtTrader` 自身账本，未触及 `position_manager` 模拟链路：
     - `test_simulation_position_core.py`（19 例）— 加权平均成本、买入 0.0003 / 卖出 0.0013 手续费精度、首次部分卖出的获利分摊与 `profit_triggered` 置位、双层存储隔离（模拟持仓只落内存、流水落 SQLite）、超卖 / 零量 / 负量 / `available` 不足 / 未持仓等边界拒绝（每例三重断言：返回 False、余额未变、流水未增）。
     - `test_simulation_web_execute_buy.py`（10 例）— `POST /api/actions/execute_buy` 端到端串联 `Methods.add_xt_suffix` → `manual_buy` → `buy_stock` → `simulate_buy_position`（不 mock 中间层），覆盖代码后缀格式化、`M_simu` 策略标识、`ENABLE_ALLOW_BUY` 门控、模拟模式无视交易时间、`random_pool` / `custom_stock` 选股策略。
     - `test_simulation_strategy_execution.py`（14 例）— 策略层四条模拟分支（补仓 / 止损 / 半仓止盈 / 全仓止盈），含上述两个缺陷的回归锚点，以及 `sell_ratio` 取自 `INITIAL_TAKE_PROFIT_RATIO_PERCENTAGE`（小数 0.6）的公式锚定。
     - `test_simulation_mode_switch.py`（10 例）— `simulationMode` 运行时切换（重建内存库、清理 `qmt_trader`、不持久化）、`SIMULATION_BALANCE` 逐用例隔离的夹具自检、模拟模式账户口径（`available` / `total_asset` / 返回真实 `account_id` 而非 `'SIMULATION'`）。
 - 修复新增测试引入的跨模块串扰：`run_integration_regression_tests.py` 会先 `__import__` 全部测试模块、之后才开始跑用例。L2/L4 原先在模块顶层把 `sys.modules['easy_qmt_trader']` 替换为 `MagicMock` 并留待 `tearDownModule` 还原，导致 `test_trader_callback` 的 `patch("easy_qmt_trader.XtQuantTrader")` 打在 Mock 上而非真实模块。已将 mock 作用域收紧到 `try/finally`，import 完成即刻还原。
-- 使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test/run_integration_regression_tests.py --all-with-fast` 完整回归：**32 组、121 模块、2319 用例，2319 通过，0 失败，0 错误，0 跳过，成功率 100%**，耗时 964.4 秒。
+- 使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test/run_integration_regression_tests.py --all-with-fast` 完整回归：**33 组、123 模块、2361 用例，2361 通过，0 失败，0 错误，0 跳过，成功率 100%**，耗时 1013.0 秒。
 
 ### Docs
-- `testing.md` / `CLAUDE.md` 同步测试分组表与统计到本次实测结果（32 组、121 模块、2319 用例；`fast` 子集 39 模块、890 用例）。
+- 修正实现与文档不一致的三处口径：
+    - 删除 `PositionManager.signal_timestamps` 死字段（初始化后从未被读写），并把 `CLAUDE.md` / `AGENTS.md` / `faq.md` 中「确认 `signal_timestamps` 机制正常工作」更正为真实机制（`latest_signals[...]['timestamp']` + `get_pending_signals()` 的 300 秒过期过滤）。
+    - 8 处 **FIFO → LIFO** 补漏：网格账本配对实现为 `ORDER BY opened_at DESC`（最近优先），v3.8.x 曾做过一轮文档更正但有遗漏，本次补齐 `CLAUDE.md` / `AGENTS.md` / `index.md` / `testing.md` / `web-api.md` / `web-frontend.md`。展示类查询的 `ASC` 属正常时序，未改动。
+    - 更正「感知断连三条路径」表述：路径 C（thread_monitor 心跳探测）实际未启用——`check_qmt_connection_health()` 已实现但 `main.py` 刻意不注册 `heartbeat_check`（QMT 断连 ≠ 线程崩溃，ping 失败会触发无意义的线程重启噪音）。
+- `configuration.md` 新增动态信号保活三个开关说明；`unattended.md` 补充重连自恢复探测与超时泄漏可观测；`stop-profit-loss.md` 说明信号保活与时效兜底机制；`CLAUDE.md` 止盈配置段同步新增开关。
+- `testing.md` / `CLAUDE.md` / `AGENTS.md` / `README.md` / `QUICK_START.md` 同步测试统计到本次实测结果（33 组、123 模块、2361 用例；`fast` 子集 40 模块、911 用例）。
 
 ## [3.8.5] - 2026-08-01
 
@@ -406,7 +428,8 @@
 - 模拟交易模式（无需 QMT 即可验证策略）
 - 回归测试框架基础设施
 
-[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.5...HEAD
+[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.6...HEAD
+[3.8.6]: https://github.com/weihong-su/miniQMT/compare/v3.8.5...v3.8.6
 [3.8.5]: https://github.com/weihong-su/miniQMT/compare/v3.8.4...v3.8.5
 [3.8.4]: https://github.com/weihong-su/miniQMT/compare/v3.8.2...v3.8.4
 [3.8.2]: https://github.com/weihong-su/miniQMT/compare/v3.8.1...v3.8.2

@@ -96,7 +96,7 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 | `order_time` | 报单时间，`YYYY-MM-DD HH:MM:SS`（QMT 原值是 Unix 时间戳） |
 
 状态码与 `position_manager._has_pending_orders_fallback` 的活跃集合保持一致，
-常量收口在 [order_utils.py](order_utils.py)，两条链路（Flask / 网关）共用。
+常量收口在 `order_utils.py`，两条链路（Flask / 网关）共用。
 
 !!! note "交易记录口径"
     实盘网格在 `GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True` 时，`/api/trade-records` 只返回真实成交确认后的 `trade_records`。已报未成交的网格委托只体现在 `grid_orders` / 网格会话状态中，不会以 `ORDER_xxx` 形式伪装成成交。

@@ -77,6 +77,28 @@ if stop_thread.is_alive():
 
 连接本身由 `QMT_CONNECT_TIMEOUT`（默认 30 秒）保护，超时后中止本次连接并清理残留实例，避免遗留后台线程。
 
+### 超时线程无法回收（可观测，非可修复）  [v3.8.6]
+
+`run_with_timeout()` 超时后**无法真正终止底层线程**：`future.cancel()` 只能取消尚未开始的任务，`cancel_futures` 也不中断运行中的线程，而 Python 没有强制杀死线程的机制。若 QMT 长期无响应，每次超时都会泄漏一个线程，无人值守长跑会持续累积。
+
+这一点不作「已修复」的假象处理，改为让它**可观测**：
+
+```python
+from timeout_utils import get_leaked_call_count
+get_leaked_call_count()    # 累计泄漏的超时调用数
+```
+
+泄漏首次发生以及此后每 10 次会输出一条 `[TIMEOUT_LEAK]` WARNING。**若该数值持续增长，说明底层（通常是 QMT）调用长期卡死，需人工检查 QMT 客户端状态**——它是排查「系统看似在跑但数据不更新」的关键信号。
+
+### 重连瞬间的状态一致性  [v3.8.6]
+
+重连要销毁旧 `XtQuantTrader` 再建新实例，这几百毫秒是状态最易错乱的窗口，有三处收口：
+
+- **旧 callback 失效**：`connect()` 每次都创建全新 callback，但旧 trader 仍持有旧 callback。若 `stop()` 超时（daemon 线程杀不掉），旧 trader 连同回调继续存活，其延迟触发的 `on_disconnected` 会把新连接刚设好的 `qmt_connected` 错误置回 `False` 并清零重连冷却，引发本可避免的 stop/connect 周期（每次都有再卡死的风险，可级联）。故在 **stop 之前**调用 `callback.detach()` 尽早关窗。
+    - 刻意**只切连接状态类推送**（`on_disconnected` / `on_stock_order`），保留 `on_stock_trade` 转发：成交回报是真实资金变动，迟到仍有价值，且落库层按 `trade_id` 幂等去重，一并拦掉反而可能永久丢失一笔成交流水。
+- **重连后强制刷新持仓**：成功分支置零 `last_position_update_time`，否则最长 `QMT_POSITION_QUERY_INTERVAL`（10 秒）内继续用断连前的持仓快照；断连期间若有外部成交，止盈止损会基于错误持仓判断。
+- **QMT 自恢复探测**：QMT 进程自动重启后 `position()` 已能返回真实数据，但 `qmt_connected` 仍为 `False`。`_probe_qmt_recovered()` 用 `ping_xttrader()`（真实 `query_stock_asset` 探针）确认后直接自恢复，省去一次冗余重连。**不以「持仓查询返回空」为依据**——`position()` 断连时同样返回空 DataFrame，与「真的没有持仓」无法区分，据此自恢复会造成假健康。重连进行中 / 模拟模式 / 网关模式一律不探测。
+
 ---
 
 ## 非交易时段优化
