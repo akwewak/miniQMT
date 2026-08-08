@@ -30,6 +30,34 @@ from test.test_xtquant_manager.mocks import (
 ACC = "test_monitor_a"
 
 
+class TestWebUiRootFallback(unittest.TestCase):
+    def test_root_explains_web2_not_built(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        original_exists = Path.exists
+
+        def fake_exists(path_obj):
+            path = str(path_obj).replace("\\", "/")
+            if path.endswith("web2.0/dist/index.html"):
+                return False
+            return original_exists(path_obj)
+
+        sec = SecurityConfig(
+            api_token="",
+            local_ips=["127.0.0.1", "::1", "localhost", "testclient", "unknown"],
+        )
+        with patch.object(Path, "exists", fake_exists):
+            client = TestClient(create_app(sec))
+
+        r = client.get("/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("web2.0/dist/index.html", r.text)
+        self.assertIn("/api/v1/health", r.text)
+        self.assertIn("npm run build", r.text)
+        self.assertEqual(client.get("/api/v1/health").status_code, 200)
+
+
 class _Order(MockXtOrder):
     def __init__(self, stock_code, order_id, order_type, order_volume,
                  price, order_status, traded_volume=0, order_time=None,

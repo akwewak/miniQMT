@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyHeader
 
@@ -104,6 +104,7 @@ def _mount_web_ui(app: FastAPI) -> None:
 
     if not dist_dir.is_dir() or not (dist_dir / "index.html").exists():
         logger.info("web2.0 未构建，跳过 web2.0 界面。运行 cd web2.0 && npm run build 后可用。")
+        _register_missing_web_ui_root(app)
         return
 
     # 挂载静态资源（JS/CSS/图标等）
@@ -133,6 +134,42 @@ def _mount_web_ui(app: FastAPI) -> None:
         return FileResponse(str(dist_dir / "index.html"))
 
     logger.info("web2.0 界面已就绪 — 访问根路径即可使用")
+
+
+def _register_missing_web_ui_root(app: FastAPI) -> None:
+    """web2.0 未构建时为根路径提供明确诊断页，避免默认 404。"""
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    async def web_ui_missing():
+        return HTMLResponse(
+            """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XtQuantManager 已启动</title>
+  <style>
+    body { margin: 0; font-family: "Microsoft YaHei", Arial, sans-serif; background: #f6f8fb; color: #18212f; }
+    main { max-width: 760px; margin: 10vh auto; padding: 32px; background: #fff; border: 1px solid #d8dee8; border-radius: 8px; }
+    h1 { margin: 0 0 16px; font-size: 26px; }
+    p { line-height: 1.7; }
+    code { background: #eef2f7; padding: 2px 6px; border-radius: 4px; }
+    a { color: #0b65c2; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>XtQuantManager HTTP 服务已启动</h1>
+    <p>当前未找到 <code>web2.0/dist/index.html</code>，所以网页界面尚未构建。</p>
+    <p>API 可正常访问：<a href="/api/v1/health">/api/v1/health</a>，
+       接口文档：<a href="/docs">/docs</a>。</p>
+    <p>如需启用 web2.0 界面，请在项目目录运行
+       <code>cd web2.0</code>、<code>npm install</code>、<code>npm run build</code>，
+       然后重启 XtQuantManager。</p>
+  </main>
+</body>
+</html>"""
+        )
 
 
 def _make_token_verifier(security_config: SecurityConfig):
