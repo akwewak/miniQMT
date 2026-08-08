@@ -1111,7 +1111,7 @@ def _xqm_print_port_conflict(port: int) -> None:
     print("  处理建议:")
     print("    1. 如果这是旧网关进程，请先用菜单 [e] 停止，或用 [h] 重启")
     print("    2. 如果是其他程序，请关闭占用进程后再用 [d] 启动")
-    print("    3. 如需临时换端口，可先执行: set XQM_PORT=8890")
+    print("    3. 如需换端口，请修改 .env 中的 XQM_PORT；临时生效可执行: set XQM_PORT=8890")
 
 
 def _xqm_health_check(host: str = XQM_CLIENT_HOST, port: int = XQM_DEFAULT_PORT) -> bool:
@@ -1183,6 +1183,7 @@ def cmd_xqm_start(_args) -> int:
 
     env = os.environ.copy()
     env["MINIQMT_LOG_FILE"] = _xqm_log_file_setting()
+    env["XQM_PORT"] = str(port)
 
     creationflags = 0x00000010
     try:

@@ -448,6 +448,7 @@ class TestXtQuantManagerStart(unittest.TestCase):
 
         def _fake_popen(cmd, **kwargs):
             captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env", {})
             return _Proc()
 
         with patch.dict(os.environ, {"XQM_PORT": "", "XQM_LOG_FILE": ""}), \
@@ -461,6 +462,7 @@ class TestXtQuantManagerStart(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertIn("8890", captured["cmd"])
+        self.assertEqual(captured["env"].get("XQM_PORT"), "8890")
         health_check.assert_called_with(_launcher.XQM_CLIENT_HOST, 8890)
 
 

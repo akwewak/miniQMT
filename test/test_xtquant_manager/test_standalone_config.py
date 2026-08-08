@@ -100,6 +100,12 @@ class TestLoadStandaloneConfigFromFile(unittest.TestCase):
             json.dump(data, f)
         return path
 
+    def _write_dotenv(self, text: str) -> str:
+        path = os.path.join(self._tmpdir.name, ".env")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
     def tearDown(self):
         for key, value in self._orig_env.items():
             if value is None:
@@ -211,6 +217,25 @@ class TestLoadStandaloneConfigFromFile(unittest.TestCase):
         cfg = load_standalone_config(path)
 
         self.assertEqual(cfg.port, 8890)
+
+    def test_xqm_port_dotenv_overrides_json_port(self):
+        path = self._write_config({"port": 8888})
+        self.addCleanup(os.unlink, path)
+        self._write_dotenv("XQM_PORT=58888\n")
+
+        cfg = load_standalone_config(path)
+
+        self.assertEqual(cfg.port, 58888)
+
+    def test_process_env_xqm_port_overrides_dotenv(self):
+        path = self._write_config({"port": 8888})
+        self.addCleanup(os.unlink, path)
+        self._write_dotenv("XQM_PORT=58888\n")
+        os.environ["XQM_PORT"] = "58889"
+
+        cfg = load_standalone_config(path)
+
+        self.assertEqual(cfg.port, 58889)
 
     def test_loads_security_fields(self):
         path = self._write_config({

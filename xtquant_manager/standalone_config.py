@@ -80,15 +80,56 @@ class StandaloneConfig:
     accounts: List[AccountEntry] = field(default_factory=list)
 
 
-def _env_int(name: str, default: int, min_value=None, max_value=None) -> int:
-    value = os.environ.get(name)
-    if value is None or value == "":
-        return default
+def _strip_env_value(value: str) -> str:
     raw = str(value).strip()
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
         raw = raw[1:-1]
+    return raw
+
+
+def _read_dotenv_value(name: str, dotenv_anchor: Optional[str] = None) -> str:
+    candidates = []
+    if dotenv_anchor:
+        base_dir = os.path.dirname(os.path.abspath(dotenv_anchor))
+        if base_dir:
+            candidates.append(os.path.join(base_dir, ".env"))
+    candidates.append(os.path.abspath(".env"))
+
+    seen = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() == name:
+                return _strip_env_value(value)
+    return ""
+
+
+def _env_value(name: str, dotenv_anchor: Optional[str] = None) -> str:
+    value = os.environ.get(name)
+    if value is not None and str(value).strip() != "":
+        return _strip_env_value(value)
+    return _read_dotenv_value(name, dotenv_anchor)
+
+
+def _env_int(name: str, default: int, min_value=None, max_value=None, dotenv_anchor: Optional[str] = None) -> int:
+    value = _env_value(name, dotenv_anchor)
+    if value is None or value == "":
+        return default
     try:
-        parsed = int(raw)
+        parsed = int(value)
     except (TypeError, ValueError):
         return default
     if min_value is not None and parsed < min_value:
@@ -168,7 +209,7 @@ def load_standalone_config(config_path: str = "") -> StandaloneConfig:
     path = _resolve_config_path(config_path)
     if not path:
         defaults = StandaloneConfig()
-        defaults.port = _env_int("XQM_PORT", defaults.port, 1, 65535)
+        defaults.port = _env_int("XQM_PORT", defaults.port, 1, 65535, config_path)
         defaults.accounts = _load_accounts_from_account_config(config_path)
         return defaults
 
@@ -178,7 +219,7 @@ def load_standalone_config(config_path: str = "") -> StandaloneConfig:
     except (OSError, json.JSONDecodeError) as e:
         LOGGER.warning(f"加载配置文件失败，使用默认配置: {e}")
         defaults = StandaloneConfig()
-        defaults.port = _env_int("XQM_PORT", defaults.port, 1, 65535)
+        defaults.port = _env_int("XQM_PORT", defaults.port, 1, 65535, path)
         defaults.accounts = _load_accounts_from_account_config(path)
         return defaults
 
@@ -209,7 +250,7 @@ def _parse_config(data: Dict[str, Any], manager_config_path: Optional[str] = Non
 
     return StandaloneConfig(
         host=data.get("host", defaults.host),
-        port=_env_int("XQM_PORT", data.get("port", defaults.port), 1, 65535),
+        port=_env_int("XQM_PORT", data.get("port", defaults.port), 1, 65535, manager_config_path),
         api_token=data.get("api_token", defaults.api_token),
         allowed_ips=data.get("allowed_ips", defaults.allowed_ips),
         rate_limit=data.get("rate_limit", defaults.rate_limit),
