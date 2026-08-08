@@ -203,7 +203,7 @@ class TestFlaskReverseProbe(unittest.TestCase):
         """构造 app，并 patch urlopen 模拟 Flask 的可达性与响应。
 
         同时把测试账号注入 config 的账号列表——网关靠它推导 Flask 端口
-        （5000 + 索引），账号不在列表中会直接放弃探测。
+        （WEB_SERVER_PORT + 索引），账号不在列表中会直接放弃探测。
         """
         import json as _j
         from unittest.mock import patch
@@ -333,6 +333,35 @@ class TestFlaskReverseProbe(unittest.TestCase):
 
         self.assertEqual(len(calls), 1,
                          "5 秒内应只探测一次 Flask，实际 %d 次" % len(calls))
+
+    def test_flask_probe_uses_configured_web_server_port(self):
+        """网关反向探测端口必须跟 web1.0 的 WEB_SERVER_PORT 基础端口一致。"""
+        import json as _j
+        from unittest.mock import patch
+
+        calls = []
+
+        class _Resp:
+            def read(self):
+                return _j.dumps({"status": "success", "settings": {}}).encode("utf-8")
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def _counting_urlopen(url, timeout=None):
+            calls.append(url)
+            return _Resp()
+
+        import config as _config
+        with patch.object(_config, "WEB_SERVER_BASE_PORT", 5100), \
+             patch.object(_config, "get_all_accounts_config",
+                          return_value=[{"account_id": "other"}, {"account_id": ACC}]), \
+             patch("urllib.request.urlopen", side_effect=_counting_urlopen):
+            c = TestClient(create_app(self.sec))
+            c.get("/api/status")
+
+        self.assertEqual(calls, ["http://127.0.0.1:5101/api/status"])
 
     def test_account_not_in_config_is_not_probed(self):
         """账号不在 account_config.json 中时放弃探测，不能张冠李戴读别人的状态"""

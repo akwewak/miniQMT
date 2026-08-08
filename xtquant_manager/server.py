@@ -889,7 +889,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
     def _account_flask_url(aid: str):
         """推导该账号 Flask 实例的本机地址。
 
-        端口规则与 config._apply_account_overrides 一致：5000 + 账号在
+        端口规则与 config._apply_account_overrides 一致：WEB_SERVER_PORT + 账号在
         account_config.json 中的索引。
 
         账号不在配置列表时返回 None（探测放弃 → 状态显示为未知）。
@@ -902,7 +902,9 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             ids = [a.get("account_id", "") for a in accounts]
             if aid not in ids:
                 return None
-            return "http://127.0.0.1:%d" % (5000 + ids.index(aid))
+            base_port = getattr(_config, "WEB_SERVER_BASE_PORT",
+                                getattr(_config, "WEB_SERVER_PORT", 5000))
+            return "http://127.0.0.1:%d" % (base_port + ids.index(aid))
         except Exception:
             return None
 

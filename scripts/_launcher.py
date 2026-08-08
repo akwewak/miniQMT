@@ -54,6 +54,7 @@ WEB_MODE_PREF = PROJECT_ROOT / "data" / ".web_mode"
 
 SUPPORTED_PYTHON_MIN = (3, 8)
 SUPPORTED_PYTHON_MAX = (3, 11)  # 仓库内 xtquant 二进制当前覆盖到 cp311
+FLASK_DEFAULT_PORT = 5000
 
 
 # ---------------------------------------------------------------------------
@@ -146,20 +147,22 @@ def cmd_list(_args) -> int:
         return 0
     print(f"{'#':<3} {'账号 ID':<14} {'Web 端口':<8} {'QMT 路径'}")
     print("-" * 70)
+    base_port = _flask_base_port()
     for i, a in enumerate(accounts):
-        print(f"{i+1:<3} {a['account_id']:<14} :{5000 + i:<7} {a.get('qmt_path','')}")
+        print(f"{i+1:<3} {a['account_id']:<14} :{base_port + i:<7} {a.get('qmt_path','')}")
     return 0
 
 
 def _account_flask_port(acc_id: str, all_ids=None) -> int:
     """账号的 Flask 端口。规则与 config._apply_account_overrides 一致：
-    5000 + 账号在 account_config.json 中的索引。"""
+    WEB_SERVER_PORT + 账号在 account_config.json 中的索引。"""
+    base_port = _flask_base_port()
     if all_ids is None:
         all_ids = [a["account_id"] for a in load_accounts()]
     try:
-        return 5000 + all_ids.index(acc_id)
+        return base_port + all_ids.index(acc_id)
     except ValueError:
-        return 5000
+        return base_port
 
 
 def _is_port_in_use(port: int) -> bool:
@@ -187,6 +190,7 @@ def cmd_start(args, web2: bool = False) -> int:
         return 1
 
     all_ids = [a["account_id"] for a in load_accounts()]
+    flask_base_port = _flask_base_port()
 
     started = 0
     for acc in accounts:
@@ -214,9 +218,10 @@ def cmd_start(args, web2: bool = False) -> int:
         env = os.environ.copy()
         env["QMT_ACCOUNT_ID"] = acc_id
         env["QMT_PATH"]       = qmt_path
+        env["WEB_SERVER_PORT"] = str(flask_base_port)
         # 显式锁定模式：菜单 [7] 启动 = 实盘 (false)，菜单 [8] 启动 = 模拟 (true)。
-        # 避免 config.py 默认值在两个进程"不一致"——以前曾出现 5000 实盘 / 5001
-        # 模拟混搭的局面（用户在 5000 web UI 切换了实盘，5001 没切）。
+        # 避免 config.py 默认值在两个进程"不一致"——以前曾出现基础端口实盘 /
+        # 基础端口+1 模拟混搭的局面。
         env["ENABLE_SIMULATION_MODE"] = "true" if args.simulation else "false"
 
         flask_note = ""
@@ -256,7 +261,7 @@ def cmd_start(args, web2: bool = False) -> int:
         started += 1
         time.sleep(0.8)  # 错开启动，避免 QMT 客户端初始化竞争
 
-    print(f"\n共启动 {started}/{len(accounts)} 个账号。Web 端口从 5000 开始按账号顺序分配（绑定 127.0.0.1，仅本机访问）。")
+    print(f"\n共启动 {started}/{len(accounts)} 个账号。Web 端口从 {flask_base_port} 开始按账号顺序分配（绑定 127.0.0.1，仅本机访问）。")
     return 0
 
 
@@ -398,6 +403,10 @@ DEFAULT_ENV_TEXT = """# miniQMT 本机环境配置
 QMT_API_TOKEN=
 TUSHARE_TOKEN=
 ENABLE_TUSHARE_DATA_SOURCE=false
+# web1.0 Flask 基础端口，默认 5000；多账号会按账号顺序递增
+# WEB_SERVER_PORT=5000
+# XtQuantManager HTTP 服务端口（web2.0 网关），默认 8888
+# XQM_PORT=8888
 ENABLE_QMT_IPC_FALLBACK=false
 ENABLE_QMT_RPC_FALLBACK=false
 QMT_RPC_TRANSPORT=redis
@@ -790,7 +799,7 @@ def cmd_setup_wizard(_args) -> int:
         print("1. 核心依赖已就绪，可跳过安装步骤。")
     print("2. 运行配置检查：菜单 [3] 或命令 python scripts/_launcher.py check-config")
     print("3. 首次启动建议使用模拟模式：菜单 [8]")
-    print("4. web1.0 默认访问：http://127.0.0.1:5000")
+    print(f"4. web1.0 默认访问：http://127.0.0.1:{_flask_base_port()}")
     print("5. 确认 QMT 登录和模拟流程无误后，再考虑实盘与自动交易开关。")
 
     if blockers:
@@ -886,10 +895,55 @@ XQM_DEFAULT_HOST = "0.0.0.0"        # 绑定地址：全部网卡（含 WAN/LAN/
 XQM_CLIENT_HOST  = "127.0.0.1"      # 客户端访问地址：本机健康检查/UI 打开（0.0.0.0 不能作客户端目标）
 XQM_DEFAULT_PORT = 8888
 XQM_MODULE = "xtquant_manager"
-XQM_LOG_FILE = os.environ.get("XQM_LOG_FILE", os.path.join("logs", "xqm_manager.log"))
+XQM_LOG_FILE = os.path.join("logs", "xqm_manager.log")
 XQM_START_HEALTH_TIMEOUT = 15
 XQM_PORT_RELEASE_TIMEOUT = 5.0
 XQM_PORT_RELEASE_POLL_INTERVAL = 0.5
+
+
+def _strip_env_value(value: str) -> str:
+    value = str(value).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _env_value(key: str, default: str = "") -> str:
+    value = os.environ.get(key)
+    if value is not None and str(value).strip() != "":
+        return _strip_env_value(value)
+    return _read_env_key(key) or default
+
+
+def _env_int(key: str, default: int, min_value=None, max_value=None) -> int:
+    raw = _env_value(key)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if min_value is not None and value < min_value:
+        return default
+    if max_value is not None and value > max_value:
+        return default
+    return value
+
+
+def _xqm_host() -> str:
+    return _env_value("XQM_HOST", XQM_DEFAULT_HOST)
+
+
+def _xqm_port() -> int:
+    return _env_int("XQM_PORT", XQM_DEFAULT_PORT, 1, 65535)
+
+
+def _flask_base_port() -> int:
+    return _env_int("WEB_SERVER_PORT", FLASK_DEFAULT_PORT, 1, 65535)
+
+
+def _xqm_log_file_setting() -> str:
+    return _env_value("XQM_LOG_FILE", XQM_LOG_FILE)
 
 
 def _get_lan_ip() -> str:
@@ -946,7 +1000,7 @@ def _ensure_xqm_config(host: str = "0.0.0.0") -> Path | None:
     # 构建 xtquant_manager 配置
     xqm_cfg = {
         "host": host,
-        "port": 8888,
+        "port": _xqm_port(),
         "api_token": "",
         "rate_limit": 600,
         "enable_stop_profit": True,
@@ -983,7 +1037,7 @@ def _xqm_read_pid() -> int | None:
 
 
 def _xqm_log_file() -> Path:
-    p = Path(XQM_LOG_FILE)
+    p = Path(_xqm_log_file_setting())
     return p if p.is_absolute() else PROJECT_ROOT / p
 
 
@@ -1098,8 +1152,8 @@ def _xqm_access_urls(bind_host: str, port: int) -> str:
 
 
 def cmd_xqm_start(_args) -> int:
-    host = os.environ.get("XQM_HOST", XQM_DEFAULT_HOST)
-    port = int(os.environ.get("XQM_PORT", str(XQM_DEFAULT_PORT)))
+    host = _xqm_host()
+    port = _xqm_port()
 
     if _xqm_is_port_in_use(port):
         if _xqm_health_check(XQM_CLIENT_HOST, port):
@@ -1137,7 +1191,7 @@ def cmd_xqm_start(_args) -> int:
     data_dir.mkdir(exist_ok=True)
 
     env = os.environ.copy()
-    env["MINIQMT_LOG_FILE"] = XQM_LOG_FILE
+    env["MINIQMT_LOG_FILE"] = _xqm_log_file_setting()
 
     creationflags = 0x00000010
     try:
@@ -1177,8 +1231,8 @@ def cmd_xqm_start(_args) -> int:
 
 
 def cmd_xqm_stop(_args) -> int:
-    host = os.environ.get("XQM_HOST", XQM_DEFAULT_HOST)
-    port = int(os.environ.get("XQM_PORT", str(XQM_DEFAULT_PORT)))
+    host = _xqm_host()
+    port = _xqm_port()
 
     pid = _xqm_read_pid()
     if pid and pid_alive(pid):
@@ -1205,8 +1259,8 @@ def cmd_xqm_stop(_args) -> int:
 
 
 def cmd_xqm_status(_args) -> int:
-    host = os.environ.get("XQM_HOST", XQM_DEFAULT_HOST)
-    port = int(os.environ.get("XQM_PORT", str(XQM_DEFAULT_PORT)))
+    host = _xqm_host()
+    port = _xqm_port()
 
     print("=" * 48)
     print("  XtQuantManager 状态")
@@ -1246,8 +1300,8 @@ def cmd_xqm_status(_args) -> int:
 def cmd_xqm_ui(_args) -> int:
     import webbrowser
 
-    host = os.environ.get("XQM_HOST", XQM_DEFAULT_HOST)
-    port = int(os.environ.get("XQM_PORT", str(XQM_DEFAULT_PORT)))
+    host = _xqm_host()
+    port = _xqm_port()
 
     # 浏览器无法访问 0.0.0.0；统一用 127.0.0.1 打开（本机浏览器场景）
     if _xqm_health_check(XQM_CLIENT_HOST, port):
@@ -1425,7 +1479,7 @@ def _read_env_key(key: str) -> str:
             continue
         k, _, v = line.partition("=")
         if k.strip() == key:
-            return v.strip()
+            return _strip_env_value(v)
     return ""
 
 def _write_env_key(key: str, value: str) -> None:
@@ -1819,7 +1873,7 @@ def cmd_menu(_args) -> int:
         mode_label = "实盘" if not simulation else "模拟"
         scope_label = "所有账号" if all_accounts else "指定账号"
         pref = _load_web_mode_pref()
-        mode_desc = "web1.0 (Flask :5000起, 仅本机)" if pref == "1" else "web2.0 (xtquant_manager :8888, 全网卡)"
+        mode_desc = f"web1.0 (Flask :{_flask_base_port()}起, 仅本机)" if pref == "1" else f"web2.0 (xtquant_manager :{_xqm_port()}, 全网卡)"
         print(f"\n[启动{scope_label} - {mode_label}模式]\n")
         web2 = ask(f"Web 界面 [1=web1.0, 2=web2.0] (默认 {pref}={mode_desc}): ")
         if web2 == "":
@@ -1834,12 +1888,14 @@ def cmd_menu(_args) -> int:
     def _do_start(accounts_str: str | None, simulation: bool, web2: bool):
         """实际启动逻辑。web2 模式下先启动 xtquant_manager。"""
         if web2:
+            xqm_port = _xqm_port()
+            xqm_host = _xqm_host()
             print("—— 步骤 1/2: 启动 xtquant_manager (web2.0 界面) ——")
             # 如果已经在运行就跳过启动
-            if not _xqm_is_port_in_use(XQM_DEFAULT_PORT):
+            if not _xqm_is_port_in_use(xqm_port):
                 cmd_xqm_start(argparse.Namespace())
             else:
-                if _xqm_health_check(XQM_CLIENT_HOST, XQM_DEFAULT_PORT):
+                if _xqm_health_check(XQM_CLIENT_HOST, xqm_port):
                     print("  ✓ xtquant_manager 已在运行")
                 else:
                     print("  ⚠ xtquant_manager 端口被占用但健康检查失败，尝试重启...")
@@ -1854,8 +1910,8 @@ def cmd_menu(_args) -> int:
         if web2:
             print()
             print("=" * 48)
-            print(f"  web2.0 访问地址: {_xqm_access_urls(XQM_DEFAULT_HOST, XQM_DEFAULT_PORT)}")
-            print(f"  API 文档:        http://{XQM_CLIENT_HOST}:{XQM_DEFAULT_PORT}/docs")
+            print(f"  web2.0 访问地址: {_xqm_access_urls(xqm_host, xqm_port)}")
+            print(f"  API 文档:        http://{XQM_CLIENT_HOST}:{xqm_port}/docs")
             print("=" * 48)
 
         pause_return()
@@ -1883,8 +1939,8 @@ def cmd_menu(_args) -> int:
         print("   [7] 启动所有账号 (实盘，启动时选择 web1.0/web2.0)")
         print("   [8] 启动所有账号 (模拟，启动时选择 web1.0/web2.0)")
         print("   [9] 启动指定账号 (选择实盘/模拟 + web1.0/web2.0)")
-        print("        web1.0 = Flask :5000 起, 仅本机访问 (配置/监控用)")
-        print("        web2.0 = xtquant_manager :8888, 全网卡 (只读监控)")
+        print(f"        web1.0 = Flask :{_flask_base_port()} 起, 仅本机访问 (配置/监控用)")
+        print(f"        web2.0 = xtquant_manager :{_xqm_port()}, 全网卡 (只读监控)")
         print("                 Flask 仍会启动(仅本机)供网关读取运行时开关")
         print()
         print("  [日常运行 - 停止]")
@@ -1977,7 +2033,7 @@ def cmd_menu(_args) -> int:
                 continue
             sim = ask("模式 [1=实盘, 2=模拟] (默认 1): ") == "2"
             pref = _load_web_mode_pref()
-            mode_desc = "web1.0 (Flask)" if pref == "1" else "web2.0 (xtquant_manager)"
+            mode_desc = "web1.0 (Flask)" if pref == "1" else f"web2.0 (xtquant_manager :{_xqm_port()})"
             web2_input = ask(f"Web 界面 [1=web1.0, 2=web2.0] (默认 {pref}={mode_desc}): ")
             web2 = (web2_input if web2_input else pref) == "2"
             _save_web_mode_pref(web2)
@@ -2009,7 +2065,7 @@ def cmd_menu(_args) -> int:
                 # 先停交易策略 (main.py)，再停网关
                 cmd_stop(argparse.Namespace(accounts=None, force=True, timeout=0))
                 print()
-                if _xqm_is_port_in_use(XQM_DEFAULT_PORT):
+                if _xqm_is_port_in_use(_xqm_port()):
                     print("停止 xtquant_manager 网关...")
                     cmd_xqm_stop(argparse.Namespace())
             else:
@@ -2041,8 +2097,9 @@ def cmd_menu(_args) -> int:
             print("\n[重启 xtquant_manager]\n")
             cmd_xqm_stop(None)
             # 等待端口完全释放（最多等 5 秒），确保新进程能绑定
+            xqm_port = _xqm_port()
             for _ in range(10):
-                if not _xqm_is_port_in_use(XQM_DEFAULT_PORT):
+                if not _xqm_is_port_in_use(xqm_port):
                     break
                 time.sleep(0.5)
             print()
@@ -2100,6 +2157,7 @@ def cmd_status(_args) -> int:
     accounts = load_accounts()
     print(f"{'账号 ID':<14} {'PID':<8} {'状态':<10} {'Web':<8} {'QMT 路径'}")
     print("-" * 78)
+    base_port = _flask_base_port()
     for i, acc in enumerate(accounts):
         acc_id = acc["account_id"]
         pid = read_pid(acc_id)
@@ -2109,7 +2167,7 @@ def cmd_status(_args) -> int:
             status, pid_str = "运行中", str(pid)
         else:
             status, pid_str = "PID失效", str(pid)
-        print(f"{acc_id:<14} {pid_str:<8} {status:<10} :{5000+i:<6} {acc.get('qmt_path','')}")
+        print(f"{acc_id:<14} {pid_str:<8} {status:<10} :{base_port+i:<6} {acc.get('qmt_path','')}")
     return 0
 
 

@@ -23,8 +23,8 @@ class TestConfig(unittest.TestCase):
         self.assertFalse(config.ENABLE_XTQUANT_MANAGER)
 
     def test_xtquant_manager_url_default(self):
-        """XTQUANT_MANAGER_URL 默认指向本机 8888 端口"""
-        self.assertEqual(config.XTQUANT_MANAGER_URL, "http://127.0.0.1:8888")
+        """XTQUANT_MANAGER_URL 默认跟随本机 XtQuantManager 端口"""
+        self.assertEqual(config.XTQUANT_MANAGER_URL, f"http://127.0.0.1:{config.XTQUANT_MANAGER_PORT}")
 
     def test_xtquant_manager_token_default_empty(self):
         """XTQUANT_MANAGER_TOKEN 默认为空字符串"""

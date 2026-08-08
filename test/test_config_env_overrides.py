@@ -13,8 +13,13 @@ class TestConfigEnvOverrides(unittest.TestCase):
             "GRID_REQUIRE_PROFIT_TRIGGERED",
             "ENABLE_BAOSTOCK_STOCK_NAME_LOOKUP",
             "ENABLE_BAOSTOCK_HISTORY_DATA",
+            "XQM_PORT",
+            "XTQUANT_MANAGER_URL",
+            "WEB_SERVER_PORT",
+            "MINIQMT_DISABLE_DOTENV",
         ]
         self._orig_env = {key: os.environ.get(key) for key in self._env_keys}
+        os.environ["MINIQMT_DISABLE_DOTENV"] = "1"
 
     def tearDown(self):
         for key, value in self._orig_env.items():
@@ -50,6 +55,40 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
         self.assertFalse(config.ENABLE_BAOSTOCK_STOCK_NAME_LOOKUP)
         self.assertFalse(config.ENABLE_BAOSTOCK_HISTORY_DATA)
+
+    def test_xqm_port_derives_xtquant_manager_url(self):
+        os.environ["XQM_PORT"] = "8890"
+        os.environ.pop("XTQUANT_MANAGER_URL", None)
+
+        config = self._reload_config()
+
+        self.assertEqual(config.XTQUANT_MANAGER_PORT, 8890)
+        self.assertEqual(config.XTQUANT_MANAGER_URL, "http://127.0.0.1:8890")
+
+    def test_xtquant_manager_url_env_overrides_derived_url(self):
+        os.environ["XQM_PORT"] = "8890"
+        os.environ["XTQUANT_MANAGER_URL"] = "http://127.0.0.1:8891"
+
+        config = self._reload_config()
+
+        self.assertEqual(config.XTQUANT_MANAGER_PORT, 8890)
+        self.assertEqual(config.XTQUANT_MANAGER_URL, "http://127.0.0.1:8891")
+
+    def test_web_server_port_reads_env(self):
+        os.environ["WEB_SERVER_PORT"] = "5100"
+
+        config = self._reload_config()
+
+        self.assertEqual(config.WEB_SERVER_BASE_PORT, 5100)
+        self.assertEqual(config.WEB_SERVER_PORT, 5100)
+
+    def test_web_server_port_invalid_falls_back_to_default(self):
+        os.environ["WEB_SERVER_PORT"] = "not-a-port"
+
+        config = self._reload_config()
+
+        self.assertEqual(config.WEB_SERVER_BASE_PORT, 5000)
+        self.assertEqual(config.WEB_SERVER_PORT, 5000)
 
 
 class TestDotenvFallback(unittest.TestCase):
@@ -112,4 +151,3 @@ class TestDotenvFallback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

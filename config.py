@@ -82,6 +82,24 @@ def _env_bool(name: str, default: bool) -> bool:
         return default
     return str(v).strip().lower() in ("1", "true", "yes", "on", "y", "t")
 
+def _env_int(name: str, default: int, min_value=None, max_value=None) -> int:
+    """从环境变量读整数；缺失、非法或越界时返回 default。"""
+    v = os.environ.get(name)
+    if v is None or v == "":
+        return default
+    raw = str(v).strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        raw = raw[1:-1]
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if min_value is not None and value < min_value:
+        return default
+    if max_value is not None and value > max_value:
+        return default
+    return value
+
 # 模拟交易模式开关：环境变量 ENABLE_SIMULATION_MODE 优先（启动器控制），
 # 否则用源码默认 True（避免开发者本地误连实盘）。
 ENABLE_SIMULATION_MODE = _env_bool("ENABLE_SIMULATION_MODE", True)
@@ -313,7 +331,8 @@ ACCOUNT_CONFIG = get_account_config()
 # True: 所有 xtquant 调用通过 XtQuantManager HTTP 服务路由
 ENABLE_XTQUANT_MANAGER = False
 # XtQuantManager 服务地址（ENABLE_XTQUANT_MANAGER=True 时生效）
-XTQUANT_MANAGER_URL = "http://127.0.0.1:8888"
+XTQUANT_MANAGER_PORT = _env_int("XQM_PORT", 8888, 1, 65535)
+XTQUANT_MANAGER_URL = os.environ.get("XTQUANT_MANAGER_URL") or f"http://127.0.0.1:{XTQUANT_MANAGER_PORT}"
 # XtQuantManager API Token（空字符串表示不验证）
 XTQUANT_MANAGER_TOKEN = ""
 # XtQuantManager HTTP 服务速率限制（次/分钟，0=不限速）
@@ -541,7 +560,8 @@ def validate_config_param(param_name, value):
 
 # ======================= Web服务配置 =======================
 WEB_SERVER_HOST = "127.0.0.1"
-WEB_SERVER_PORT = 5000
+WEB_SERVER_BASE_PORT = _env_int("WEB_SERVER_PORT", 5000, 1, 65535)
+WEB_SERVER_PORT = WEB_SERVER_BASE_PORT
 WEB_SERVER_DEBUG = False
 WEB_API_TOKEN = os.environ.get("QMT_API_TOKEN", "")  # 设置后启用 Token 验证，空字符串=不验证（仅限内网部署）
 WEB_TRADE_RECORDS_DISPLAY_DAYS = 60  # 下单日志仅展示最近N天（约2个月）的交易记录，避免清单过长
@@ -906,7 +926,7 @@ def _apply_per_account_settings():
     DB_PATH         = os.path.join(DATA_DIR, "trading.db")
     STOCK2BUY_FILE  = os.path.join(DATA_DIR, "stock2buy.json")
     LOG_FILE        = f"account_{account_id}.log"
-    WEB_SERVER_PORT = 5000 + idx
+    WEB_SERVER_PORT = WEB_SERVER_BASE_PORT + idx
 
     # 股票池按账号无条件隔离到 data_<id>/stock_pool.json:
     # 旧逻辑用 "文件存在才走账号目录,否则回落根目录" — 首次启动时账号目录

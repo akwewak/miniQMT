@@ -290,6 +290,18 @@ class TestCmdReturnCodes(unittest.TestCase):
 class TestAccountFlaskPort(unittest.TestCase):
     """账号 Flask 端口推导必须与 config._apply_account_overrides 一致。"""
 
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="launcher_flask_port_"))
+        self.env_path = self.tmpdir / ".env"
+        self.env_path.write_text("", encoding="utf-8")
+        self._orig_env_path = _launcher.ENV_PATH
+        _launcher.ENV_PATH = self.env_path
+        self.addCleanup(lambda: setattr(_launcher, "ENV_PATH", self._orig_env_path))
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+        self.env_patch = patch.dict(os.environ, {"WEB_SERVER_PORT": ""})
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
+
     def test_first_account_gets_5000(self):
         self.assertEqual(_launcher._account_flask_port("A", ["A", "B"]), 5000)
 
@@ -303,6 +315,19 @@ class TestAccountFlaskPort(unittest.TestCase):
         with patch.object(_launcher, "load_accounts",
                           return_value=[{"account_id": "X"}, {"account_id": "Y"}]):
             self.assertEqual(_launcher._account_flask_port("Y"), 5001)
+
+    def test_reads_web_server_port_from_dotenv(self):
+        self.env_path.write_text("WEB_SERVER_PORT=5100\n", encoding="utf-8")
+
+        self.assertEqual(_launcher._flask_base_port(), 5100)
+        self.assertEqual(_launcher._account_flask_port("B", ["A", "B"]), 5101)
+
+    def test_process_env_web_server_port_overrides_dotenv(self):
+        self.env_path.write_text("WEB_SERVER_PORT=5100\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"WEB_SERVER_PORT": "5200"}):
+            self.assertEqual(_launcher._flask_base_port(), 5200)
+            self.assertEqual(_launcher._account_flask_port("B", ["A", "B"]), 5201)
 
 
 class TestPortInUse(unittest.TestCase):
@@ -334,17 +359,35 @@ class TestXtQuantManagerStart(unittest.TestCase):
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp(prefix="launcher_xqm_"))
         self.cfg_path = self.tmpdir / "xtquant_manager_config.json"
+        self.env_path = self.tmpdir / ".env"
         self.pid_path = self.tmpdir / ".xqm_manager.pid"
         self.cfg_path.write_text(json.dumps({"accounts": []}), encoding="utf-8")
+        self.env_path.write_text("", encoding="utf-8")
         self._orig_xqm_config = _launcher.XQM_CONFIG_PATH
+        self._orig_env = _launcher.ENV_PATH
         _launcher.XQM_CONFIG_PATH = self.cfg_path
+        _launcher.ENV_PATH = self.env_path
 
     def tearDown(self):
         _launcher.XQM_CONFIG_PATH = self._orig_xqm_config
+        _launcher.ENV_PATH = self._orig_env
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
+    def test_xqm_port_reads_project_dotenv(self):
+        self.env_path.write_text("XQM_PORT=8890\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"XQM_PORT": ""}):
+            self.assertEqual(_launcher._xqm_port(), 8890)
+
+    def test_process_env_xqm_port_overrides_dotenv(self):
+        self.env_path.write_text("XQM_PORT=8890\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"XQM_PORT": "8891"}):
+            self.assertEqual(_launcher._xqm_port(), 8891)
+
     def test_port_conflict_without_healthy_xqm_returns_error_and_does_not_spawn(self):
-        with patch.object(_launcher, "_xqm_is_port_in_use", return_value=True), \
+        with patch.dict(os.environ, {"XQM_PORT": ""}), \
+             patch.object(_launcher, "_xqm_is_port_in_use", return_value=True), \
              patch.object(_launcher, "_xqm_health_check", return_value=False), \
              patch.object(_launcher, "_xqm_read_pid", return_value=None), \
              patch.object(_launcher, "_xqm_list_port_listeners", return_value=[{
@@ -379,7 +422,8 @@ class TestXtQuantManagerStart(unittest.TestCase):
             captured["env"] = kwargs.get("env", {})
             return _Proc()
 
-        with patch.object(_launcher, "_xqm_is_port_in_use", return_value=False), \
+        with patch.dict(os.environ, {"XQM_PORT": "", "XQM_LOG_FILE": ""}), \
+             patch.object(_launcher, "_xqm_is_port_in_use", return_value=False), \
              patch.object(_launcher, "_xqm_health_check", return_value=True), \
              patch.object(_launcher, "_xqm_pid_file", return_value=self.pid_path), \
              patch.object(_launcher.subprocess, "Popen", side_effect=_fake_popen), \
@@ -390,6 +434,34 @@ class TestXtQuantManagerStart(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("-m", captured["cmd"])
         self.assertEqual(captured["env"].get("MINIQMT_LOG_FILE"), _launcher.XQM_LOG_FILE)
+
+    def test_start_uses_dotenv_xqm_port(self):
+        self.env_path.write_text("XQM_PORT=8890\n", encoding="utf-8")
+        captured = {}
+
+        class _Proc:
+            pid = 4321
+            returncode = None
+
+            def poll(self):
+                return None
+
+        def _fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return _Proc()
+
+        with patch.dict(os.environ, {"XQM_PORT": "", "XQM_LOG_FILE": ""}), \
+             patch.object(_launcher, "_xqm_is_port_in_use", return_value=False), \
+             patch.object(_launcher, "_xqm_health_check", return_value=True) as health_check, \
+             patch.object(_launcher, "_xqm_pid_file", return_value=self.pid_path), \
+             patch.object(_launcher.subprocess, "Popen", side_effect=_fake_popen), \
+             patch.object(_launcher.time, "sleep"), \
+             patch("sys.stdout", new_callable=io.StringIO):
+            rc = _launcher.cmd_xqm_start(None)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("8890", captured["cmd"])
+        health_check.assert_called_with(_launcher.XQM_CLIENT_HOST, 8890)
 
 
 class TestWeb2FlaskAutoStart(unittest.TestCase):
@@ -408,6 +480,11 @@ class TestWeb2FlaskAutoStart(unittest.TestCase):
             {"account_id": "ACC2", "qmt_path": "C:/qmt2"},
         ]
         self.captured = []
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="launcher_web2_flask_"))
+        self.env_path = self.tmpdir / ".env"
+        self.env_path.write_text("", encoding="utf-8")
+        self._orig_env_path = _launcher.ENV_PATH
+        _launcher.ENV_PATH = self.env_path
 
         class _Proc:
             pid = 4242
@@ -422,9 +499,13 @@ class TestWeb2FlaskAutoStart(unittest.TestCase):
                                        return_value=self.accounts)
         self.p_pid = patch.object(_launcher, "read_pid", return_value=None)
         self.p_sleep = patch.object(_launcher.time, "sleep")
-        for p in (self.p_popen, self.p_accounts, self.p_pid, self.p_sleep):
+        self.p_env = patch.dict(os.environ, {"WEB_SERVER_PORT": ""})
+        for p in (self.p_popen, self.p_accounts, self.p_pid,
+                  self.p_sleep, self.p_env):
             p.start()
             self.addCleanup(p.stop)
+        self.addCleanup(lambda: setattr(_launcher, "ENV_PATH", self._orig_env_path))
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
 
     def _args(self, web2, accounts=None):
         class _A:
@@ -474,6 +555,19 @@ class TestWeb2FlaskAutoStart(unittest.TestCase):
         envs = self._run(web2=True, port_in_use=False)
         self.assertEqual(envs[0]["QMT_ACCOUNT_ID"], "ACC1")
         self.assertEqual(envs[1]["QMT_ACCOUNT_ID"], "ACC2")
+
+    def test_configured_flask_base_port_is_used_and_passed_to_child(self):
+        self.env_path.write_text("WEB_SERVER_PORT=5100\n", encoding="utf-8")
+
+        with patch.object(_launcher, "_is_port_in_use", return_value=False) as port_check, \
+             patch.object(_launcher.Path, "mkdir"), \
+             patch.object(_launcher, "pid_file_for") as pf:
+            pf.return_value = Path(tempfile.gettempdir()) / "dummy_pid.txt"
+            with patch("sys.stdout", new=io.StringIO()):
+                _launcher.cmd_start(self._args(web2=True))
+
+        self.assertEqual([c.args[0] for c in port_check.call_args_list], [5100, 5101])
+        self.assertEqual([env["WEB_SERVER_PORT"] for env in self.captured], ["5100", "5100"])
 
 
 if __name__ == "__main__":

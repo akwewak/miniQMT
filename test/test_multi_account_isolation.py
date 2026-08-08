@@ -44,14 +44,16 @@ def _run_config_in_subprocess(tmpdir: str, account_id: Optional[str],
         "  'stock_pool_file': config.STOCK_POOL_FILE,"
         "  'stock_pool': config.STOCK_POOL,"
         "  'log_file': config.LOG_FILE,"
+        "  'web_base_port': getattr(config, 'WEB_SERVER_BASE_PORT', None),"
         "  'web_port': config.WEB_SERVER_PORT,"
         "  'all_accounts': config.get_all_accounts_config(),"
         "}) + '<<END>>')"
     )
 
     env = os.environ.copy()
-    env.pop("QMT_ACCOUNT_ID", None)
-    env.pop("QMT_PATH", None)
+    for key in ("QMT_ACCOUNT_ID", "QMT_PATH", "WEB_SERVER_PORT"):
+        env.pop(key, None)
+    env["MINIQMT_DISABLE_DOTENV"] = "1"
     if account_id is not None:
         env["QMT_ACCOUNT_ID"] = account_id
     if extra_env:
@@ -130,6 +132,13 @@ class TestMultiAccountIsolation(unittest.TestCase):
         self.assertEqual(r["db_path"], os.path.join("data_BBB", "trading.db"))
         self.assertEqual(r["log_file"], "account_BBB.log")
         self.assertEqual(r["web_port"], 5001)  # 索引 1
+
+    def test_web_server_port_env_sets_account_port_base(self):
+        r = _run_config_in_subprocess(
+            self.tmpdir, account_id="BBB", extra_env={"WEB_SERVER_PORT": "5100"})
+
+        self.assertEqual(r["web_base_port"], 5100)
+        self.assertEqual(r["web_port"], 5101)
 
     def test_account_c_isolated(self):
         """第 3 个账号验证扩展性 —— 新增账号无需改代码"""

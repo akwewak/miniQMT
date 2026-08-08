@@ -20,8 +20,11 @@ class TestLoadStandaloneConfigDefaults(unittest.TestCase):
     def test_returns_default_config_when_no_file(self):
         old_cwd = os.getcwd()
         old_env = os.environ.pop("XTQUANT_MANAGER_CONFIG", None)
+        old_port = os.environ.pop("XQM_PORT", None)
         if old_env is not None:
             self.addCleanup(os.environ.__setitem__, "XTQUANT_MANAGER_CONFIG", old_env)
+        if old_port is not None:
+            self.addCleanup(os.environ.__setitem__, "XQM_PORT", old_port)
 
         with tempfile.TemporaryDirectory() as tmp:
             try:
@@ -43,6 +46,14 @@ class TestLoadStandaloneConfigDefaults(unittest.TestCase):
 class TestLoadStandaloneConfigFromFile(unittest.TestCase):
     """从 JSON 文件加载配置"""
 
+    def setUp(self):
+        self._orig_env = {
+            "XTQUANT_MANAGER_CONFIG": os.environ.get("XTQUANT_MANAGER_CONFIG"),
+            "XQM_PORT": os.environ.get("XQM_PORT"),
+        }
+        for key in self._orig_env:
+            os.environ.pop(key, None)
+
     def _write_config(self, data: dict) -> str:
         f = tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, encoding="utf-8"
@@ -52,8 +63,11 @@ class TestLoadStandaloneConfigFromFile(unittest.TestCase):
         return f.name
 
     def tearDown(self):
-        # 清理环境变量
-        os.environ.pop("XTQUANT_MANAGER_CONFIG", None)
+        for key, value in self._orig_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_loads_basic_fields(self):
         path = self._write_config({
@@ -110,6 +124,15 @@ class TestLoadStandaloneConfigFromFile(unittest.TestCase):
         os.environ["XTQUANT_MANAGER_CONFIG"] = path
         cfg = load_standalone_config("")  # 不传路径，依赖环境变量
         self.assertEqual(cfg.port, 7777)
+
+    def test_xqm_port_env_overrides_json_port(self):
+        path = self._write_config({"port": 7777})
+        self.addCleanup(os.unlink, path)
+        os.environ["XQM_PORT"] = "8890"
+
+        cfg = load_standalone_config(path)
+
+        self.assertEqual(cfg.port, 8890)
 
     def test_loads_security_fields(self):
         path = self._write_config({

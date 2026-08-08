@@ -224,15 +224,16 @@ def _start_xtquant_manager_server():
         from xtquant_manager import XtQuantServer, XtQuantServerConfig, XtQuantManager
         from xtquant_manager.account import AccountConfig
 
+        xqm_port = getattr(config, "XTQUANT_MANAGER_PORT", 8888)
         srv_cfg = XtQuantServerConfig(
             host="127.0.0.1",
-            port=8888,
+            port=xqm_port,
             api_token=getattr(config, "XTQUANT_MANAGER_TOKEN", ""),
             rate_limit=getattr(config, "XTQUANT_MANAGER_RATE_LIMIT", 600),
         )
         server = XtQuantServer(config=srv_cfg)
         server.start(blocking=False)
-        logger.info("✓ XtQuantManager HTTP 服务已启动 (127.0.0.1:8888)")
+        logger.info(f"✓ XtQuantManager HTTP 服务已启动 (127.0.0.1:{xqm_port})")
 
         # 注册所有账号（支持单账号和多账号两种配置格式）
         manager = XtQuantManager.get_instance()

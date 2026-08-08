@@ -85,6 +85,24 @@ class StandaloneConfig:
     accounts: List[AccountEntry] = field(default_factory=list)
 
 
+def _env_int(name: str, default: int, min_value=None, max_value=None) -> int:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    raw = str(value).strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        raw = raw[1:-1]
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if min_value is not None and parsed < min_value:
+        return default
+    if max_value is not None and parsed > max_value:
+        return default
+    return parsed
+
+
 def load_standalone_config(config_path: str = "") -> StandaloneConfig:
     """
     从 JSON 文件加载独立运行配置。
@@ -99,7 +117,9 @@ def load_standalone_config(config_path: str = "") -> StandaloneConfig:
     """
     path = _resolve_config_path(config_path)
     if not path:
-        return StandaloneConfig()
+        defaults = StandaloneConfig()
+        defaults.port = _env_int("XQM_PORT", defaults.port, 1, 65535)
+        return defaults
 
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -147,7 +167,7 @@ def _parse_config(data: Dict[str, Any]) -> StandaloneConfig:
 
     return StandaloneConfig(
         host=data.get("host", defaults.host),
-        port=data.get("port", defaults.port),
+        port=_env_int("XQM_PORT", data.get("port", defaults.port), 1, 65535),
         api_token=data.get("api_token", defaults.api_token),
         allowed_ips=data.get("allowed_ips", defaults.allowed_ips),
         rate_limit=data.get("rate_limit", defaults.rate_limit),
