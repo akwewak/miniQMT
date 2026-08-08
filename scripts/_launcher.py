@@ -972,7 +972,7 @@ def _xqm_config_path() -> Path:
 
 def _ensure_xqm_config(host: str = "0.0.0.0") -> Path | None:
     """从 account_config.json 自动生成 xtquant_manager_config.json。
-    账号列表从 account_config.json 读取，其他参数使用默认值。
+    账号配置统一保留在 account_config.json，这里只生成网关运行参数。
     """
     config_path = CONFIG_PATH  # account_config.json
     if not config_path.exists():
@@ -984,17 +984,17 @@ def _ensure_xqm_config(host: str = "0.0.0.0") -> Path | None:
         return None
 
     accounts = cfg.get("accounts") or []
+    if not isinstance(accounts, list):
+        accounts = []
     if not accounts:
         # 单账号兼容
-        acc_id = cfg.get("account_id", "")
-        if acc_id:
-            accounts = [{
-                "account_id": acc_id,
-                "account_type": cfg.get("account_type", "STOCK"),
-                "qmt_path": cfg.get("qmt_path", ""),
-            }]
+        accounts = [cfg] if cfg.get("account_id") else []
 
-    if not accounts:
+    valid_accounts = [
+        a for a in accounts
+        if isinstance(a, dict) and a.get("account_id") and a.get("qmt_path")
+    ]
+    if not valid_accounts:
         return None
 
     # 构建 xtquant_manager 配置
@@ -1004,21 +1004,12 @@ def _ensure_xqm_config(host: str = "0.0.0.0") -> Path | None:
         "api_token": "",
         "rate_limit": 600,
         "enable_stop_profit": True,
-        "accounts": [
-            {
-                "account_id": a["account_id"],
-                "qmt_path": a.get("qmt_path", ""),
-                "account_type": a.get("account_type", "STOCK"),
-            }
-            for a in accounts
-            if a.get("account_id")
-        ],
     }
 
     out_path = XQM_CONFIG_PATH
     out_path.write_text(json.dumps(xqm_cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"  ✓ 已从 account_config.json 自动生成配置: {out_path}")
-    print(f"    共 {len(xqm_cfg['accounts'])} 个账号")
+    print(f"  ✓ 已生成 xtquant_manager 网关配置: {out_path}")
+    print(f"    账号配置统一读取: {config_path}")
     return out_path
 
 

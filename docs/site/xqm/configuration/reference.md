@@ -24,7 +24,14 @@
   "initial_take_profit_pullback_ratio": 0.005,
   "initial_take_profit_sell_ratio": 0.6,
   "stop_profit_interval": 3.0,
-  "stop_profit_dedup_seconds": 60.0,
+  "stop_profit_dedup_seconds": 60.0
+}
+```
+
+## account_config.json 账号字段示例
+
+```json
+{
   "accounts": [
     {
       "account_id": "必填",
@@ -70,7 +77,7 @@
 | `stop_profit_interval` | float | `3.0` | 配置文件会解析；当前启动透传尚未接入，运行时字段名为 `monitor_interval` |
 | `stop_profit_dedup_seconds` | float | `60.0` | 配置文件会解析；当前 `/api/v1/stop-profit/config` 未暴露该字段，使用 `StopProfitConfig` 默认 |
 
-## AccountConfig 参数
+## account_config.json 账号参数
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|

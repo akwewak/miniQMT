@@ -7,15 +7,10 @@
 - 两个 QMT 客户端实例分别登录不同账号
 - 两个账号的 `userdata_mini` 目录**必须不同**（通常位于不同安装路径下）
 
-## 配置文件
+## 账号配置（account_config.json）
 
 ```json
 {
-  "host": "127.0.0.1",
-  "port": 8888,
-  "api_token": "",
-  "health_check_interval": 30.0,
-  "reconnect_cooldown": 60.0,
   "accounts": [
     {
       "account_id": "55009640",
@@ -30,6 +25,18 @@
       "call_timeout": 3.0
     }
   ]
+}
+```
+
+## 网关配置（xtquant_manager_config.json）
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8888,
+  "api_token": "",
+  "health_check_interval": 30.0,
+  "reconnect_cooldown": 60.0
 }
 ```
 

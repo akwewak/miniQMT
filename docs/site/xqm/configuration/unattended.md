@@ -4,15 +4,10 @@
 
 ## 推荐配置
 
+账号配置（`account_config.json`）：
+
 ```json
 {
-  "host": "127.0.0.1",
-  "port": 8888,
-  "health_check_interval": 30.0,
-  "reconnect_cooldown": 60.0,
-  "watchdog_interval": 10.0,
-  "watchdog_restart_cooldown": 30.0,
-  "heartbeat_interval": 1800.0,
   "accounts": [
     {
       "account_id": "55009640",
@@ -21,6 +16,20 @@
       "max_reconnect_attempts": 5
     }
   ]
+}
+```
+
+网关运行配置（`xtquant_manager_config.json`）：
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8888,
+  "health_check_interval": 30.0,
+  "reconnect_cooldown": 60.0,
+  "watchdog_interval": 10.0,
+  "watchdog_restart_cooldown": 30.0,
+  "heartbeat_interval": 1800.0
 }
 ```
 

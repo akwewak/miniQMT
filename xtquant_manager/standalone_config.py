@@ -5,7 +5,7 @@ StandaloneConfig — 独立运行模式配置加载器
 从 JSON 文件加载配置，不依赖 miniQMT 的 config.py。
 优先级：显式路径 > 环境变量 XTQUANT_MANAGER_CONFIG > 当前目录 xtquant_manager_config.json > 默认值
 
-配置文件格式（xtquant_manager_config.json）:
+配置文件格式（xtquant_manager_config.json，仅保存网关运行参数）:
 {
   "host": "127.0.0.1",
   "port": 8888,
@@ -20,28 +20,23 @@ StandaloneConfig — 独立运行模式配置加载器
   "reconnect_cooldown": 60.0,
   "heartbeat_interval": 1800.0,
   "watchdog_interval": 10.0,
-  "watchdog_restart_cooldown": 30.0,
-  "accounts": [
-    {
-      "account_id": "TEST_ACC_1",
-      "qmt_path": "C:/path/to/userdata_mini",
-      "account_type": "STOCK",
-      "call_timeout": 3.0,
-      "reconnect_base_wait": 60.0,
-      "max_reconnect_attempts": 5
-    }
-  ]
+  "watchdog_restart_cooldown": 30.0
 }
+
+账号配置统一从 account_config.json 读取。
 """
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+LOGGER = logging.getLogger("xtquant_manager.standalone_config")
+
 
 @dataclass
 class AccountEntry:
-    """独立配置文件中的单个账号条目"""
+    """account_config.json 中的单个账号条目"""
     account_id: str
     qmt_path: str
     account_type: str = "STOCK"
@@ -81,7 +76,7 @@ class StandaloneConfig:
     stop_profit_dedup_seconds: float = 60.0
     # 心跳日志
     heartbeat_interval: float = 1800.0
-    # 账号列表
+    # 账号列表（统一从 account_config.json 加载）
     accounts: List[AccountEntry] = field(default_factory=list)
 
 
@@ -103,6 +98,61 @@ def _env_int(name: str, default: int, min_value=None, max_value=None) -> int:
     return parsed
 
 
+def _resolve_account_config_path(manager_config_path: Optional[str] = None) -> Optional[str]:
+    """查找与网关配置同目录或当前目录下的 account_config.json。"""
+    candidates = []
+    if manager_config_path:
+        base_dir = os.path.dirname(os.path.abspath(manager_config_path))
+        if base_dir:
+            candidates.append(os.path.join(base_dir, "account_config.json"))
+    candidates.append(os.path.abspath("account_config.json"))
+
+    seen = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _account_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    accounts = data.get("accounts") or []
+    if not isinstance(accounts, list):
+        accounts = []
+    if accounts:
+        return [a for a in accounts if isinstance(a, dict)]
+    if data.get("account_id"):
+        return [data]
+    return []
+
+
+def _load_accounts_from_account_config(manager_config_path: Optional[str] = None) -> List[AccountEntry]:
+    path = _resolve_account_config_path(manager_config_path)
+    if not path:
+        LOGGER.warning("未找到 account_config.json，XtQuantManager 将不自动注册账号")
+        return []
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        LOGGER.warning(f"加载 account_config.json 失败，XtQuantManager 将不自动注册账号: {e}")
+        return []
+
+    account_fields = set(AccountEntry.__dataclass_fields__)
+    accounts = []
+    for item in _account_items(data):
+        if not item.get("account_id") or not item.get("qmt_path"):
+            continue
+        accounts.append(AccountEntry(**{k: v for k, v in item.items() if k in account_fields}))
+
+    if not accounts:
+        LOGGER.warning(f"account_config.json 中没有有效账号: {path}")
+    return accounts
+
+
 def load_standalone_config(config_path: str = "") -> StandaloneConfig:
     """
     从 JSON 文件加载独立运行配置。
@@ -119,19 +169,20 @@ def load_standalone_config(config_path: str = "") -> StandaloneConfig:
     if not path:
         defaults = StandaloneConfig()
         defaults.port = _env_int("XQM_PORT", defaults.port, 1, 65535)
+        defaults.accounts = _load_accounts_from_account_config(config_path)
         return defaults
 
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        import logging
-        logging.getLogger("xtquant_manager.standalone_config").warning(
-            f"加载配置文件失败，使用默认配置: {e}"
-        )
-        return StandaloneConfig()
+        LOGGER.warning(f"加载配置文件失败，使用默认配置: {e}")
+        defaults = StandaloneConfig()
+        defaults.port = _env_int("XQM_PORT", defaults.port, 1, 65535)
+        defaults.accounts = _load_accounts_from_account_config(path)
+        return defaults
 
-    return _parse_config(data)
+    return _parse_config(data, path)
 
 
 def _resolve_config_path(config_path: str) -> Optional[str]:
@@ -139,10 +190,7 @@ def _resolve_config_path(config_path: str) -> Optional[str]:
     if config_path:
         if os.path.isfile(config_path):
             return config_path
-        import logging
-        logging.getLogger("xtquant_manager.standalone_config").warning(
-            f"指定的配置文件不存在: {config_path}，将按优先级回退查找"
-        )
+        LOGGER.warning(f"指定的配置文件不存在: {config_path}，将按优先级回退查找")
 
     env_path = os.environ.get("XTQUANT_MANAGER_CONFIG", "")
     if env_path and os.path.isfile(env_path):
@@ -155,15 +203,9 @@ def _resolve_config_path(config_path: str) -> Optional[str]:
     return None
 
 
-def _parse_config(data: Dict[str, Any]) -> StandaloneConfig:
+def _parse_config(data: Dict[str, Any], manager_config_path: Optional[str] = None) -> StandaloneConfig:
     """将 JSON dict 解析为 StandaloneConfig"""
     defaults = StandaloneConfig()
-    _account_fields = set(AccountEntry.__dataclass_fields__)
-    accounts = [
-        AccountEntry(**{k: v for k, v in a.items() if k in _account_fields})
-        for a in data.get("accounts", [])
-        if "account_id" in a and "qmt_path" in a
-    ]
 
     return StandaloneConfig(
         host=data.get("host", defaults.host),
@@ -187,5 +229,5 @@ def _parse_config(data: Dict[str, Any]) -> StandaloneConfig:
         stop_profit_interval=data.get("stop_profit_interval", defaults.stop_profit_interval),
         stop_profit_dedup_seconds=data.get("stop_profit_dedup_seconds", defaults.stop_profit_dedup_seconds),
         heartbeat_interval=data.get("heartbeat_interval", defaults.heartbeat_interval),
-        accounts=accounts,
+        accounts=_load_accounts_from_account_config(manager_config_path),
     )

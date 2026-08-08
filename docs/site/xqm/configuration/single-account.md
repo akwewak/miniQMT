@@ -4,20 +4,23 @@
 
 ## 配置文件
 
-将以下内容保存为项目根目录的 `xtquant_manager_config.json`：
+账号配置保存到项目根目录的 `account_config.json`：
+
+```json
+{
+  "account_id": "55009640",
+  "qmt_path": "C:/QMT/userdata_mini",
+  "account_type": "STOCK"
+}
+```
+
+网关运行参数保存到项目根目录的 `xtquant_manager_config.json`：
 
 ```json
 {
   "host": "127.0.0.1",
   "port": 8888,
-  "api_token": "",
-  "accounts": [
-    {
-      "account_id": "55009640",
-      "qmt_path": "C:/QMT/userdata_mini",
-      "account_type": "STOCK"
-    }
-  ]
+  "api_token": ""
 }
 ```
 
@@ -65,5 +68,5 @@ curl http://127.0.0.1:8888/api/v1/accounts/55009640/status
 ```
 
 !!! note "账号注册时机"
-    使用配置文件启动时，账号在服务启动时自动注册。
-    使用命令行启动时，需通过 `POST /api/v1/accounts` 手动注册。
+    使用配置文件或命令行启动时，服务都会从 `account_config.json` 自动注册账号。
+    临时增加账号仍可通过 `POST /api/v1/accounts` 动态注册。

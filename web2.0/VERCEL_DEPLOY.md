@@ -22,7 +22,17 @@
 
 ### 1.1 创建配置文件
 
-在项目根目录（与 `main.py` 同级）新建 `xtquant_manager_config.json`：
+在项目根目录（与 `main.py` 同级）确认 `account_config.json` 中已有账号配置：
+
+```json
+{
+  "account_id": "你的QMT账号",
+  "qmt_path": "C:/QMT/userdata_mini",
+  "account_type": "STOCK"
+}
+```
+
+再新建或修改 `xtquant_manager_config.json`，只保存网关运行参数：
 
 ```json
 {
@@ -30,14 +40,7 @@
   "port": 8888,
   "api_token": "生成一个随机字符串填入此处",
   "rate_limit": 60,
-  "enable_stop_profit": true,
-  "accounts": [
-    {
-      "account_id": "你的QMT账号",
-      "qmt_path": "C:/QMT/userdata_mini",
-      "account_type": "STOCK"
-    }
-  ]
+  "enable_stop_profit": true
 }
 ```
 
@@ -280,8 +283,8 @@ CLI 会引导你登录，确认项目设置后直接部署。输出类似：
 | 可能原因 | 解决 |
 |---------|------|
 | QMT 未登录 | 在 Windows 上确认 QMT 客户端已启动并登录 |
-| 账号 ID 不匹配 | 确认 `xtquant_manager_config.json` 中 `account_id` 与 QMT 账号一致 |
-| QMT 路径错误 | 确认 `qmt_path` 指向正确的 `userdata_mini` 目录 |
+| 账号 ID 不匹配 | 确认 `account_config.json` 中 `account_id` 与 QMT 账号一致 |
+| QMT 路径错误 | 确认 `account_config.json` 中的 `qmt_path` 指向正确的 `userdata_mini` 目录 |
 
 ### CORS 错误
 

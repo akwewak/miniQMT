@@ -108,20 +108,25 @@ manager.register_account(AccountConfig(
 ))
 ```
 
-**配置文件方式（`xtquant_manager_config.json`，放项目根目录）：**
+**配置文件方式（放项目根目录）：**
+
+`account_config.json`：
+
+```json
+{
+  "account_id": "TEST_ACC_1",
+  "qmt_path": "C:/QMT/userdata_mini",
+  "account_type": "STOCK"
+}
+```
+
+`xtquant_manager_config.json`：
 
 ```json
 {
   "host": "127.0.0.1",
   "port": 8888,
-  "api_token": "",
-  "accounts": [
-    {
-      "account_id": "TEST_ACC_1",
-      "qmt_path": "C:/QMT/userdata_mini",
-      "account_type": "STOCK"
-    }
-  ]
+  "api_token": ""
 }
 ```
 
@@ -133,15 +138,10 @@ manager.register_account(AccountConfig(
 
 **前提**：两个 QMT 客户端实例分别登录，路径不同。
 
-**`xtquant_manager_config.json`：**
+**`account_config.json`：**
 
 ```json
 {
-  "host": "127.0.0.1",
-  "port": 8888,
-  "api_token": "",
-  "health_check_interval": 30.0,
-  "reconnect_cooldown": 60.0,
   "accounts": [
     {
       "account_id": "TEST_ACC_1",
@@ -156,6 +156,18 @@ manager.register_account(AccountConfig(
       "call_timeout": 3.0
     }
   ]
+}
+```
+
+**`xtquant_manager_config.json`：**
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8888,
+  "api_token": "",
+  "health_check_interval": 30.0,
+  "reconnect_cooldown": 60.0
 }
 ```
 
@@ -177,6 +189,18 @@ curl http://127.0.0.1:8888/api/v1/health
 
 **服务端配置（交易机，如 192.168.1.100）：**
 
+`account_config.json`：
+
+```json
+{
+  "account_id": "TEST_ACC_1",
+  "qmt_path": "C:/QMT/userdata_mini",
+  "account_type": "STOCK"
+}
+```
+
+`xtquant_manager_config.json`：
+
 ```json
 {
   "host": "192.168.1.100",
@@ -185,13 +209,7 @@ curl http://127.0.0.1:8888/api/v1/health
   "allowed_ips": ["192.168.1.0/24"],
   "rate_limit": 120,
   "ssl_certfile": "certs/server.crt",
-  "ssl_keyfile": "certs/server.key",
-  "accounts": [
-    {
-      "account_id": "TEST_ACC_1",
-      "qmt_path": "C:/QMT/userdata_mini"
-    }
-  ]
+  "ssl_keyfile": "certs/server.key"
 }
 ```
 
@@ -245,15 +263,10 @@ XTQUANT_MANAGER_TOKEN = ""           # 可选
 
 **关键配置项：**
 
+`account_config.json`：
+
 ```json
 {
-  "host": "127.0.0.1",
-  "port": 8888,
-  "health_check_interval": 30.0,
-  "reconnect_cooldown": 60.0,
-  "watchdog_interval": 10.0,
-  "watchdog_restart_cooldown": 30.0,
-  "heartbeat_interval": 1800.0,
   "accounts": [
     {
       "account_id": "TEST_ACC_1",
@@ -262,6 +275,20 @@ XTQUANT_MANAGER_TOKEN = ""           # 可选
       "max_reconnect_attempts": 5
     }
   ]
+}
+```
+
+`xtquant_manager_config.json`：
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8888,
+  "health_check_interval": 30.0,
+  "reconnect_cooldown": 60.0,
+  "watchdog_interval": 10.0,
+  "watchdog_restart_cooldown": 30.0,
+  "heartbeat_interval": 1800.0
 }
 ```
 
@@ -301,7 +328,14 @@ XTQUANT_MANAGER_TOKEN = ""           # 可选
   "reconnect_cooldown": 60.0,
   "watchdog_interval": 10.0,
   "watchdog_restart_cooldown": 30.0,
-  "heartbeat_interval": 1800.0,
+  "heartbeat_interval": 1800.0
+}
+```
+
+#### `account_config.json` 账号字段
+
+```json
+{
   "accounts": [
     {
       "account_id": "必填",
@@ -315,7 +349,7 @@ XTQUANT_MANAGER_TOKEN = ""           # 可选
 }
 ```
 
-#### `AccountConfig` 参数
+#### `account_config.json` 账号参数
 
 | 参数 | 类型 | 默认 | 说明 |
 |------|------|------|------|
@@ -724,12 +758,10 @@ curl -X DELETE -H "X-API-Token: $TOKEN" $BASE/accounts/TEST_ACC_1
 
 **场景**：账号 A（TEST_ACC_1）做网格交易，账号 B（TEST_ACC_2）做止盈止损，互不干扰。
 
-**配置**（`xtquant_manager_config.json`）：
+**账号配置**（`account_config.json`）：
 
 ```json
 {
-  "host": "127.0.0.1",
-  "port": 8888,
   "accounts": [
     {
       "account_id": "TEST_ACC_1",
@@ -742,6 +774,15 @@ curl -X DELETE -H "X-API-Token: $TOKEN" $BASE/accounts/TEST_ACC_1
       "account_type": "STOCK"
     }
   ]
+}
+```
+
+**网关配置**（`xtquant_manager_config.json`）：
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8888
 }
 ```
 

@@ -159,7 +159,7 @@ class TestSetupWizardCommand(unittest.TestCase):
 
         xqm_cfg = json.loads(_launcher.XQM_CONFIG_PATH.read_text(encoding="utf-8"))
         self.assertEqual(xqm_cfg["host"], "127.0.0.1")
-        self.assertEqual(xqm_cfg["accounts"][0]["account_id"], "ACC001")
+        self.assertNotIn("accounts", xqm_cfg)
 
 
 class TestCheckAccountConfig(unittest.TestCase):

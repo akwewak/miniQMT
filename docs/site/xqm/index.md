@@ -57,19 +57,22 @@
 
 ## 最简配置文件
 
-将以下内容保存为项目根目录的 `xtquant_manager_config.json`，然后运行 `python -m xtquant_manager`：
+将账号写入项目根目录的 `account_config.json`：
+
+```json
+{
+  "account_id": "55009640",
+  "qmt_path": "C:/QMT/userdata_mini",
+  "account_type": "STOCK"
+}
+```
+
+将网关运行参数写入项目根目录的 `xtquant_manager_config.json`，然后运行 `python -m xtquant_manager`：
 
 ```json
 {
   "host": "127.0.0.1",
-  "port": 8888,
-  "accounts": [
-    {
-      "account_id": "55009640",
-      "qmt_path": "C:/QMT/userdata_mini",
-      "account_type": "STOCK"
-    }
-  ]
+  "port": 8888
 }
 ```
 

@@ -7,6 +7,18 @@
 
 ## 服务端配置（交易机，如 192.168.1.100）
 
+账号配置仍保存在交易机项目根目录的 `account_config.json`：
+
+```json
+{
+  "account_id": "55009640",
+  "qmt_path": "C:/QMT/userdata_mini",
+  "account_type": "STOCK"
+}
+```
+
+网关运行参数保存在 `xtquant_manager_config.json`：
+
 ```json
 {
   "host": "192.168.1.100",
@@ -15,13 +27,7 @@
   "allowed_ips": ["192.168.1.0/24"],
   "rate_limit": 120,
   "ssl_certfile": "certs/server.crt",
-  "ssl_keyfile": "certs/server.key",
-  "accounts": [
-    {
-      "account_id": "55009640",
-      "qmt_path": "C:/QMT/userdata_mini"
-    }
-  ]
+  "ssl_keyfile": "certs/server.key"
 }
 ```
 
