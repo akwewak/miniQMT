@@ -16,7 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
@@ -470,6 +470,117 @@ class TestXtQuantManagerStart(unittest.TestCase):
         self.assertIn("8890", captured["cmd"])
         self.assertEqual(captured["env"].get("XQM_PORT"), "8890")
         health_check.assert_called_with(_launcher.XQM_CLIENT_HOST, 8890)
+
+    def test_process_exit_prints_recent_log_tail(self):
+        log_path = self.tmpdir / "xqm_test.log"
+        log_path.write_text(
+            "line 1\n"
+            "需要安装 XtQuantManager HTTP 依赖: "
+            "pip install -r utils/requirements.txt (缺少 uvicorn)\n",
+            encoding="utf-8",
+        )
+
+        class _Proc:
+            pid = 4321
+            returncode = 1
+
+            def poll(self):
+                return self.returncode
+
+        with patch.dict(os.environ, {"XQM_PORT": "", "XQM_LOG_FILE": str(log_path)}), \
+             patch.object(_launcher, "_xqm_is_port_in_use", return_value=False), \
+             patch.object(_launcher, "_xqm_health_check", return_value=False), \
+             patch.object(_launcher, "_xqm_pid_file", return_value=self.pid_path), \
+             patch.object(_launcher.subprocess, "Popen", return_value=_Proc()), \
+             patch.object(_launcher.time, "sleep"), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            rc = _launcher.cmd_xqm_start(None)
+
+        self.assertEqual(rc, 1)
+        output = stdout.getvalue()
+        self.assertIn("进程已退出", output)
+        self.assertIn("最近", output)
+        self.assertIn("uvicorn", output)
+
+
+class TestXtQuantManagerStartupDiagnostics(unittest.TestCase):
+    """XtQuantManager 启动失败诊断的集成入口测试。"""
+
+    def test_server_runner_nonblocking_start_raises_on_early_failure(self):
+        from xtquant_manager.server_runner import XtQuantServer, XtQuantServerConfig
+
+        server = XtQuantServer(XtQuantServerConfig(enable_stop_profit=True))
+        health_monitor = MagicMock()
+        stop_profit_monitor = MagicMock()
+
+        def fake_run_uvicorn(instance):
+            instance._startup_error = (
+                "需要安装 XtQuantManager HTTP 依赖: "
+                "pip install -r utils/requirements.txt (缺少 uvicorn)"
+            )
+            instance._running = False
+
+        with patch("xtquant_manager.server.create_app", return_value=MagicMock()), \
+             patch("xtquant_manager.server_runner.XtQuantManager.get_instance",
+                   return_value=MagicMock()), \
+             patch("xtquant_manager.server_runner.HealthMonitor",
+                   return_value=health_monitor), \
+             patch("xtquant_manager.server_runner.StopProfitMonitor",
+                   return_value=stop_profit_monitor), \
+             patch.object(XtQuantServer, "_run_uvicorn", fake_run_uvicorn):
+            with self.assertRaisesRegex(RuntimeError, "uvicorn"):
+                server.start(blocking=False)
+
+        health_monitor.stop.assert_called_once()
+        stop_profit_monitor.stop.assert_called_once()
+        self.assertFalse(server.is_running())
+
+    def test_server_runner_records_missing_uvicorn(self):
+        from xtquant_manager.server_runner import XtQuantServer, XtQuantServerConfig
+
+        server = XtQuantServer(XtQuantServerConfig(enable_stop_profit=False))
+        server._app = object()
+        server._running = True
+        original_import = __import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "uvicorn":
+                raise ImportError("No module named 'uvicorn'", name="uvicorn")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            server._run_uvicorn()
+
+        self.assertIn("uvicorn", server._startup_error)
+        self.assertIn("pip install -r utils/requirements.txt", server._startup_error)
+        self.assertFalse(server._running)
+
+    @patch("xtquant_manager.standalone.XtQuantServer")
+    @patch("xtquant_manager.standalone.XtQuantManager")
+    @patch("xtquant_manager.standalone.ServerWatchdog")
+    def test_standalone_http_failure_stops_before_watchdog_and_accounts(
+        self, MockWatchdog, MockManager, MockServer
+    ):
+        from xtquant_manager.standalone_config import StandaloneConfig, AccountEntry
+        from xtquant_manager.standalone import StandaloneApplication
+
+        mock_server_instance = MagicMock()
+        mock_server_instance.start.side_effect = RuntimeError("缺少 uvicorn")
+        MockServer.return_value = mock_server_instance
+        mock_manager_instance = MagicMock()
+        MockManager.get_instance.return_value = mock_manager_instance
+
+        cfg = StandaloneConfig(
+            accounts=[AccountEntry(account_id="TEST_ACC_1", qmt_path="C:/mock/path")]
+        )
+        app = StandaloneApplication(cfg)
+
+        with self.assertRaisesRegex(RuntimeError, "uvicorn"):
+            app.run()
+
+        mock_server_instance.stop.assert_called_once()
+        MockWatchdog.return_value.start.assert_not_called()
+        mock_manager_instance.register_account.assert_not_called()
 
 
 class TestWeb2FlaskAutoStart(unittest.TestCase):

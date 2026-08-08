@@ -1032,6 +1032,29 @@ def _xqm_log_file() -> Path:
     return p if p.is_absolute() else PROJECT_ROOT / p
 
 
+def _xqm_print_log_tail(line_count: int = 20) -> None:
+    """启动失败时直接打印日志尾部，避免用户错过关键错误。"""
+    log_file = _xqm_log_file()
+    if not log_file.exists():
+        print(f"  日志文件不存在: {log_file}")
+        return
+    try:
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception as e:
+        print(f"  读取日志失败: {e}")
+        return
+
+    tail = lines[-line_count:]
+    if not tail:
+        print(f"  日志文件为空: {log_file}")
+        return
+
+    print(f"  最近 {len(tail)} 行日志:")
+    print("  " + "-" * 60)
+    for line in tail:
+        print(f"  {line}")
+
+
 def _xqm_process_name(pid: str) -> str:
     try:
         import csv
@@ -1224,6 +1247,7 @@ def cmd_xqm_start(_args) -> int:
             _xqm_pid_file().unlink(missing_ok=True)
             print(f"  ✗ xtquant_manager 进程已退出 (退出码={proc.returncode})")
             print(f"  请查看日志: {_xqm_log_file()}")
+            _xqm_print_log_tail(20)
             return 1
 
     print(f"  ⚠ 服务已启动但健康检查超时，稍后请访问 http://{XQM_CLIENT_HOST}:{port}/api/v1/health 确认")

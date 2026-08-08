@@ -120,7 +120,16 @@ class StandaloneApplication:
         """创建并启动 HTTP 服务（后台线程）"""
         with self._server_lock:
             self._server = XtQuantServer(config=self._build_server_config())
-            self._server.start(blocking=False)
+            try:
+                self._server.start(blocking=False)
+            except Exception as e:
+                logger.error(f"HTTP 服务启动失败: {e}")
+                try:
+                    self._server.stop(timeout=5.0)
+                except Exception:
+                    pass
+                self._server = None
+                raise
             logger.info(
                 f"HTTP 服务已启动: "
                 f"{'https' if self._server.config.use_tls else 'http'}://"

@@ -14,7 +14,6 @@ from typing import Optional
 from .manager import XtQuantManager
 from .health_monitor import HealthMonitor
 from .security import SecurityConfig
-from .server import create_app
 from .stop_profit import StopProfitMonitor, StopProfitConfig
 
 try:
@@ -96,6 +95,7 @@ class XtQuantServer:
         self._health_monitor: Optional[HealthMonitor] = None
         self._stop_profit_monitor: Optional[StopProfitMonitor] = None
         self._running = False
+        self._startup_error: Optional[str] = None
 
     def start(self, blocking: bool = False) -> None:
         """
@@ -104,8 +104,20 @@ class XtQuantServer:
         Args:
             blocking: True=阻塞当前线程（独立进程模式），False=后台线程（嵌入模式）
         """
-        # 创建 FastAPI 应用
-        self._app = create_app(self.config.security)
+        self._startup_error = None
+
+        # 创建 FastAPI 应用。延迟导入可以把 fastapi/pydantic 缺失转成明确启动错误。
+        try:
+            from .server import create_app
+            self._app = create_app(self.config.security)
+        except ImportError as e:
+            message = self._format_dependency_error(e)
+            logger.error(message)
+            raise RuntimeError(message) from e
+        except Exception as e:
+            message = f"创建 XtQuantManager HTTP 应用失败: {e}"
+            logger.error(message)
+            raise RuntimeError(message) from e
 
         # 启动健康监控
         manager = XtQuantManager.get_instance()
@@ -132,6 +144,8 @@ class XtQuantServer:
 
         if blocking:
             self._run_uvicorn()
+            if self._startup_error:
+                raise RuntimeError(self._startup_error)
         else:
             self._server_thread = threading.Thread(
                 target=self._run_uvicorn,
@@ -139,8 +153,18 @@ class XtQuantServer:
                 daemon=True,
             )
             self._server_thread.start()
-            # 等待服务启动
-            time.sleep(0.5)
+            # 等待后台线程暴露早期启动错误，避免 uvicorn 未启动却显示成功。
+            deadline = time.time() + 1.0
+            while time.time() < deadline:
+                if self._startup_error:
+                    self._cleanup_startup_failure()
+                    raise RuntimeError(self._startup_error)
+                if not self._server_thread.is_alive():
+                    message = "XtQuantManager HTTP 服务启动失败，uvicorn 线程已退出"
+                    self._startup_error = self._startup_error or message
+                    self._cleanup_startup_failure()
+                    raise RuntimeError(self._startup_error)
+                time.sleep(0.05)
             logger.info(
                 f"XtQuantManager 服务已启动: "
                 f"{'https' if self.config.use_tls else 'http'}://"
@@ -183,6 +207,44 @@ class XtQuantServer:
     def stop_profit_monitor(self) -> Optional[StopProfitMonitor]:
         return self._stop_profit_monitor
 
+    @staticmethod
+    def _format_dependency_error(exc: ImportError) -> str:
+        missing = getattr(exc, "name", "") or str(exc)
+        return (
+            "需要安装 XtQuantManager HTTP 依赖: "
+            "pip install -r utils/requirements.txt "
+            f"(缺少 {missing})"
+        )
+
+    def _cleanup_startup_failure(self) -> None:
+        """启动早期失败时清理已启动的后台组件。"""
+        self._running = False
+
+        if self._stop_profit_monitor is not None:
+            try:
+                self._stop_profit_monitor.stop(timeout=1.0)
+            except Exception as e:
+                logger.warning(f"清理止盈止损监控时出错: {e}")
+            self._stop_profit_monitor = None
+
+        if self._health_monitor is not None:
+            try:
+                self._health_monitor.stop(timeout=1.0)
+            except Exception as e:
+                logger.warning(f"清理健康监控时出错: {e}")
+            self._health_monitor = None
+
+        if self._server is not None:
+            try:
+                self._server.should_exit = True
+            except Exception:
+                pass
+
+        if self._server_thread is not None:
+            if self._server_thread.is_alive():
+                self._server_thread.join(timeout=1.0)
+            self._server_thread = None
+
     def _run_uvicorn(self) -> None:
         """在当前线程中运行 uvicorn"""
         try:
@@ -203,9 +265,11 @@ class XtQuantServer:
             self._server = uvicorn.Server(uvicorn_config)
             self._server.run()
 
-        except ImportError:
-            logger.error("需要安装 uvicorn: pip install uvicorn[standard]")
+        except ImportError as e:
+            self._startup_error = self._format_dependency_error(e)
+            logger.error(self._startup_error)
         except Exception as e:
-            logger.error(f"uvicorn 运行出错: {e}")
+            self._startup_error = f"uvicorn 运行出错: {e}"
+            logger.error(self._startup_error)
         finally:
             self._running = False

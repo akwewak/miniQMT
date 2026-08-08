@@ -175,6 +175,30 @@ class TestStandaloneApplicationLifecycle(unittest.TestCase):
         # 线程应已正常退出
         self.assertFalse(t.is_alive())
 
+    @patch("xtquant_manager.standalone.XtQuantServer")
+    @patch("xtquant_manager.standalone.XtQuantManager")
+    @patch("xtquant_manager.standalone.ServerWatchdog")
+    def test_http_start_failure_stops_before_watchdog_and_accounts(
+        self, MockWatchdog, MockManager, MockServer
+    ):
+        """HTTP 服务启动失败时，应立即退出，不继续启动看门狗或注册账号。"""
+        mock_server_instance = MagicMock()
+        mock_server_instance.start.side_effect = RuntimeError("缺少 uvicorn")
+        MockServer.return_value = mock_server_instance
+
+        mock_manager_instance = MagicMock()
+        MockManager.get_instance.return_value = mock_manager_instance
+
+        accounts = [AccountEntry(account_id="TEST_ACC_1", qmt_path="C:/mock/path")]
+        app = self._make_app(accounts=accounts)
+
+        with self.assertRaisesRegex(RuntimeError, "uvicorn"):
+            app.run()
+
+        mock_server_instance.stop.assert_called_once()
+        MockWatchdog.return_value.start.assert_not_called()
+        mock_manager_instance.register_account.assert_not_called()
+
 
 class TestStandaloneMain(unittest.TestCase):
 
