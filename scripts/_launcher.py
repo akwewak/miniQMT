@@ -1185,19 +1185,28 @@ def cmd_xqm_start(_args) -> int:
     env["MINIQMT_LOG_FILE"] = _xqm_log_file_setting()
     env["XQM_PORT"] = str(port)
 
-    creationflags = 0x00000010
+    log_file = _xqm_log_file()
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = None
+    creationflags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
     try:
+        log_handle = log_file.open("a", encoding="utf-8")
         proc = subprocess.Popen(
             [sys.executable, "-m", XQM_MODULE, "--host", host, "--port", str(port)]
             + (["--config", str(config_path)] if config_arg else []),
             cwd=str(PROJECT_ROOT),
             env=env,
             creationflags=creationflags,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
             close_fds=True,
         )
     except OSError as e:
         print(f"  ✗ 启动 xtquant_manager 失败: {e}")
         return 1
+    finally:
+        if log_handle is not None:
+            log_handle.close()
 
     try:
         _xqm_pid_file().write_text(str(proc.pid), encoding="ascii")

@@ -420,9 +420,12 @@ class TestXtQuantManagerStart(unittest.TestCase):
         def _fake_popen(cmd, **kwargs):
             captured["cmd"] = cmd
             captured["env"] = kwargs.get("env", {})
+            captured["stdout_name"] = kwargs.get("stdout").name
+            captured["stderr"] = kwargs.get("stderr")
             return _Proc()
 
-        with patch.dict(os.environ, {"XQM_PORT": "", "XQM_LOG_FILE": ""}), \
+        log_path = self.tmpdir / "xqm_test.log"
+        with patch.dict(os.environ, {"XQM_PORT": "", "XQM_LOG_FILE": str(log_path)}), \
              patch.object(_launcher, "_xqm_is_port_in_use", return_value=False), \
              patch.object(_launcher, "_xqm_health_check", return_value=True), \
              patch.object(_launcher, "_xqm_pid_file", return_value=self.pid_path), \
@@ -433,7 +436,10 @@ class TestXtQuantManagerStart(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertIn("-m", captured["cmd"])
-        self.assertEqual(captured["env"].get("MINIQMT_LOG_FILE"), _launcher.XQM_LOG_FILE)
+        self.assertEqual(captured["env"].get("MINIQMT_LOG_FILE"), str(log_path))
+        self.assertEqual(captured["env"].get("XQM_PORT"), "8888")
+        self.assertEqual(captured["stdout_name"], str(log_path))
+        self.assertEqual(captured["stderr"], _launcher.subprocess.STDOUT)
 
     def test_start_uses_dotenv_xqm_port(self):
         self.env_path.write_text("XQM_PORT=8890\n", encoding="utf-8")
@@ -451,7 +457,7 @@ class TestXtQuantManagerStart(unittest.TestCase):
             captured["env"] = kwargs.get("env", {})
             return _Proc()
 
-        with patch.dict(os.environ, {"XQM_PORT": "", "XQM_LOG_FILE": ""}), \
+        with patch.dict(os.environ, {"XQM_PORT": "", "XQM_LOG_FILE": str(self.tmpdir / "xqm_test.log")}), \
              patch.object(_launcher, "_xqm_is_port_in_use", return_value=False), \
              patch.object(_launcher, "_xqm_health_check", return_value=True) as health_check, \
              patch.object(_launcher, "_xqm_pid_file", return_value=self.pid_path), \
