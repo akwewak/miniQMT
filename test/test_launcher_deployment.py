@@ -330,6 +330,68 @@ class TestPortInUse(unittest.TestCase):
         self.assertFalse(_launcher._is_port_in_use(port))
 
 
+class TestXtQuantManagerStart(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="launcher_xqm_"))
+        self.cfg_path = self.tmpdir / "xtquant_manager_config.json"
+        self.pid_path = self.tmpdir / ".xqm_manager.pid"
+        self.cfg_path.write_text(json.dumps({"accounts": []}), encoding="utf-8")
+        self._orig_xqm_config = _launcher.XQM_CONFIG_PATH
+        _launcher.XQM_CONFIG_PATH = self.cfg_path
+
+    def tearDown(self):
+        _launcher.XQM_CONFIG_PATH = self._orig_xqm_config
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_port_conflict_without_healthy_xqm_returns_error_and_does_not_spawn(self):
+        with patch.object(_launcher, "_xqm_is_port_in_use", return_value=True), \
+             patch.object(_launcher, "_xqm_health_check", return_value=False), \
+             patch.object(_launcher, "_xqm_read_pid", return_value=None), \
+             patch.object(_launcher, "_xqm_list_port_listeners", return_value=[{
+                 "protocol": "TCP",
+                 "local_address": "0.0.0.0:8888",
+                 "pid": "1234",
+                 "process_name": "python.exe",
+             }]), \
+             patch.object(_launcher.subprocess, "Popen") as popen, \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            rc = _launcher.cmd_xqm_start(None)
+
+        self.assertEqual(rc, 1)
+        popen.assert_not_called()
+        output = stdout.getvalue()
+        self.assertIn("端口 8888 已被占用", output)
+        self.assertIn("PID=1234", output)
+        self.assertIn("xtquant_manager 未启动", output)
+
+    def test_start_sets_xqm_log_file_for_child_process(self):
+        captured = {}
+
+        class _Proc:
+            pid = 4321
+            returncode = None
+
+            def poll(self):
+                return None
+
+        def _fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env", {})
+            return _Proc()
+
+        with patch.object(_launcher, "_xqm_is_port_in_use", return_value=False), \
+             patch.object(_launcher, "_xqm_health_check", return_value=True), \
+             patch.object(_launcher, "_xqm_pid_file", return_value=self.pid_path), \
+             patch.object(_launcher.subprocess, "Popen", side_effect=_fake_popen), \
+             patch.object(_launcher.time, "sleep"), \
+             patch("sys.stdout", new_callable=io.StringIO):
+            rc = _launcher.cmd_xqm_start(None)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("-m", captured["cmd"])
+        self.assertEqual(captured["env"].get("MINIQMT_LOG_FILE"), _launcher.XQM_LOG_FILE)
+
+
 class TestWeb2FlaskAutoStart(unittest.TestCase):
     """web2.0 模式下的 Flask 处置
 

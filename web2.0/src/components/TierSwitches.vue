@@ -113,8 +113,8 @@ function tierTip(t: Tier): string {
             </span>
           </span>
           <span v-if="gridSessions.total" class="badge-slate !text-[9px] !px-1"
-            :title="`会话级开关：${gridSessions.enabled} 个自动 / ${gridSessions.paused} 个暂停`">
-            会话 {{ gridSessions.enabled }}/{{ gridSessions.total }}
+            :title="`活跃会话：${gridSessions.active} 个运行中 / ${gridSessions.total} 个历史总会话；会话级开关：${gridSessions.enabled} 个自动 / ${gridSessions.paused} 个暂停`">
+            会话 {{ gridSessions.active }}/{{ gridSessions.total }}
           </span>
           <span v-else class="badge-slate !text-[9px] !px-1" title="当前没有网格会话">无会话</span>
         </div>

@@ -34,6 +34,7 @@ export function summarizeStopProfit(positions: Position[]): StopProfitSummary {
 /** 会话级网格开关的聚合计数 */
 export interface GridSessionSummary {
   total: number
+  active: number
   enabled: number
   paused: number
 }
@@ -46,8 +47,9 @@ export interface GridSessionSummary {
  */
 export function summarizeGridSessions(sessions: GridSession[]): GridSessionSummary {
   const total = sessions.length
+  const active = sessions.filter(s => s.status === 'active' || s.status === 'stopping').length
   const paused = sessions.filter(s => s.enabled === false).length
-  return { total, enabled: total - paused, paused }
+  return { total, active, enabled: total - paused, paused }
 }
 
 /**

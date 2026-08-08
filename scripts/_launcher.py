@@ -886,6 +886,10 @@ XQM_DEFAULT_HOST = "0.0.0.0"        # 绑定地址：全部网卡（含 WAN/LAN/
 XQM_CLIENT_HOST  = "127.0.0.1"      # 客户端访问地址：本机健康检查/UI 打开（0.0.0.0 不能作客户端目标）
 XQM_DEFAULT_PORT = 8888
 XQM_MODULE = "xtquant_manager"
+XQM_LOG_FILE = os.environ.get("XQM_LOG_FILE", os.path.join("logs", "xqm_manager.log"))
+XQM_START_HEALTH_TIMEOUT = 15
+XQM_PORT_RELEASE_TIMEOUT = 5.0
+XQM_PORT_RELEASE_POLL_INTERVAL = 0.5
 
 
 def _get_lan_ip() -> str:
@@ -978,6 +982,58 @@ def _xqm_read_pid() -> int | None:
         return None
 
 
+def _xqm_log_file() -> Path:
+    p = Path(XQM_LOG_FILE)
+    return p if p.is_absolute() else PROJECT_ROOT / p
+
+
+def _xqm_process_name(pid: str) -> str:
+    try:
+        import csv
+        r = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for row in csv.reader(r.stdout.splitlines()):
+            if len(row) >= 2 and row[1] == str(pid):
+                return row[0]
+    except Exception:
+        pass
+    return ""
+
+
+def _xqm_list_port_listeners(port: int = XQM_DEFAULT_PORT) -> list[dict]:
+    listeners: list[dict] = []
+    try:
+        r = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, timeout=5
+        )
+    except Exception:
+        return listeners
+
+    seen: set[tuple[str, str]] = set()
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        local_address = parts[1]
+        state = parts[-2].upper()
+        pid = parts[-1]
+        if state != "LISTENING" or not local_address.endswith(f":{port}"):
+            continue
+        key = (local_address, pid)
+        if key in seen:
+            continue
+        seen.add(key)
+        listeners.append({
+            "protocol": parts[0],
+            "local_address": local_address,
+            "pid": pid,
+            "process_name": _xqm_process_name(pid),
+        })
+    return listeners
+
+
 def _xqm_is_port_in_use(port: int = XQM_DEFAULT_PORT) -> bool:
     try:
         r = subprocess.run(
@@ -986,6 +1042,31 @@ def _xqm_is_port_in_use(port: int = XQM_DEFAULT_PORT) -> bool:
         return any(f":{port} " in line and "LISTENING" in line for line in r.stdout.splitlines())
     except Exception:
         return False
+
+
+def _xqm_wait_port_free(port: int = XQM_DEFAULT_PORT, timeout: float = XQM_PORT_RELEASE_TIMEOUT) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _xqm_is_port_in_use(port):
+            return True
+        time.sleep(XQM_PORT_RELEASE_POLL_INTERVAL)
+    return not _xqm_is_port_in_use(port)
+
+
+def _xqm_print_port_conflict(port: int) -> None:
+    print(f"  ✗ 端口 {port} 已被占用，xtquant_manager 未启动")
+    listeners = _xqm_list_port_listeners(port)
+    if listeners:
+        print("  占用进程:")
+        for item in listeners:
+            name = item.get("process_name") or "未知进程"
+            print(f"    - PID={item['pid']}  进程={name}  地址={item['local_address']}")
+    else:
+        print("  未能通过 netstat 获取占用进程详情。")
+    print("  处理建议:")
+    print("    1. 如果这是旧网关进程，请先用菜单 [e] 停止，或用 [h] 重启")
+    print("    2. 如果是其他程序，请关闭占用进程后再用 [d] 启动")
+    print("    3. 如需临时换端口，可先执行: set XQM_PORT=8890")
 
 
 def _xqm_health_check(host: str = XQM_CLIENT_HOST, port: int = XQM_DEFAULT_PORT) -> bool:
@@ -1024,12 +1105,22 @@ def cmd_xqm_start(_args) -> int:
         if _xqm_health_check(XQM_CLIENT_HOST, port):
             print(f"  ✓ xtquant_manager 已在运行: {_xqm_access_urls(host, port)}")
             return 0
+
+        print(f"  ⚠ 端口 {port} 被占用，但健康检查失败。")
+        pid = _xqm_read_pid()
+        if pid and pid_alive(pid):
+            print(f"  检测到已记录的 xtquant_manager PID={pid} 仍存活，尝试停止后重启...")
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+            _xqm_pid_file().unlink(missing_ok=True)
+            if _xqm_wait_port_free(port):
+                print("  ✓ 端口已释放，继续启动...")
+            else:
+                print(f"  ✗ 已停止记录的 PID，但端口 {port} 仍被占用。")
+                _xqm_print_port_conflict(port)
+                return 1
         else:
-            print(f"  ⚠ 端口 {port} 被占用但健康检查失败，尝试清理...")
-            pid = _xqm_read_pid()
-            if pid and pid_alive(pid):
-                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
-                time.sleep(1)
+            _xqm_print_port_conflict(port)
+            return 1
 
     config_path = _xqm_config_path()
 
@@ -1045,12 +1136,16 @@ def cmd_xqm_start(_args) -> int:
     data_dir = PROJECT_ROOT / "data"
     data_dir.mkdir(exist_ok=True)
 
+    env = os.environ.copy()
+    env["MINIQMT_LOG_FILE"] = XQM_LOG_FILE
+
     creationflags = 0x00000010
     try:
         proc = subprocess.Popen(
             [sys.executable, "-m", XQM_MODULE, "--host", host, "--port", str(port)]
             + (["--config", str(config_path)] if config_arg else []),
             cwd=str(PROJECT_ROOT),
+            env=env,
             creationflags=creationflags,
             close_fds=True,
         )
@@ -1064,12 +1159,20 @@ def cmd_xqm_start(_args) -> int:
         pass
 
     print(f"  启动中 (PID={proc.pid})，等待服务就绪...")
-    for _ in range(15):
+    for _ in range(XQM_START_HEALTH_TIMEOUT):
         time.sleep(1)
         if _xqm_health_check(XQM_CLIENT_HOST, port):
             print(f"  ✓ xtquant_manager 已启动: {_xqm_access_urls(host, port)}")
             return 0
+
+        if proc.poll() is not None:
+            _xqm_pid_file().unlink(missing_ok=True)
+            print(f"  ✗ xtquant_manager 进程已退出 (退出码={proc.returncode})")
+            print(f"  请查看日志: {_xqm_log_file()}")
+            return 1
+
     print(f"  ⚠ 服务已启动但健康检查超时，稍后请访问 http://{XQM_CLIENT_HOST}:{port}/api/v1/health 确认")
+    print(f"  如需排查启动日志，请用菜单 [i] 或查看: {_xqm_log_file()}")
     return 0
 
 
@@ -1175,9 +1278,9 @@ def cmd_xqm_ui(_args) -> int:
 
 def cmd_xqm_logs(_args) -> int:
     """查看 xtquant_manager 最近日志（读取 logs/xqm_manager.log 尾部）。"""
-    log_file = PROJECT_ROOT / "logs" / "xqm_manager.log"
+    log_file = _xqm_log_file()
     if not log_file.exists():
-        print("  日志文件不存在: logs/xqm_manager.log")
+        print(f"  日志文件不存在: {log_file}")
         print("  启动 xtquant_manager 服务后会自动生成日志")
         return 0
     try:

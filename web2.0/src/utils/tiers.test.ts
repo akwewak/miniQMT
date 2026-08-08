@@ -64,11 +64,12 @@ describe('summarizeStopProfit（个股级止盈开关聚合）', () => {
 
 describe('summarizeGridSessions（会话级网格开关聚合）', () => {
   it('空会话返回全零', () => {
-    expect(summarizeGridSessions([])).toEqual({ total: 0, enabled: 0, paused: 0 })
+    expect(summarizeGridSessions([])).toEqual({ total: 0, active: 0, enabled: 0, paused: 0 })
   })
 
   it('enabled 缺失按启用处理（与后端 DEFAULT 1 一致）', () => {
     const s = summarizeGridSessions([session({}), session({})])
+    expect(s.active).toBe(2)
     expect(s.enabled).toBe(2)
     expect(s.paused).toBe(0)
   })
@@ -79,7 +80,20 @@ describe('summarizeGridSessions（会话级网格开关聚合）', () => {
       session({ enabled: false }),
       session({}),
     ])
-    expect(s).toEqual({ total: 3, enabled: 2, paused: 1 })
+    expect(s).toEqual({ total: 3, active: 3, enabled: 2, paused: 1 })
+  })
+
+  it('只有 active/stopping 计入运行中，历史会话只计入 total', () => {
+    const s = summarizeGridSessions([
+      session({ status: 'active' }),
+      session({ status: 'stopping' }),
+      session({ status: 'active' }),
+      session({ status: 'stopped' }),
+      session({ status: 'completed' }),
+      session({ status: 'paused' }),
+    ])
+    expect(s.active).toBe(3)
+    expect(s.total).toBe(6)
   })
 
   it('enabled + paused 恒等于 total', () => {
