@@ -7,21 +7,28 @@
 ## [Unreleased]
 
 ### Security
-> 对 web1.0 / web2.0 / Flask 后端 / xtquant_manager 网关做了一轮完整网络安全审查，本次提交先修复网关侧的三项 P0。Flask 侧与前端 XSS 链的修复另行提交。
+> 对 web1.0 / web2.0 / Flask 后端 / xtquant_manager 网关做了一轮完整网络安全审查。本批合并网关侧三项 P0 与 Flask 后端三处 Token 鉴权遗漏；前端 XSS 链另行提交。
 
+### Security — xtquant_manager 网关
 - **网关只读端点完全无鉴权，等同于把财务数据公开**：11 个 Flask 兼容端点（`/api/status`、`/api/positions`、`/api/positions-all`、`/api/accounts`、`/api/connection/status`、`/api/config`、`/api/macd/advice`、`/api/trade-records`、`/api/grid/sessions`、`/api/orders`、`/api/grid/ledger/{id}`）此前均无 `Depends(verify_token)`，任何能连上 `:8888` 的人无需任何凭证即可读取持仓成本、盈亏、历史成交与策略参数。这是刻意设计（源码注释写明"互联网只读用户没有 token 也要能拿账号列表"），但该前提在网关默认绑定 `0.0.0.0` 时不成立。现全部要求 `X-API-Token`。
 - **止盈止损端点无鉴权，可被未授权关闭**：`/api/v1/stop-profit/status`（GET）、`/api/v1/stop-profit/config`（POST）、`/api/v1/stop-profit/toggle`（POST）同样缺少保护。`POST /api/v1/stop-profit/toggle?enabled=false` 可在无凭证下关闭全部账号的止损监控，`/config` 可把 `stop_loss_ratio` 改到极端值——这不是信息泄露，是可直接造成资金损失的未授权写操作。三者均已补 Token 保护。
 - **伪造 `X-Forwarded-For` 可绕过全部认证**：`_get_client_ip()` 无条件信任该请求头，而 `verify_api_key()` 对 `local_ips` 免 Token 放行，且同一个可伪造的 `client_ip` 同时驱动 Token 放行、IP 白名单、速率限制三处判定。攻击者只需发送 `X-Forwarded-For: 127.0.0.1` 即可冒充本机，一次绕过三道防线并通过轮换该值绕过限流。新增 `trust_proxy` 配置项（默认 `false`，即不再读取该头），仅在网关确实位于受信任反向代理之后才应开启。
 - `/api/v1/health/{account_id}` 改为需要 Token；`/api/v1/health`（全局）保留免 Token 可达以支持存活探测与前端"测试连接"（用户此时尚未配置 Token），但未携带有效 Token 时只返回 `total` / `healthy` 计数，`accounts` 明细置空——账号 ID 是遍历其他账号数据的入口，与刚收紧的 `/api/accounts` 是同一份数据，全公开会架空该保护。
 - 消除 `_get_client_ip` 的重复实现：`server.py` 的副本改为委托给 `security.py`，避免两份逻辑各自演进（本次漏洞正是两处重复实现之一）。
 
+### Security — Flask 后端（`web_server.py`）
+> 在 `QMT_API_TOKEN` 已配置的前提下，补齐 Token 防线上的三处遗漏——这三处是 Flask 后端仅有的绕过 Token 直接可达的写/敏感端点。
+
+- **两个网格模板端点漏挂鉴权**：`DELETE /api/grid/template/<name>` 与 `PUT /api/grid/template/<name>/default` 缺少 `@require_token`，是 Flask 后端仅有的两个无鉴权写端点（同文件其余 19 个 POST/PUT/DELETE 均已挂装饰器）。攻击者无需 Token 即可删除任意网格模板或篡改默认模板。现已补齐装饰器——至此 Flask 所有写端点 100% 受 Token 保护。
+- **`/api/debug/status` 泄露真实券商账号 ID**：该端点无鉴权，返回 `config_account_id`、`qmt_acc_account_id`、`env_QMT_ACCOUNT_ID` 的明文真实账号 ID，以及本机文件路径。账号 ID 是可复用的身份标识，配合其他泄露面可用于针对性攻击。现已加 `@require_token` 保护，并对账号 ID 字段做脱敏（仅保留后 4 位）。本机文件路径予以保留（对本地多账号诊断有用，且非可复用凭证）。
+
 ### Fixed
 - `trust_proxy` 配置在 `StandaloneConfig` → `XtQuantServerConfig` 链路上补齐透传，否则该字段在生产启动路径（`standalone.py`）下会是死配置，用户写进 `xtquant_manager_config.json` 也不生效。
 - **网关手测 UI 对 `/api/v1/health/{id}` 永不发送 Token**：`test_ui_a.html` / `test_ui_b.html` 的 `doHealth()` / `doHealthAccount()` 均以 `noToken=true` 调用 `req()`（基于"健康检查无需认证"的旧假设）。该端点现已要求 Token，若不同步修改，用户在手测 UI 中会稳定收到 401 且无从排查；`/health` 总览也会因不带 Token 而拿不到 `accounts` 明细、健康卡片渲染为空。两处均已改为正常发送 Token，并同步修正端点说明与标签样式。
 
 ### Tests
-- `test/live_http_xtquant_manager.py` 原用 `X-Forwarded-For` 模拟远程客户端——正是本次禁用的机制。若不处理，其 401 断言会在实际返回 200 时依然"通过"，即**测试会假装安全**。已为该用例显式传入 `trust_proxy=True` 保留模拟意图，并新增两条断言锁住新行为：远程无 Token 时 `/health` 不返回账号明细、伪造 XFF 无法绕过 Token（`trust_proxy=False` 下应 401）。
-- 回归验证：`test/test_xtquant_manager/` 222 用例、`test_xqm_flask_compat` + `test_xqm_monitor_endpoints` + `test_multi_account_isolation`、`live_http_xtquant_manager.py` 32/32，全部通过。
+- 网关：`test/live_http_xtquant_manager.py` 原用 `X-Forwarded-For` 模拟远程客户端——正是本次禁用的机制。若不处理，其 401 断言会在实际返回 200 时依然"通过"，即**测试会假装安全**。已为该用例显式传入 `trust_proxy=True` 保留模拟意图，并新增两条断言锁住新行为：远程无 Token 时 `/health` 不返回账号明细、伪造 XFF 无法绕过 Token（`trust_proxy=False` 下应 401）。回归验证：`test/test_xtquant_manager/` 222 用例、`test_xqm_flask_compat` + `test_xqm_monitor_endpoints` + `test_multi_account_isolation`、`live_http_xtquant_manager.py` 32/32，全部通过。
+- Flask：web_api 组 170/170、system_integration 39/39、grid_validation 38/38 通过；实测三个端点无 Token 返回 401、带 Token 返回 200，真实账号 ID `25105132` 脱敏为 `****5132`。
 
 ### Docs
 - `docs/site/xqm/guides/security.md`：删除"`/api/v1/health` 和 `/api/v1/health/{id}` 始终无需 Token"的过时描述，新增「端点鉴权一览」与「反向代理与 X-Forwarded-For」两节，安全级别对比表补 `trust_proxy` 列。
