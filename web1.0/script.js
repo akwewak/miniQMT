@@ -29,6 +29,14 @@
     // 工作用的API端点对象
     let API_ENDPOINTS = { ...ORIGINAL_API_ENDPOINTS };
 
+    // HTML 转义：用于所有 innerHTML 拼接点，防止后端/用户可控数据触发 XSS。
+    // 与日志块内的 escapeLogHtml 同实现；提升到顶部供全文件复用。
+    function escapeHtml(value) {
+        return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]));
+    }
+
     // 轮询设置
     let POLLING_INTERVAL = 5000; // 默认5秒
     const ACTIVE_POLLING_INTERVAL = 3000; // 活跃状态：3秒
@@ -1014,9 +1022,10 @@
                 const stocks = response.data;
                 
                 // 构建对话框内容 - 使用可编辑的文本框而非只读显示
+                // 转义防止 stock_code 含 </textarea><script> 时逃逸 textarea 执行脚本
                 const content = `
                     <p class="mb-2">以下股票将被用于随机买入（可编辑）：</p>
-                    <textarea id="randomPoolStockInput" class="w-full border rounded p-2 h-40">${stocks.join('\n')}</textarea>
+                    <textarea id="randomPoolStockInput" class="w-full border rounded p-2 h-40">${escapeHtml(stocks.join('\n'))}</textarea>
                 `;
                 
                 // 显示对话框
@@ -1210,17 +1219,23 @@
     function createStockRow(stock) {
         const row = document.createElement('tr');
         const normalizedCode = normalizeStockCode(stock.stock_code);
+        // 股票代码只允许 6 位数字；畸形输入降级为占位 '------'。
+        // safeCode 用于所有内联事件 / data 属性 / 显示列——纯数字不可能注入，
+        // 规避了 HTML 属性 + JS 字符串双重上下文转义的坑。
+        const safeCode = /^\d{6}$/.test(normalizedCode) ? normalizedCode : '------';
         // ⭐ 使用后端返回的grid_session_active字段来判断是否有活跃的网格会话
         const hasActiveGrid = stock.grid_session_active === true;
         // 如果有活跃网格，添加绿色边框（视觉指示）
         row.className = hasActiveGrid
             ? 'hover:bg-gray-50 even:bg-gray-100 border-l-4 border-l-green-500'
             : 'hover:bg-gray-50 even:bg-gray-100';
-        row.dataset.stockCode = normalizedCode; // 添加标识属性
+        row.dataset.stockCode = safeCode; // 添加标识属性
 
         // 计算关键值
         const changePercentage = parseFloat(stock.change_percentage || 0);
         const profitRatio = parseFloat(stock.profit_ratio || 0);
+        const stockName = escapeHtml(stock.stock_name || stock.name || '--');
+        const openDate = escapeHtml((stock.open_date || '').split(' ')[0]);
 
         // ⭐ checkbox根据后端返回的grid_session_active字段设置初始状态
         // 后续的状态更新仍由 updateAllGridTradingStatus 独立管理
@@ -1228,14 +1243,14 @@
         row.innerHTML = `
             <td class="border p-2 text-center">
                 <input type="checkbox" class="holding-checkbox"
-                       data-id="${stock.id || normalizedCode}"
-                       data-stock-code="${normalizedCode}"
+                       data-id="${safeCode}"
+                       data-stock-code="${safeCode}"
                        ${hasActiveGrid ? 'checked' : ''}
-                       onmouseenter="showGridTooltip(event, '${normalizedCode}')"
+                       onmouseenter="showGridTooltip(event, '${safeCode}')"
                        onmouseleave="hideGridTooltip()">
             </td>
-            <td class="border p-2">${normalizedCode || '--'}</td>
-            <td class="border p-2 cursor-help" onmouseenter="showAdviceTooltip(event, '${normalizedCode}')" onmouseleave="hideAdviceTooltip()">${stock.stock_name || stock.name || '--'}</td>
+            <td class="border p-2">${safeCode}</td>
+            <td class="border p-2 cursor-help" onmouseenter="showAdviceTooltip(event, '${safeCode}')" onmouseleave="hideAdviceTooltip()">${stockName}</td>
             <td class="border p-2 ${changePercentage >= 0 ? 'text-red-600' : 'text-green-600'}">${changePercentage.toFixed(2)}%</td>
             <td class="border p-2">${parseFloat(stock.current_price || 0).toFixed(2)}</td>
             <td class="border p-2">${parseFloat(stock.cost_price || 0).toFixed(2)}</td>
@@ -1246,7 +1261,7 @@
             <td class="border p-2 text-center"><input type="checkbox" ${stock.profit_triggered ? 'checked' : ''} disabled></td>
             <td class="border p-2">${parseFloat(stock.highest_price || 0).toFixed(2)}</td>
             <td class="border p-2">${parseFloat(stock.stop_loss_price || 0).toFixed(2)}</td>
-            <td class="border p-2 whitespace-nowrap">${(stock.open_date || '').split(' ')[0]}</td>
+            <td class="border p-2 whitespace-nowrap">${openDate}</td>
             <td class="border p-2">${parseFloat(stock.base_cost_price || stock.cost_price || 0).toFixed(2)}</td>
             <td class="border p-2 text-center">
                 <label class="sp-switch" title="动态止盈止损">
@@ -1450,10 +1465,9 @@
         default: '默认'
     };
 
+    // 复用顶部已提升的 escapeHtml，避免两份实现各自演进。
     function escapeLogHtml(value) {
-        return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[ch]));
+        return escapeHtml(value);
     }
 
     function getLogStrategyClass(strategyLabel) {
@@ -3122,17 +3136,17 @@
         tbody.innerHTML = data.trades.map(trade => {
             const side = String(trade.trade_type || '').toUpperCase();
             const sideClass = side === 'BUY' ? 'text-red-600' : 'text-green-600';
-            const sideText = side === 'BUY' ? '买入' : side === 'SELL' ? '卖出' : side || '--';
+            const sideText = side === 'BUY' ? '买入' : side === 'SELL' ? '卖出' : (side || '--');
             const timeText = trade.trade_time ? String(trade.trade_time).replace('T', ' ').slice(0, 19) : '--';
             return `
                 <tr class="hover:bg-gray-50">
-                    <td class="px-3 py-2 text-gray-700">${timeText}</td>
-                    <td class="px-3 py-2 font-medium ${sideClass}">${sideText}</td>
+                    <td class="px-3 py-2 text-gray-700">${escapeHtml(timeText)}</td>
+                    <td class="px-3 py-2 font-medium ${sideClass}">${escapeHtml(sideText)}</td>
                     <td class="px-3 py-2 text-right">${formatGridNumber(trade.trigger_price)}</td>
                     <td class="px-3 py-2 text-right">${Number(trade.volume || 0).toFixed(0)}</td>
                     <td class="px-3 py-2 text-right">${formatGridNumber(trade.amount)}</td>
                     <td class="px-3 py-2 text-right">${formatGridNumber(trade.grid_level)}</td>
-                    <td class="px-3 py-2 text-gray-500">${trade.trade_id || '--'}</td>
+                    <td class="px-3 py-2 text-gray-500">${escapeHtml(trade.trade_id || '--')}</td>
                 </tr>
             `;
         }).join('');
@@ -3663,11 +3677,12 @@
         if (!data || data.status !== 'success') return;
 
         const difDea = (data.dif !== null && data.dif !== undefined)
-            ? `DIF ${data.dif} / DEA ${data.dea}` : `DEA ${data.dea}`;
+            ? `DIF ${escapeHtml(data.dif)} / DEA ${escapeHtml(data.dea)}` : `DEA ${escapeHtml(data.dea)}`;
+        // 后端字段均为人类可读文本，逐字段转义防止上游被污染时执行脚本
         tooltip.innerHTML = `
-            <div class="advice-header"><span class="advice-trend">${data.trend || ''}</span><span class="advice-badge">操作建议</span></div>
-            <div class="advice-line">底仓：<b>${data.base_position || '--'}</b>；网格：<b>${data.grid || '--'}</b></div>
-            <div class="advice-meta">${data.cross || ''}<br>${difDea}｜${data.updated || ''}（${data.code || code}）</div>
+            <div class="advice-header"><span class="advice-trend">${escapeHtml(data.trend || '')}</span><span class="advice-badge">操作建议</span></div>
+            <div class="advice-line">底仓：<b>${escapeHtml(data.base_position || '--')}</b>；网格：<b>${escapeHtml(data.grid || '--')}</b></div>
+            <div class="advice-meta">${escapeHtml(data.cross || '')}<br>${difDea}｜${escapeHtml(data.updated || '')}（${escapeHtml(data.code || code)}）</div>
             ${data.series && data.series.length ? `<div class="advice-chart">${renderMacdChartSVG(data.series)}</div>` : ''}
         `;
 
@@ -3809,10 +3824,12 @@
         list.innerHTML = codes.map(code => {
             const c = window.normalizeStockCode(code);
             const name = nameMap[c] || code;
-            const safeCode = c.replace(/'/g, "\\'");
+            // 股票代码只允许 6 位数字；畸形输入降级为占位，
+            // 确保拼进 onmouseenter 的 code 不可能注入（无需双重上下文转义）
+            const safeCode = /^\d{6}$/.test(c) ? c : '------';
             return `<div class="flex items-center gap-2 px-2 py-1.5 bg-white rounded border text-sm">
-                <span class="text-gray-400 text-xs font-mono">${code}</span>
-                <span class="cursor-help font-medium text-blue-700" onmouseenter="showAdviceTooltip(event, '${safeCode}')" onmouseleave="hideAdviceTooltip()">${name}</span>
+                <span class="text-gray-400 text-xs font-mono">${escapeHtml(code)}</span>
+                <span class="cursor-help font-medium text-blue-700" onmouseenter="showAdviceTooltip(event, '${safeCode}')" onmouseleave="hideAdviceTooltip()">${escapeHtml(name)}</span>
             </div>`;
         }).join('');
     };

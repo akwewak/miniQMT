@@ -38,6 +38,24 @@
 - `docs/site/miniqmt/web-frontend.md`：连接设置面板 Token 字段由"留空=不验证"改为"远程访问必填"，并说明测试连接能通不代表数据端点可用。
 - `CLAUDE.md`：网关能力边界补充鉴权要求与 `trust_proxy` 约束。
 
+### Security — web1.0 前端 XSS（`web1.0/script.js`）
+> 路线 A：用转义堵死 innerHTML 注入点，不上 CSP / 不动 Tailwind / 不改 Token 存储。审查发现的 5 处拼接后端或用户可控数据的 innerHTML 全部修复。
+
+- **`escapeHtml` 提升 + 复用**：原先完备的转义函数 `escapeLogHtml`（覆盖 `& < > " '`）被困在日志块作用域内，其余 4 处拼接点够不到。提升一份 `escapeHtml` 到 `DOMContentLoaded` 回调顶部，原 `escapeLogHtml` 改为委托，避免两份实现各自演进。
+- **5 处注入点**：
+    - 备选池 `<textarea>`（`stocks.join('\n')`）—— `</textarea><script>` 逃逸，已套 `escapeHtml`。
+    - 网格交易明细 `trade_id` / `trade_time` / `trade_type` —— 后端字段未转义直插，已套 `escapeHtml`。
+    - MACD 操盘建议 tooltip 的 `trend` / `base_position` / `grid` / `cross` / `updated` / `code` / `dif` / `dea` —— 逐字段转义。
+    - 预览股票名称列表的 `name`（后端）/ `code`（用户输入）—— 转义；原仅转义单引号的 `safeCode` 改为 `^\d{6}$` 白名单。
+    - 持仓行 `createStockRow` 的 `stock_name` / `open_date` —— 转义；`stock_code` 经 `^\d{6}$` 白名单降级为 `safeCode`（畸形输入 → `------`），用于所有内联事件 / `data-*` 属性 / 显示列。
+- **设计取舍**：`createStockRow` 与预览列表的内联事件（`onmouseenter="showAdviceTooltip(event, '${code}')"`）采用**白名单**而非「改 `addEventListener`」——code 永远只能是纯数字，从根本上规避 HTML 属性 + JS 字符串双重上下文转义的坑，改动最小、零交互行为风险。日志块 [script.js:1564](web1.0/script.js#L1564) 同模式的 code 已走 `escapeLogHtml`，非 XSS（`&#39;` 突破不了属性），保持原样。
+- **未做（有意）**：CSP（Tailwind CDN 会削弱其意义）、Tailwind 本地化、web2.0 `v-html`（审查确认无字符串注入通路）、Token 改 httpOnly cookie（架构变更，单独立项）。
+
+### Tests — web1.0 前端
+- `node --check` 语法通过。
+- XSS 负向对照（注入 `<img src=x onerror=alert(1)>` 与 `');alert(2);//`）：修复后转义名称无裸 `<`、白名单 code 无可突破字符；对照（未转义）确含可执行 payload——证明测试有效而非空跑。
+- 回归：见本次 `--all-with-fast` 结果。
+
 ## [3.8.6] - 2026-08-07
 
 > 本版本聚焦**重连状态一致性与信号可靠性**：修复重连瞬间旧 callback 污染新连接、瞬时止盈信号在被消费前丢失两类隐蔽缺陷，补齐重连后的持仓刷新与 QMT 自恢复探测，并让无法回收的超时线程变得可观测。同时包含此前未发布的模拟模式补仓修复。
