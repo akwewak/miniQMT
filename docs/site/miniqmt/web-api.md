@@ -7,7 +7,11 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 | Flask 直连 (`web_server.py`) | `http://127.0.0.1:5000`（每账号一个端口） | web1.0、单机完整功能 |
 | xtquant_manager 网关 | `http://127.0.0.1:8888` | web2.0、多账号、远程访问 |
 
-**认证**：需要 Token 的接口通过 `QMT_API_TOKEN` 环境变量（Flask）或 `api_token` 配置（网关）设置。Flask 直连模式下，`require_token` 装饰器在**未设置 `QMT_API_TOKEN` 时放行**（适合纯内网部署）；设置后需在请求头 `X-API-Token` 或 URL 参数 `?token=` 中携带令牌。除只读查询外，多数写操作端点（监控开关、初始化持仓、买入、持仓/网格参数更新、网格启停与模板保存、配置保存、数据管理等）均带 `@require_token` 保护，本文档在这些行的说明中标注 **🔑 需 Token**。
+**认证**：需要 Token 的接口通过 `QMT_API_TOKEN` 环境变量（Flask）或 `api_token` 配置（网关）设置。
+
+- **Flask 直连模式**：`require_token` 装饰器在**未设置 `QMT_API_TOKEN` 时放行**（适合纯内网部署，Flask 仅绑 `127.0.0.1`）；设置后需在请求头 `X-API-Token` 或 URL 参数 `?token=` 中携带令牌。除只读查询外，多数写操作端点（监控开关、初始化持仓、买入、持仓/网格参数更新、网格启停与模板保存、配置保存、数据管理等）均带 `@require_token` 保护，本文档在这些行的说明中标注 **🔑 需 Token**。
+- **网关模式**：**所有数据端点（含只读）均需 `X-API-Token`**，只读端点同样会返回持仓成本、盈亏与成交明细，属财务隐私数据。唯一例外是 `/api/v1/health`（存活探针）——免 Token 可达，但无 Token 时只返回 `total`/`healthy` 计数，不返回 `accounts` 明细。`api_token` 为空时仅本机可访问，非本机一律拒绝。
+- 网关默认**不信任** `X-Forwarded-For`（`trust_proxy: false`），避免伪造该头冒充本机绕过认证；仅在受信任反向代理之后才可开启。详见 [XQM 安全配置](../xqm/guides/security.md)。
 
 **多账号路由（网关）**：通过 `X-Account-Id` 请求头切换目标账号；未指定时回退到第一个已注册账号。
 
@@ -28,7 +32,7 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 | GET | `/api/market/health` | 行情源健康评分内存快照（xtdata/Mootdx 成功率、延迟、新鲜度、数据质量） | ❌ |
 | GET | `/api/macd/advice` | MACD 操盘建议（底仓/网格方向 + 迷你全景图） | ✅ 完整 |
 | GET | `/api/debug/status` | 详细调试状态 | ❌ |
-| GET | `/api/accounts` | 列出已注册账号（无 Token，供前端账号发现）——**仅网关提供**，Flask 直连无此端点 | ✅ 完整 |
+| GET | `/api/accounts` | 列出已注册账号（供前端账号发现）🔑 需 Token ——**仅网关提供**，Flask 直连无此端点 | ✅ 完整 |
 
 ---
 
@@ -250,8 +254,8 @@ web1.0 网格悬停卡片直接使用该接口。为避免前端重复换算，�
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/v1/health` | 网关全局健康（账号总数 / 在线数） |
+| GET | `/api/v1/health` | 网关全局健康（账号总数 / 在线数）；免 Token 可达，无 Token 时不返回 `accounts` 明细 |
 | GET | `/api/v1/accounts` | 账号列表（需 Token） |
-| GET | `/api/v1/stop-profit/status` | 动态止盈运行状态 |
+| GET | `/api/v1/stop-profit/status` | 动态止盈运行状态（需 Token） |
 | POST | `/api/v1/stop-profit/config` | 更新止盈配置（需 Token） |
 | POST | `/api/v1/stop-profit/toggle` | 启用/禁用动态止盈（需 Token） |

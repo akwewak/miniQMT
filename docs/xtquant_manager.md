@@ -78,7 +78,7 @@ Level 2        reconnect()        指数退避重连（60s → 3600s）
 
 ### 3.1 场景一：本机单账号（开发/测试）
 
-最简配置，无需认证，适合本机开发调试。
+最简配置，仅本机可访问（`api_token` 为空时非本机一律拒绝），适合本机开发调试。
 
 **启动方式 1 — 命令行（推荐）：**
 
@@ -322,6 +322,7 @@ XTQUANT_MANAGER_TOKEN = ""           # 可选
   "rate_limit": 60,
   "enable_hmac": false,
   "hmac_secret": "",
+  "trust_proxy": false,
   "ssl_certfile": "",
   "ssl_keyfile": "",
   "health_check_interval": 30.0,
@@ -627,7 +628,7 @@ Content-Type: application/json
 
 ### 4.4 可观测性
 
-#### 全局健康检查（无需 Token）
+#### 全局健康检查（免 Token 可达，无 Token 时不返回账号明细）
 
 ```http
 GET /api/v1/health
@@ -648,7 +649,7 @@ GET /api/v1/health
 }
 ```
 
-#### 单账号健康（无需 Token）
+#### 单账号健康（需 Token）
 
 ```http
 GET /api/v1/health/{account_id}
@@ -699,7 +700,7 @@ GET /api/v1/metrics/{account_id}
 BASE="http://127.0.0.1:8888/api/v1"
 TOKEN="your-token"   # 无 Token 时删除 -H 行
 
-# 健康检查（无需 Token）
+# 健康检查（免 Token 可达；带 Token 才返回 accounts 明细）
 curl $BASE/health
 
 # 注册账号
@@ -1060,7 +1061,13 @@ xtdata.download_history_data(stock_code, period, start_time, end_time)
 {"host": "127.0.0.1", "port": 8888, "api_token": ""}
 ```
 
-`/api/v1/health` 和 `/api/v1/health/{id}` 始终无需 Token，供存活探针使用。
+`/api/v1/health`（全局）免 Token 可达供存活探针使用，但不带 Token 时只返回
+`total` / `healthy` 计数，不返回 `accounts` 账号明细。
+`/api/v1/health/{id}` 及其余所有端点（含 `/api/*` Flask 兼容只读端点）均需 Token。
+
+网关默认 `trust_proxy: false`，不信任 `X-Forwarded-For`——该头可伪造成
+`127.0.0.1` 冒充本机，一次绕过 Token 免验证 / IP 白名单 / 速率限制三处判定。
+仅在网关位于受信任反向代理之后、且端口无法被绕过直连时才置 `true`。
 
 ### 7.2 局域网（Token + IP 白名单）
 

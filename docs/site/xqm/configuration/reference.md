@@ -11,6 +11,7 @@
   "rate_limit": 60,
   "enable_hmac": false,
   "hmac_secret": "",
+  "trust_proxy": false,
   "ssl_certfile": "",
   "ssl_keyfile": "",
   "health_check_interval": 30.0,
@@ -57,11 +58,12 @@
 |------|------|--------|------|
 | `host` | str | `"127.0.0.1"` | 监听地址，局域网访问改为实际 IP |
 | `port` | int | `8888` | 监听端口 |
-| `api_token` | str | `""` | API Token，空字符串表示不验证 |
+| `api_token` | str | `""` | API Token，空字符串时仅本机可访问（非本机一律拒绝）；对外提供服务必须配置 |
 | `allowed_ips` | list | `[]` | IP 白名单（支持 CIDR），空列表不限制 |
 | `rate_limit` | int | `60` | 每分钟请求次数上限（按 IP 统计） |
 | `enable_hmac` | bool | `false` | 启用 HMAC 请求签名验证 |
 | `hmac_secret` | str | `""` | HMAC 密钥（`enable_hmac=true` 时必填） |
+| `trust_proxy` | bool | `false` | 是否信任 `X-Forwarded-For` 判定来源 IP。默认 `false`：该头可被伪造以冒充本机绕过 Token/IP 白名单/限流。仅当网关位于受信任反向代理之后、且端口无法被绕过直连时才置 `true` |
 | `ssl_certfile` | str | `""` | TLS 证书路径，空字符串使用 HTTP |
 | `ssl_keyfile` | str | `""` | TLS 私钥路径 |
 | `health_check_interval` | float | `30.0` | HealthMonitor 轮询间隔（秒） |

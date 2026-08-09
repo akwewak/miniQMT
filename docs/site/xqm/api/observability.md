@@ -1,6 +1,7 @@
 # 可观测性
 
-健康检查接口**无需认证**，指标接口需要 Token。
+全局健康检查免 Token 可达（存活探针），但**无 Token 时不返回账号明细**；
+单账号健康检查与指标接口均需要 Token。
 
 ## 全局健康检查
 
@@ -10,7 +11,7 @@ GET /api/v1/health
 
 适合作为存活探针、监控系统轮询端点。
 
-**响应：**
+**响应（携带有效 Token）：**
 
 ```json
 {
@@ -36,6 +37,20 @@ GET /api/v1/health
 }
 ```
 
+**响应（未携带 Token）：** 仍返回 200，但 `accounts` 为空对象——
+账号 ID 是访问其他账号数据的入口，属敏感信息。存活探针只需 `total`/`healthy`。
+
+```json
+{
+  "success": true,
+  "data": {
+    "accounts": {},
+    "total": 2,
+    "healthy": 2
+  }
+}
+```
+
 ---
 
 ## 单账号健康检查
@@ -43,6 +58,8 @@ GET /api/v1/health
 ```http
 GET /api/v1/health/{account_id}
 ```
+
+需要 `X-API-Token` 请求头。
 
 **响应：**
 

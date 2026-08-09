@@ -29,7 +29,9 @@ curl -s -I -X OPTIONS "http://127.0.0.1:8888/api/v1/accounts" \
 ## Q: 所有接口返回 401？
 
 - 服务配置了 `api_token`，需在请求头中加 `X-API-Token: <token>`
-- `GET /api/v1/health` 无需 Token，可先用它验证服务是否在线
+- `GET /api/v1/health` 免 Token 可达，可先用它验证服务是否在线（但不带 Token 时不返回 `accounts` 明细）
+- 网关所有数据端点（含 `/api/positions` 等只读端点）都需要 Token，这是有意为之：只读端点会返回持仓成本与盈亏明细
+- 若配置了反向代理且确认请求来自本机却仍 401，检查是否需要开启 `trust_proxy`（默认 `false`，网关不信任 `X-Forwarded-For`）
 
 ---
 

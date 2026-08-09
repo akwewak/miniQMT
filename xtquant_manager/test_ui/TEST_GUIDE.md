@@ -39,7 +39,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8888
 | API Token | （空） | 若服务配置了 Token 则必填 |
 | 账号 ID | （下拉） | 调用注册账号后自动同步 |
 
-> **注意**：`/api/v1/health`（全局健康）和 `/api/v1/health/{id}`（账号健康）无需 Token，可直接访问。
+> **注意**：`/api/v1/health`（全局健康）免 Token 可直接访问，但不带 Token 时只返回 `total`/`healthy` 计数，不返回 `accounts` 明细；`/api/v1/health/{id}`（账号健康）需要 Token。
 
 ---
 
@@ -357,7 +357,7 @@ HTTP 201 Created
 
 ### 5.1 全局健康状态（GET /api/v1/health）
 
-**特点**：此接口**无需 Token**，适合作为存活探针。
+**特点**：此接口**免 Token 可达**，适合作为存活探针；不带 Token 时 `accounts` 为空对象，带 Token 才返回账号明细。
 
 **操作步骤**：左侧选择 **健康状态** → 点击发送（无需填写任何参数）
 
@@ -513,7 +513,7 @@ HTTP 201 Created
 ### Q2：所有接口返回 401
 
 - 服务启动时配置了 `api_token`，需在顶栏 **API Token** 字段填写相同值
-- `GET /api/v1/health` 和 `GET /api/v1/health/{id}` 无需 Token，可用于验证服务是否存活
+- `GET /api/v1/health` 免 Token 可用于验证服务是否存活（不带 Token 时不返回 `accounts` 明细）；`GET /api/v1/health/{id}` 及其余端点均需 Token
 
 ### Q3：注册账号返回 connected: false
 

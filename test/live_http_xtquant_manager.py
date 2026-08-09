@@ -99,7 +99,9 @@ def run_open_server_tests():
             return
         check("服务在 8899 启动并可达", True)
 
-        # --- 多账号管理：/health 聚合（无需认证）---
+        # --- 多账号管理：/health 聚合（免 token 可达，仅返回计数）---
+        # 该实例未配置 api_token 且客户端为本机，故 accounts 明细可见；
+        # 远程无 token 时 accounts 会是空 dict（见下方带 token 实例的用例）。
         r = httpx.get(f"{base}/api/v1/health")
         d = r.json().get("data", {})
         check("GET /health 返回 200", r.status_code == 200, f"status={r.status_code}")
@@ -178,7 +180,10 @@ def run_token_server_tests():
     inject_account(manager, ACC1)
 
     token = "secret-test-token-123"
-    server = XtQuantServer(XtQuantServerConfig(host="127.0.0.1", port=8900, api_token=token))
+    # trust_proxy=True: 本用例刻意用 X-Forwarded-For 模拟远程 IP，
+    # 生产默认为 False（否则伪造该头即可冒充本机绕过 token）。
+    server = XtQuantServer(XtQuantServerConfig(
+        host="127.0.0.1", port=8900, api_token=token, trust_proxy=True))
     server.start(blocking=False)
     base = "http://127.0.0.1:8900"
     # 模拟远程 IP 以绕过 local_ips 白名单，触发 token 验证
@@ -189,9 +194,29 @@ def run_token_server_tests():
             return
         check("带 token 服务在 8900 启动并可达", True)
 
-        # /health 无需认证（路由层无 Depends(verify_token)）
+        # /health 免 token 可达（存活探测），但远程无 token 时不返回账号明细
         r = httpx.get(f"{base}/api/v1/health", headers=remote_headers)
         check("/health 无需 token 即可访问（远程 IP）", r.status_code == 200, f"status={r.status_code}")
+        check("/health 远程无 token 不泄露账号明细",
+              r.json().get("data", {}).get("accounts") == {},
+              f"accounts={r.json().get('data', {}).get('accounts')}")
+        r = httpx.get(f"{base}/api/v1/health",
+                      headers={**remote_headers, "X-API-Token": token})
+        check("/health 带 token 返回账号明细",
+              ACC1 in r.json().get("data", {}).get("accounts", {}))
+
+        # 伪造 X-Forwarded-For 不应绕过 token（trust_proxy 关闭时的生产行为）
+        server_np = XtQuantServer(XtQuantServerConfig(
+            host="127.0.0.1", port=8901, api_token=token))
+        server_np.start(blocking=False)
+        try:
+            if wait_port("http://127.0.0.1:8901"):
+                r = httpx.get("http://127.0.0.1:8901/api/v1/accounts",
+                              headers={"X-Forwarded-For": "127.0.0.1"})
+                check("伪造 XFF=127.0.0.1 不能绕过 token（trust_proxy=False）",
+                      r.status_code == 401, f"status={r.status_code}")
+        finally:
+            server_np.stop(timeout=5.0)
 
         # 受保护端点：无 token -> 401
         r = httpx.get(f"{base}/api/v1/accounts", headers=remote_headers)

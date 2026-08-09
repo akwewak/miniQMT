@@ -37,6 +37,7 @@ class XtQuantServerConfig:
         rate_limit: int = 60,
         enable_hmac: bool = False,
         hmac_secret: str = "",
+        trust_proxy: bool = False,
         # TLS 配置（局域网场景推荐开启）
         ssl_certfile: str = "",
         ssl_keyfile: str = "",
@@ -59,6 +60,7 @@ class XtQuantServerConfig:
             rate_limit=rate_limit,
             enable_hmac=enable_hmac,
             hmac_secret=hmac_secret,
+            trust_proxy=trust_proxy,
         )
         # 止盈止损配置
         self.enable_stop_profit = enable_stop_profit

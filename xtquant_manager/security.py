@@ -43,6 +43,7 @@ class SecurityConfig:
     local_ips: List[str] = field(default_factory=lambda: [
         "127.0.0.1", "::1", "localhost"
     ])                                       # 本机 IP（始终允许）
+    trust_proxy: bool = False                # 是否信任 X-Forwarded-For（仅在受信反代后开启）
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +236,7 @@ def create_security_middleware(config: SecurityConfig):
 
     class SecurityMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
-            client_ip = _get_client_ip(request)
+            client_ip = _get_client_ip(request, config.trust_proxy)
 
             # 1. IP 白名单检查
             if config.allowed_ips:
@@ -305,7 +306,7 @@ def create_token_verifier(config: SecurityConfig):
         request,
         token: Optional[str] = Security(api_key_header),
     ) -> str:
-        client_ip = _get_client_ip(request)
+        client_ip = _get_client_ip(request, config.trust_proxy)
         ok, reason = verify_api_key(
             token=token or "",
             expected=config.api_token,
@@ -319,12 +320,18 @@ def create_token_verifier(config: SecurityConfig):
     return verify_token
 
 
-def _get_client_ip(request) -> str:
-    """从请求中获取客户端 IP"""
-    # 优先使用 X-Forwarded-For（反向代理场景）
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+def _get_client_ip(request, trust_proxy: bool = False) -> str:
+    """从请求中获取客户端 IP。
+
+    安全约束: X-Forwarded-For 由客户端完全可控，而 client_ip 会被用于
+    local_ips 免 token 放行 / IP 白名单 / 速率限制三处判定。默认不信任该头，
+    否则攻击者只需发送 X-Forwarded-For: 127.0.0.1 即可绕过全部三道防线。
+    仅当部署在受信任反向代理之后（trust_proxy=True）时才读取。
+    """
+    if trust_proxy:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     if request.client:
         return request.client.host
     return "unknown"

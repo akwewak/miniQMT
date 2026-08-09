@@ -5,14 +5,17 @@ BASE="http://127.0.0.1:8888/api/v1"
 TOKEN="your-token"   # 无 Token 时删除所有 -H "X-API-Token" 行
 ```
 
-## 可观测性（无需 Token）
+## 可观测性
 
 ```bash
-# 全局健康
+# 全局健康（免 Token 可达；不带 Token 时只返回 total/healthy 计数，无 accounts 明细）
 curl $BASE/health
 
-# 单账号健康
-curl $BASE/health/55009640
+# 全局健康（带 Token，返回完整账号明细）
+curl -H "X-API-Token: $TOKEN" $BASE/health
+
+# 单账号健康（需 Token）
+curl -H "X-API-Token: $TOKEN" $BASE/health/55009640
 ```
 
 ## 账号管理
@@ -90,17 +93,18 @@ curl -H "X-API-Token: $TOKEN" $BASE/metrics/55009640
 ### 止盈止损
 
 ```bash
-# 查看止盈止损监控状态
-curl $BASE/stop-profit/status
+# 查看止盈止损监控状态（需 Token）
+curl -H "X-API-Token: $TOKEN" $BASE/stop-profit/status
 
-# 暂停止盈止损
-curl -X POST "$BASE/stop-profit/toggle?enabled=false"
+# 暂停止盈止损（需 Token）
+curl -X POST -H "X-API-Token: $TOKEN" "$BASE/stop-profit/toggle?enabled=false"
 
-# 启用止盈止损
-curl -X POST "$BASE/stop-profit/toggle?enabled=true"
+# 启用止盈止损（需 Token）
+curl -X POST -H "X-API-Token: $TOKEN" "$BASE/stop-profit/toggle?enabled=true"
 
-# 更新止盈止损参数
+# 更新止盈止损参数（需 Token）
 curl -X POST $BASE/stop-profit/config \
   -H "Content-Type: application/json" \
+  -H "X-API-Token: $TOKEN" \
   -d '{"stop_loss_ratio": -0.08, "initial_take_profit_ratio": 0.07}'
 ```
