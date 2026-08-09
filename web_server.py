@@ -1231,12 +1231,25 @@ def stop_monitor():
 
 
 @app.route('/api/debug/status', methods=['GET'])
+@require_token
 def debug_status():
     """返回详细的系统状态 + 多账号诊断字段。
 
     多账号诊断:两个端口同时访问此接口，对比 multi_account_diagnostics
     可立即判断 QMT_PATH / account_id / easy_qmt_trader.path 是否真正隔离。
+
+    ⚠️ 该端点返回券商账号 ID、本机文件路径等敏感运行时信息，
+    受 @require_token 保护；账号 ID 做脱敏处理（仅保留后 4 位）。
     """
+    def _mask_id(raw):
+        """账号 ID 脱敏：保留后 4 位，前置星号。空值原样返回。"""
+        if not raw:
+            return raw
+        s = str(raw)
+        if len(s) <= 4:
+            return s
+        return '*' * (len(s) - 4) + s[-4:]
+
     try:
         def _safe(v):
             """只允许 JSON 原生类型，否则转 str。
@@ -1252,7 +1265,7 @@ def debug_status():
             'qmt_trader_class':   type(qmt_trader).__name__ if qmt_trader else None,
             'qmt_trader_path':    _safe(getattr(qmt_trader, 'path', None)),
             'qmt_trader_account': _safe(getattr(qmt_trader, 'account', None)),
-            'qmt_acc_account_id': _safe(getattr(getattr(qmt_trader, 'acc', None), 'account_id', None)),
+            'qmt_acc_account_id': _mask_id(getattr(getattr(qmt_trader, 'acc', None), 'account_id', None)),
             'qmt_connected':      _safe(getattr(pm, 'qmt_connected', None)),
         }
         return jsonify({
@@ -1266,10 +1279,10 @@ def debug_status():
                 'ENABLE_SIMULATION_MODE': getattr(config, 'ENABLE_SIMULATION_MODE', False),
             },
             'multi_account_diagnostics': {
-                'env_QMT_ACCOUNT_ID': os.environ.get('QMT_ACCOUNT_ID', ''),
+                'env_QMT_ACCOUNT_ID': _mask_id(os.environ.get('QMT_ACCOUNT_ID', '')),
                 'env_QMT_PATH':       os.environ.get('QMT_PATH', ''),
                 'config_QMT_PATH':    config.QMT_PATH,
-                'config_account_id':  config.ACCOUNT_CONFIG.get('account_id', ''),
+                'config_account_id':  _mask_id(config.ACCOUNT_CONFIG.get('account_id', '')),
                 'config_DATA_DIR':    config.DATA_DIR,
                 'config_DB_PATH':     config.DB_PATH,
                 'config_WEB_PORT':    config.WEB_SERVER_PORT,
@@ -2838,6 +2851,7 @@ def save_grid_template():
 
 
 @app.route('/api/grid/template/<template_name>', methods=['DELETE'])
+@require_token
 def delete_grid_template(template_name):
     """删除网格配置模板"""
     try:
@@ -2917,6 +2931,7 @@ def get_default_grid_template():
 
 
 @app.route('/api/grid/template/<template_name>/default', methods=['PUT'])
+@require_token
 def set_default_grid_template(template_name):
     """设置默认网格配置模板"""
     try:

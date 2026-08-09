@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+### Security
+> Web 安全审查的 Flask 后端加固（与网关侧修复 `fix/xqm-gateway-auth-hardening` 配套，各自独立可合入）。在 `QMT_API_TOKEN` 已配置的前提下，补齐 Token 防线上的三处遗漏。
+
+- **两个网格模板端点漏挂鉴权**：`DELETE /api/grid/template/<name>` 与 `PUT /api/grid/template/<name>/default` 缺少 `@require_token`，是 Flask 后端仅有的两个绕过 Token 直接可达的写端点（同文件其余 19 个 POST/PUT/DELETE 均已挂装饰器）。攻击者无需 Token 即可删除任意网格模板或篡改默认模板。现已补齐装饰器——至此 Flask 所有写端点 100% 受 Token 保护。
+- **`/api/debug/status` 泄露真实券商账号 ID**：该端点无鉴权，返回 `config_account_id`、`qmt_acc_account_id`、`env_QMT_ACCOUNT_ID` 的明文真实账号 ID，以及本机文件路径。账号 ID 是可复用的身份标识，配合其他泄露面可用于针对性攻击。现已加 `@require_token` 保护，并对账号 ID 字段做脱敏（仅保留后 4 位）。本机文件路径予以保留（对本地多账号诊断有用，且非可复用凭证）。
+
+### Tests
+- web_api 组 170/170、system_integration 39/39、grid_validation 38/38 通过；实测三个端点无 Token 返回 401、带 Token 返回 200，真实账号 ID `25105132` 脱敏为 `****5132`。
+
 ## [3.8.6] - 2026-08-07
 
 > 本版本聚焦**重连状态一致性与信号可靠性**：修复重连瞬间旧 callback 污染新连接、瞬时止盈信号在被消费前丢失两类隐蔽缺陷，补齐重连后的持仓刷新与 QMT 自恢复探测，并让无法回收的超时线程变得可观测。同时包含此前未发布的模拟模式补仓修复。
