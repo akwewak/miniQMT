@@ -14,6 +14,7 @@ StandaloneConfig — 独立运行模式配置加载器
   "rate_limit": 60,
   "enable_hmac": false,
   "hmac_secret": "",
+  "trust_proxy": false,
   "ssl_certfile": "",
   "ssl_keyfile": "",
   "health_check_interval": 30.0,
@@ -57,6 +58,9 @@ class StandaloneConfig:
     rate_limit: int = 60
     enable_hmac: bool = False
     hmac_secret: str = ""
+    # 是否信任 X-Forwarded-For：仅在受信任反向代理之后开启。
+    # 保持 False 时伪造该头无法冒充本机绕过 token 验证。
+    trust_proxy: bool = False
     # TLS（可选）
     ssl_certfile: str = ""
     ssl_keyfile: str = ""
@@ -256,6 +260,7 @@ def _parse_config(data: Dict[str, Any], manager_config_path: Optional[str] = Non
         rate_limit=data.get("rate_limit", defaults.rate_limit),
         enable_hmac=data.get("enable_hmac", defaults.enable_hmac),
         hmac_secret=data.get("hmac_secret", defaults.hmac_secret),
+        trust_proxy=data.get("trust_proxy", defaults.trust_proxy),
         ssl_certfile=data.get("ssl_certfile", defaults.ssl_certfile),
         ssl_keyfile=data.get("ssl_keyfile", defaults.ssl_keyfile),
         health_check_interval=data.get("health_check_interval", defaults.health_check_interval),

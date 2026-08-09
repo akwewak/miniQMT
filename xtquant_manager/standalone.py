@@ -110,6 +110,7 @@ class StandaloneApplication:
             rate_limit=cfg.rate_limit,
             enable_hmac=cfg.enable_hmac,
             hmac_secret=cfg.hmac_secret,
+            trust_proxy=cfg.trust_proxy,
             ssl_certfile=cfg.ssl_certfile,
             ssl_keyfile=cfg.ssl_keyfile,
             health_check_interval=cfg.health_check_interval,

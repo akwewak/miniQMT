@@ -118,6 +118,7 @@
     background: var(--bg2); color: var(--text1); border: 1px solid var(--border);
   }
   .ep-tag.auth-free { background: rgba(63,185,80,.1); color: var(--green); border-color: rgba(63,185,80,.3); }
+  .ep-tag.auth { background: rgba(229,83,75,.1); color: #e5534b; border-color: rgba(229,83,75,.3); }
   .ep-tag.danger { background: rgba(248,81,73,.1); color: var(--red); border-color: rgba(248,81,73,.3); }
 
   /* 工作区主体 */
@@ -723,7 +724,7 @@
 
         <!-- ── 健康总览 ── -->
         <div id="p-health" class="pane">
-          <div class="notice free"><span class="notice-icon">🟢</span><strong>无需认证</strong> — 此接口供监控系统轮询，本机或外部监控可直接访问。</div>
+          <div class="notice free"><span class="notice-icon">🟢</span><strong>免 Token 可达</strong> — 供存活探针使用；不带 Token 时仅返回 total/healthy 计数，不含账号明细（填 Token 才返回 accounts）。</div>
           <div class="submit-row">
             <button class="btn-submit btn-primary" onclick="doHealth()">🏥 查询健康</button>
             <button class="btn-auto" onclick="startAutoRefresh()">自动刷新 5s</button>
@@ -733,7 +734,7 @@
 
         <!-- ── 账号健康 ── -->
         <div id="p-health-account" class="pane">
-          <div class="notice free"><span class="notice-icon">🟢</span>无需认证。</div>
+          <div class="notice"><span class="notice-icon">🔒</span>需要 Token。</div>
           <div class="field-group">
             <div class="field-label">account_id</div>
             <input class="field-input" id="health-acc-id" placeholder="留空使用当前账号" />
@@ -840,8 +841,8 @@ const PANEL_META = {
   'tick':            { method:'GET',  label:'实时行情',   path:'/api/v1/market/tick', tags:[] },
   'history':         { method:'GET',  label:'历史行情',   path:'/api/v1/market/history', tags:[] },
   'download':        { method:'POST', label:'下载数据',   path:'/api/v1/market/download', tags:[] },
-  'health':          { method:'GET',  label:'健康总览',   path:'/api/v1/health', tags:['auth-free:无需认证'] },
-  'health-account':  { method:'GET',  label:'账号健康',   path:'/api/v1/health/{account_id}', tags:['auth-free:无需认证'] },
+  'health':          { method:'GET',  label:'健康总览',   path:'/api/v1/health', tags:['auth-free:免 Token（无 Token 时不含账号明细）'] },
+  'health-account':  { method:'GET',  label:'账号健康',   path:'/api/v1/health/{account_id}', tags:['auth:需要 Token'] },
   'metrics':         { method:'GET',  label:'全局指标',   path:'/api/v1/metrics', tags:[] },
   'metrics-account': { method:'GET',  label:'账号指标',   path:'/api/v1/metrics/{account_id}', tags:[] },
 };
@@ -1295,7 +1296,9 @@ async function doDownload() {
 }
 
 async function doHealth() {
-  const r = await req('GET', '/api/v1/health', null, true);
+  // 带 Token 发送：/api/v1/health 免 Token 可达，但不带 Token 时 accounts 为空，
+  // 概览卡片会没有内容。填了 Token 就用上。
+  const r = await req('GET', '/api/v1/health');
   if (r.ok && r.data?.data?.accounts) {
     const cards = document.getElementById('health-cards-v2');
     if (cards) cards.innerHTML = renderHealthOverview(r.data.data);
@@ -1304,7 +1307,7 @@ async function doHealth() {
 
 async function doHealthAccount() {
   const id = $('health-acc-id').value || acctId(); if (!id) return alert('请输入 account_id');
-  await req('GET', `/api/v1/health/${id}`, null, true);
+  await req('GET', `/api/v1/health/${id}`);   // 该端点需要 Token
 }
 
 async function doMetrics()        { await req('GET', '/api/v1/metrics'); }

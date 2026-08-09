@@ -180,7 +180,7 @@ def _make_token_verifier(security_config: SecurityConfig):
         request: Request,
         token: Optional[str] = Depends(api_key_header),
     ) -> str:
-        client_ip = _get_client_ip(request)
+        client_ip = _get_client_ip(request, security_config.trust_proxy)
         ok, reason = verify_api_key(
             token=token or "",
             expected=security_config.api_token,
@@ -194,13 +194,21 @@ def _make_token_verifier(security_config: SecurityConfig):
     return verify_token
 
 
-def _get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
+def _get_client_ip(request: Request, trust_proxy: bool = False) -> str:
+    """委托给 security._get_client_ip，避免两份实现各自演进。"""
+    from .security import _get_client_ip as _shared_get_client_ip
+    return _shared_get_client_ip(request, trust_proxy)
+
+
+def _has_valid_token(request: Request, security_config: SecurityConfig) -> bool:
+    """非抛异常版的鉴权判定，供需要按权限裁剪返回内容的端点使用。"""
+    ok, _reason = verify_api_key(
+        token=request.headers.get("X-API-Token") or "",
+        expected=security_config.api_token,
+        client_ip=_get_client_ip(request, security_config.trust_proxy),
+        local_ips=security_config.local_ips,
+    )
+    return ok
 
 
 def _get_manager() -> XtQuantManager:
@@ -496,17 +504,28 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         tags=["可观测性"],
     )
     async def health(
+        request: Request,
         manager: XtQuantManager = Depends(_get_manager),
     ):
-        """获取所有账号健康状态（无需认证，供监控系统使用）"""
+        """获取账号健康状态（免 token 可达，供存活探测/连接测试使用）。
+
+        免 token 是刻意保留的：前端"测试连接"和客户端 connect() 在用户
+        尚未配置 token 时就要调用它。但 accounts 明细含账号 ID，
+        与受保护的 /api/accounts 是同一份数据，全公开会架空那层保护。
+        因此未携带有效 token 时只返回聚合计数，不返回账号明细。
+        """
         states = manager.get_all_states()
+        data = {
+            "total": len(states),
+            "healthy": sum(1 for s in states.values() if s.get("connected")),
+        }
+        if _has_valid_token(request, security_config):
+            data["accounts"] = states
+        else:
+            data["accounts"] = {}
         return ApiResponse(
             success=True,
-            data={
-                "accounts": states,
-                "total": len(states),
-                "healthy": sum(1 for s in states.values() if s.get("connected")),
-            },
+            data=data,
         )
 
     @app.get(
@@ -516,9 +535,10 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
     )
     async def health_account(
         account_id: str,
+        _: str = Depends(verify_token),
         manager: XtQuantManager = Depends(_get_manager),
     ):
-        """获取指定账号健康状态"""
+        """获取指定账号健康状态（含账号明细，需 token）"""
         try:
             state = manager.get_account_state(account_id)
             return ApiResponse(success=True, data=state)
@@ -564,7 +584,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         response_model=ApiResponse,
         tags=["止盈止损"],
     )
-    async def stop_profit_status(request: Request):
+    async def stop_profit_status(request: Request, _: str = Depends(verify_token)):
         """获取止盈止损监控状态和各持仓跟踪数据"""
         mon = getattr(request.app.state, "stop_profit_monitor", None)
         if mon is None:
@@ -589,7 +609,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         response_model=ApiResponse,
         tags=["止盈止损"],
     )
-    async def stop_profit_config(request: Request):
+    async def stop_profit_config(request: Request, _: str = Depends(verify_token)):
         """更新止盈止损配置（JSON body）"""
         mon = getattr(request.app.state, "stop_profit_monitor", None)
         if mon is None:
@@ -621,7 +641,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         response_model=ApiResponse,
         tags=["止盈止损"],
     )
-    async def stop_profit_toggle(request: Request, enabled: bool = True):
+    async def stop_profit_toggle(request: Request, enabled: bool = True, _: str = Depends(verify_token)):
         """启用/停止止盈止损监控"""
         mon = getattr(request.app.state, "stop_profit_monitor", None)
         if mon is None:
@@ -1065,7 +1085,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         }
 
     @app.get("/api/status", tags=["兼容"])
-    async def flask_status(request: Request):
+    async def flask_status(request: Request, _: str = Depends(verify_token)):
         """Flask 兼容: /api/status → 返回指定账号的状态（顶层字段格式）"""
         aid = _get_request_account_id(request)
         if not aid:
@@ -1089,7 +1109,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             raise HTTPException(status_code=404, detail=f"账号不存在: {aid}")
 
     @app.get("/api/positions", tags=["兼容"])
-    async def flask_positions(request: Request, version: int = -1):
+    async def flask_positions(request: Request, version: int = -1, _: str = Depends(verify_token)):
         """Flask 兼容: /api/positions（字段映射为前端英文格式，顶层字段格式）"""
         aid = _get_request_account_id(request)
         if not aid:
@@ -1128,7 +1148,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             })
 
     @app.get("/api/positions-all", tags=["兼容"])
-    async def flask_positions_all(request: Request, version: int = 0):
+    async def flask_positions_all(request: Request, version: int = 0, _: str = Depends(verify_token)):
         """Flask 兼容: /api/positions-all"""
         aid = _get_request_account_id(request)
         if not aid:
@@ -1148,20 +1168,20 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             return JSONResponse({"status": "success", "data": [], "data_version": 0, "no_change": False})
 
     @app.get("/api/accounts", tags=["兼容"])
-    async def flask_list_accounts():
-        """Flask 兼容: /api/accounts —— 无 token 列出账号 ID 列表。
+    async def flask_list_accounts(_: str = Depends(verify_token)):
+        """Flask 兼容: /api/accounts —— 列出账号 ID 列表。
 
-        与 v1 /api/v1/accounts 相同数据，但不受 Depends(verify_token) 保护，
-        与其他 Flask 兼容只读端点(positions/status 等)的安全级别一致。
-        互联网只读用户(没有 token)需要此端点才能拿到正确的账号列表，
-        否则前端只能用占位 ID，导致 X-Account-Id 始终匹配不上、
-        网关 fallback 总返回第一个账号的数据。
+        与 v1 /api/v1/accounts 相同数据。早期为了让"互联网只读用户"免 token
+        拿到账号列表而不加保护，但账号 ID 是遍历其他账号数据的入口，
+        且同组只读端点会返回持仓/成本/盈亏，等同于把财务数据公开。
+        现与其他兼容端点一致要求 token；前端 discoverAccounts 已带 token
+        并有 fallback，无需改动。
         """
         accounts = _get_manager().list_accounts()
         return JSONResponse({"status": "success", "success": True, "data": {"accounts": accounts}})
 
     @app.get("/api/connection/status", tags=["兼容"])
-    async def flask_connection_status(request: Request):
+    async def flask_connection_status(request: Request, _: str = Depends(verify_token)):
         """Flask 兼容: /api/connection/status（connected 为顶层字段）"""
         aid = _get_request_account_id(request)
         if not aid:
@@ -1174,7 +1194,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         })
 
     @app.get("/api/config", tags=["兼容"])
-    async def flask_config(request: Request):
+    async def flask_config(request: Request, _: str = Depends(verify_token)):
         """Flask 兼容: /api/config → 从账号 SQLite 读取真实已持久化的参数。
 
         早期实现返回一组写死的默认值（35000/5.0/7.0...），监控界面因此
@@ -1251,7 +1271,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         })
 
     @app.get("/api/macd/advice", tags=["兼容"])
-    async def flask_macd_advice(request: Request):
+    async def flask_macd_advice(request: Request, _: str = Depends(verify_token)):
         """Flask 兼容: /api/macd/advice → MACD 操盘建议。"""
         try:
             import macd_advisor
@@ -1262,7 +1282,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
 
     @app.get("/api/trade-records", tags=["兼容"])
-    async def flask_trade_records(request: Request):
+    async def flask_trade_records(request: Request, _: str = Depends(verify_token)):
         """Flask 兼容: /api/trade-records（与 web1.0 同源：优先读 SQLite trade_records）"""
         aid = _get_request_account_id(request)
         if not aid:
@@ -1279,7 +1299,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         return JSONResponse({"status": "success", "data": mapped})
 
     @app.get("/api/grid/sessions", tags=["兼容"])
-    async def flask_grid_sessions(request: Request):
+    async def flask_grid_sessions(request: Request, _: str = Depends(verify_token)):
         """Flask 兼容: /api/grid/sessions（网关模式下从 SQLite 返回会话状态）。"""
         aid = _get_request_account_id(request)
         if not aid:
@@ -1293,7 +1313,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         })
 
     @app.get("/api/orders", tags=["兼容"])
-    async def flask_orders(request: Request):
+    async def flask_orders(request: Request, _: str = Depends(verify_token)):
         """Flask 兼容: /api/orders → 当日委托（含在途未成交）。
 
         监控视图靠它感知"已报未成交"的挂单——止盈卖单在成交前不会进入
@@ -1337,7 +1357,8 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
 
     @app.get("/api/grid/ledger/{session_id}", tags=["兼容"])
     async def flask_grid_ledger(request: Request, session_id: int,
-                                limit: int = 50, offset: int = 0):
+                                limit: int = 50, offset: int = 0,
+                                _: str = Depends(verify_token)):
         """Flask 兼容: /api/grid/ledger/<id> → 网格真实账本（只读）。
 
         直接对账号 SQLite 执行只读查询，不实例化 GridDatabase——后者的

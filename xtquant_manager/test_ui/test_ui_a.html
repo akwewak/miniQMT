@@ -211,7 +211,7 @@
 <div id="topbar">
   <h1>⚡ XtQuantManager API Tester</h1>
   <label>Base URL <input id="base-url" type="text" value="http://localhost:8000" /></label>
-  <label>API Token <input id="api-token" type="text" placeholder="留空=本机无需认证" /></label>
+  <label>API Token <input id="api-token" type="text" placeholder="远程访问必填（只读端点同样需要）" /></label>
   <label>当前账号
     <select id="account-sel">
       <option value="">-- 先注册账号 --</option>
@@ -497,8 +497,8 @@
       <!-- ── 健康状态 ── -->
       <div id="p-health" class="pane" style="display:none">
         <div class="panel-title"><span class="method-badge get">GET</span>全局健康状态</div>
-        <div class="endpoint-info">GET <code>/api/v1/health</code> &nbsp;·&nbsp; <strong style="color:#a6e3a1">无需认证</strong></div>
-        <div class="tip"><strong>用途：</strong>监控系统轮询此接口，无需 token。</div>
+        <div class="endpoint-info">GET <code>/api/v1/health</code> &nbsp;·&nbsp; <strong style="color:#a6e3a1">免 Token 可达（降级返回）</strong></div>
+        <div class="tip"><strong>用途：</strong>监控系统轮询此接口。免 Token 时仅返回 total/healthy 计数；填 Token 才返回账号明细。</div>
         <button class="btn btn-primary" onclick="doHealth()">查询健康</button>
         <div id="health-cards" style="margin-top:12px;"></div>
       </div>
@@ -506,7 +506,7 @@
       <!-- ── 账号健康 ── -->
       <div id="p-health-account" class="pane" style="display:none">
         <div class="panel-title"><span class="method-badge get">GET</span>指定账号健康状态</div>
-        <div class="endpoint-info">GET <code>/api/v1/health/{account_id}</code> &nbsp;·&nbsp; <strong style="color:#a6e3a1">无需认证</strong></div>
+        <div class="endpoint-info">GET <code>/api/v1/health/{account_id}</code> &nbsp;·&nbsp; <strong style="color:#e5534b">需要 Token</strong></div>
         <div class="form-row">
           <label>account_id</label>
           <input id="health-account-id" type="text" placeholder="留空使用顶栏当前账号" />
@@ -854,7 +854,9 @@ async function doDownload() {
 }
 
 async function doHealth() {
-  const r = await req('GET', '/api/v1/health', null, true);
+  // 带 Token 发送：/api/v1/health 免 Token 可达，但不带 Token 时 accounts 为空，
+  // 健康卡片会没有内容。填了 Token 就用上。
+  const r = await req('GET', '/api/v1/health');
   if (r.ok && r.data?.data?.accounts) {
     const cards = Object.entries(r.data.data.accounts).map(([id, s]) => {
       const ok = s.connected;
@@ -875,7 +877,7 @@ async function doHealth() {
 async function doHealthAccount() {
   const id = document.getElementById('health-account-id').value || accountId();
   if (!id) return alert('请输入 account_id');
-  await req('GET', `/api/v1/health/${id}`, null, true);
+  await req('GET', `/api/v1/health/${id}`);   // 该端点需要 Token
 }
 
 async function doMetrics()        { await req('GET', '/api/v1/metrics'); }

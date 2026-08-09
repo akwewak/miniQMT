@@ -6,6 +6,31 @@
 
 ## [Unreleased]
 
+### Security
+> 对 web1.0 / web2.0 / Flask 后端 / xtquant_manager 网关做了一轮完整网络安全审查，本次提交先修复网关侧的三项 P0。Flask 侧与前端 XSS 链的修复另行提交。
+
+- **网关只读端点完全无鉴权，等同于把财务数据公开**：11 个 Flask 兼容端点（`/api/status`、`/api/positions`、`/api/positions-all`、`/api/accounts`、`/api/connection/status`、`/api/config`、`/api/macd/advice`、`/api/trade-records`、`/api/grid/sessions`、`/api/orders`、`/api/grid/ledger/{id}`）此前均无 `Depends(verify_token)`，任何能连上 `:8888` 的人无需任何凭证即可读取持仓成本、盈亏、历史成交与策略参数。这是刻意设计（源码注释写明"互联网只读用户没有 token 也要能拿账号列表"），但该前提在网关默认绑定 `0.0.0.0` 时不成立。现全部要求 `X-API-Token`。
+- **止盈止损端点无鉴权，可被未授权关闭**：`/api/v1/stop-profit/status`（GET）、`/api/v1/stop-profit/config`（POST）、`/api/v1/stop-profit/toggle`（POST）同样缺少保护。`POST /api/v1/stop-profit/toggle?enabled=false` 可在无凭证下关闭全部账号的止损监控，`/config` 可把 `stop_loss_ratio` 改到极端值——这不是信息泄露，是可直接造成资金损失的未授权写操作。三者均已补 Token 保护。
+- **伪造 `X-Forwarded-For` 可绕过全部认证**：`_get_client_ip()` 无条件信任该请求头，而 `verify_api_key()` 对 `local_ips` 免 Token 放行，且同一个可伪造的 `client_ip` 同时驱动 Token 放行、IP 白名单、速率限制三处判定。攻击者只需发送 `X-Forwarded-For: 127.0.0.1` 即可冒充本机，一次绕过三道防线并通过轮换该值绕过限流。新增 `trust_proxy` 配置项（默认 `false`，即不再读取该头），仅在网关确实位于受信任反向代理之后才应开启。
+- `/api/v1/health/{account_id}` 改为需要 Token；`/api/v1/health`（全局）保留免 Token 可达以支持存活探测与前端"测试连接"（用户此时尚未配置 Token），但未携带有效 Token 时只返回 `total` / `healthy` 计数，`accounts` 明细置空——账号 ID 是遍历其他账号数据的入口，与刚收紧的 `/api/accounts` 是同一份数据，全公开会架空该保护。
+- 消除 `_get_client_ip` 的重复实现：`server.py` 的副本改为委托给 `security.py`，避免两份逻辑各自演进（本次漏洞正是两处重复实现之一）。
+
+### Fixed
+- `trust_proxy` 配置在 `StandaloneConfig` → `XtQuantServerConfig` 链路上补齐透传，否则该字段在生产启动路径（`standalone.py`）下会是死配置，用户写进 `xtquant_manager_config.json` 也不生效。
+- **网关手测 UI 对 `/api/v1/health/{id}` 永不发送 Token**：`test_ui_a.html` / `test_ui_b.html` 的 `doHealth()` / `doHealthAccount()` 均以 `noToken=true` 调用 `req()`（基于"健康检查无需认证"的旧假设）。该端点现已要求 Token，若不同步修改，用户在手测 UI 中会稳定收到 401 且无从排查；`/health` 总览也会因不带 Token 而拿不到 `accounts` 明细、健康卡片渲染为空。两处均已改为正常发送 Token，并同步修正端点说明与标签样式。
+
+### Tests
+- `test/live_http_xtquant_manager.py` 原用 `X-Forwarded-For` 模拟远程客户端——正是本次禁用的机制。若不处理，其 401 断言会在实际返回 200 时依然"通过"，即**测试会假装安全**。已为该用例显式传入 `trust_proxy=True` 保留模拟意图，并新增两条断言锁住新行为：远程无 Token 时 `/health` 不返回账号明细、伪造 XFF 无法绕过 Token（`trust_proxy=False` 下应 401）。
+- 回归验证：`test/test_xtquant_manager/` 222 用例、`test_xqm_flask_compat` + `test_xqm_monitor_endpoints` + `test_multi_account_isolation`、`live_http_xtquant_manager.py` 32/32，全部通过。
+
+### Docs
+- `docs/site/xqm/guides/security.md`：删除"`/api/v1/health` 和 `/api/v1/health/{id}` 始终无需 Token"的过时描述，新增「端点鉴权一览」与「反向代理与 X-Forwarded-For」两节，安全级别对比表补 `trust_proxy` 列。
+- `docs/site/xqm/api/observability.md`：改写"健康检查接口**无需认证**"，补充带 Token / 不带 Token 两种响应示例。
+- `docs/site/xqm/configuration/reference.md`：补 `trust_proxy` 字段说明，修正 `api_token` 为空时的行为描述（并非"不验证"，而是仅本机可访问）。
+- `docs/site/miniqmt/web-api.md`：认证段拆分 Flask / 网关两种模式的不同口径；`/api/accounts` 行去掉"无 Token"标注。
+- `docs/site/miniqmt/web-frontend.md`：连接设置面板 Token 字段由"留空=不验证"改为"远程访问必填"，并说明测试连接能通不代表数据端点可用。
+- `CLAUDE.md`：网关能力边界补充鉴权要求与 `trust_proxy` 约束。
+
 ## [3.8.6] - 2026-08-07
 
 > 本版本聚焦**重连状态一致性与信号可靠性**：修复重连瞬间旧 callback 污染新连接、瞬时止盈信号在被消费前丢失两类隐蔽缺陷，补齐重连后的持仓刷新与 QMT 自恢复探测，并让无法回收的超时线程变得可观测。同时包含此前未发布的模拟模式补仓修复。

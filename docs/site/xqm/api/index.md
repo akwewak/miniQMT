@@ -11,7 +11,8 @@ GET /api/v1/accounts
 X-API-Token: your-secret-token
 ```
 
-`/api/v1/health` 和 `/api/v1/health/{account_id}` **始终无需认证**，供存活探针使用。
+`/api/v1/health`（全局）免认证可达，供存活探针使用，但**不带 Token 时只返回 `total` / `healthy` 计数**，不返回 `accounts` 账号明细。
+`/api/v1/health/{account_id}` 与其余所有端点（含 `/api/*` Flask 兼容只读端点）均需 Token。
 
 ## 统一响应格式
 
