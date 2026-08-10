@@ -1426,18 +1426,29 @@ class TradingExecutor:
                 while retry_count < max_retries:
                     try:
                         # 使用position_manager中的easy_qmt_trader进行买入
+                        order_remark = f"auto_{strategy}"
+                        submitted_at = time.time()
                         returned_id = self.position_manager.qmt_trader.buy(
                             security=formatted_stock_code,
                             price=price,
                             amount=volume,
                             price_type=price_type,
                             strategy_name=strategy,
-                            order_remark=f"auto_{strategy}"
+                            order_remark=order_remark
                         )
 
                         # 关键修复: 转换 seq 号为真实 order_id
                         if returned_id:
-                            order_id = self.position_manager._get_real_order_id(returned_id)
+                            order_id = self.position_manager._get_real_order_id(
+                                returned_id,
+                                stock_code=formatted_stock_code,
+                                side='BUY',
+                                volume=volume,
+                                strategy=strategy,
+                                order_remark=order_remark,
+                                submitted_at=submitted_at,
+                                price=price,
+                            )
                             if not order_id:
                                 submitted_but_unconfirmed = True
                                 self._mark_unknown_order_submission(
@@ -1747,18 +1758,29 @@ class TradingExecutor:
                 while retry_count < max_retries:
                     try:
                         # 参考buy_stock：使用easy_qmt_trader进行卖出
+                        order_remark = f"auto_{strategy}"
+                        submitted_at = time.time()
                         returned_id = self.position_manager.qmt_trader.sell(
                             security=formatted_stock_code,
                             price=price,
                             amount=volume,
                             price_type=price_type,
                             strategy_name=strategy,
-                            order_remark=f"auto_{strategy}"
+                            order_remark=order_remark
                         )
 
                         # 关键修复: 转换 seq 号为真实 order_id
                         if returned_id:
-                            order_id = self.position_manager._get_real_order_id(returned_id)
+                            order_id = self.position_manager._get_real_order_id(
+                                returned_id,
+                                stock_code=formatted_stock_code,
+                                side='SELL',
+                                volume=volume,
+                                strategy=strategy,
+                                order_remark=order_remark,
+                                submitted_at=submitted_at,
+                                price=price,
+                            )
                             if not order_id:
                                 submitted_but_unconfirmed = True
                                 self._mark_unknown_order_submission(

@@ -1412,7 +1412,6 @@ def debug_status():
         }), 500
 
 
-@app.route('/api/debug/live-sell-100-guard', methods=['POST'])
 @require_token
 def debug_live_sell_100_guard():
     """仅用于 25105132 / 000799 / 100股 的实盘卖出烟测窄接口。"""
@@ -1421,7 +1420,7 @@ def debug_live_sell_100_guard():
         'target_stock_code': _LIVE_SELL_TEST_STOCK,
         'target_volume': _LIVE_SELL_TEST_VOLUME,
         'strategy': _LIVE_SELL_TEST_STRATEGY,
-        'price_type': 5,
+        'price_type': 11,
     }
 
     def _fail(message, http_status=400):
@@ -1444,7 +1443,7 @@ def debug_live_sell_100_guard():
         stock_code = _plain_stock_code(data.get('stock_code'))
         volume = _as_int(data.get('volume'), None)
         confirm = str(data.get('confirm', '') or '').strip()
-        price_type = _as_int(data.get('price_type', 5), None)
+        price_type = _as_int(data.get('price_type', 11), None)
 
         price = None
         if data.get('price') not in (None, ''):
@@ -1470,7 +1469,7 @@ def debug_live_sell_100_guard():
             'volume_allowed': volume == _LIVE_SELL_TEST_VOLUME,
             'price': price,
             'requested_price_type': price_type,
-            'price_type_allowed': price_type == 5,
+            'price_type_allowed': price_type == 11,
             'simulation_mode': bool(getattr(config, 'ENABLE_SIMULATION_MODE', False)),
             'live_mode': not bool(getattr(config, 'ENABLE_SIMULATION_MODE', False)),
             'allow_sell': bool(getattr(config, 'ENABLE_ALLOW_SELL', True)),
@@ -1485,7 +1484,7 @@ def debug_live_sell_100_guard():
         if not checks['volume_allowed']:
             return _fail("该接口只允许卖出100股", 400)
         if not checks['price_type_allowed']:
-            return _fail("该接口固定使用price_type=5", 400)
+            return _fail("该接口固定使用price_type=11(FIX_PRICE)", 400)
         if not checks['live_mode']:
             return _fail("当前为模拟交易模式，拒绝实盘调试接口", 403)
         if not checks['allow_sell']:
@@ -1572,7 +1571,7 @@ def debug_live_sell_100_guard():
             stock_code=_LIVE_SELL_TEST_STOCK,
             volume=_LIVE_SELL_TEST_VOLUME,
             price=price,
-            price_type=5,
+            price_type=11,
             strategy=_LIVE_SELL_TEST_STRATEGY
         )
         if not order_id:
@@ -1589,6 +1588,16 @@ def debug_live_sell_100_guard():
     except Exception as e:
         logger.error(f"[LIVE_SELL_TEST] 窄接口执行异常: {str(e)}")
         return _fail(f"窄接口执行异常: {str(e)}", 500)
+
+if getattr(config, 'ENABLE_DEBUG_LIVE_SELL_TEST_API', False):
+    app.add_url_rule(
+        '/api/debug/live-sell-100-guard',
+        'debug_live_sell_100_guard',
+        debug_live_sell_100_guard,
+        methods=['POST']
+    )
+    logger.warning("[LIVE_SELL_TEST] 实盘卖出调试窄接口已启用")
+
 
 # @app.route('/api/debug/db-test', methods=['GET'])
 # def test_database():

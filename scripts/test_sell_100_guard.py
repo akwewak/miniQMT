@@ -89,7 +89,7 @@ class FakePositionManager:
         self.real_order_ids = real_order_ids or {}
         self.track_order_calls: List[Dict[str, Any]] = []
 
-    def _get_real_order_id(self, seq: int) -> Optional[int]:
+    def _get_real_order_id(self, seq: int, **kwargs: Any) -> Optional[int]:
         return self.real_order_ids.get(seq)
 
     def get_position(self, stock_code: str) -> Dict[str, Any]:

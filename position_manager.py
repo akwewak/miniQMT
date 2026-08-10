@@ -2818,13 +2818,249 @@ class PositionManager:
             logger.error(f"🚨 {stock_code} 信号验证失败: {e}")
             return _result(False, "failed", "validation_exception")
 
-    def _get_real_order_id(self, returned_id):
+    def _order_field_any(self, order, field_names, default=None):
+        """兼容 QMT 原始对象、字典和 DataFrame 行，读取委托字段。"""
+        if order is None:
+            return default
+        if isinstance(order, dict):
+            for name in field_names:
+                if name in order:
+                    return order.get(name)
+            return default
+        if isinstance(order, pd.Series):
+            for name in field_names:
+                if name in order.index:
+                    return order[name]
+            return default
+        for name in field_names:
+            value = getattr(order, name, default)
+            if value is not default:
+                return value
+        return default
+
+    def _plain_stock_code(self, stock_code):
+        code = str(stock_code or '').strip().upper()
+        return code.split('.')[0] if '.' in code else code
+
+    def _safe_int(self, value, default=None):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    def _order_time_to_timestamp(self, value):
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+        if isinstance(value, pd.Timestamp):
+            return value.to_pydatetime().timestamp()
+        if isinstance(value, datetime):
+            return value.timestamp()
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if value <= 0:
+                return None
+            int_value = int(value)
+            int_text = str(int_value)
+            if len(int_text) >= 14:
+                try:
+                    return datetime.strptime(int_text[:14], '%Y%m%d%H%M%S').timestamp()
+                except ValueError:
+                    pass
+            if 0 < int_value <= 235959:
+                hour = int_value // 10000
+                minute = (int_value % 10000) // 100
+                second = int_value % 100
+                if 0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59:
+                    return datetime.now().replace(
+                        hour=hour, minute=minute, second=second, microsecond=0
+                    ).timestamp()
+            # 兼容毫秒时间戳
+            if value > 100000000000:
+                value = value / 1000
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if len(text) >= 14 and text[:14].isdigit():
+            try:
+                return datetime.strptime(text[:14], '%Y%m%d%H%M%S').timestamp()
+            except ValueError:
+                pass
+        if len(text) == 8 and text.isdigit():
+            hour = int(text[:2])
+            minute = int(text[2:4])
+            second = int(text[4:6])
+            if 0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59:
+                try:
+                    return datetime.strptime(
+                        f"{datetime.now().strftime('%Y%m%d')} {text[:2]}:{text[2:4]}:{text[4:6]}",
+                        '%Y%m%d %H:%M:%S',
+                    ).timestamp()
+                except ValueError:
+                    pass
+        if len(text) == 6 and text.isdigit():
+            return self._order_time_to_timestamp(int(text))
+        if text.isdigit():
+            return self._order_time_to_timestamp(int(text))
+        parsed = pd.to_datetime(text, errors='coerce')
+        if pd.isna(parsed):
+            return None
+        return parsed.to_pydatetime().timestamp()
+
+    def _order_records_to_list(self, orders):
+        if orders is None:
+            return []
+        if isinstance(orders, pd.DataFrame):
+            return [row for _, row in orders.iterrows()]
+        return list(orders)
+
+    def _query_today_order_records(self, stock_code=None):
+        qmt_trader = getattr(self, 'qmt_trader', None)
+        if not qmt_trader:
+            return []
+
+        records = []
+        active_info = getattr(qmt_trader, 'get_active_order_info_by_stock', None)
+        if callable(active_info) and stock_code:
+            try:
+                records.extend(self._order_records_to_list(active_info(self._plain_stock_code(stock_code))))
+            except Exception as e:
+                logger.warning(f"[ASYNC_ORDER_QUERY_FAILED] 活跃委托查询失败，尝试原始委托查询: {e}")
+
+        xt_trader = getattr(qmt_trader, 'xt_trader', None)
+        acc = getattr(qmt_trader, 'acc', None)
+        query_raw = getattr(xt_trader, 'query_stock_orders', None)
+        if callable(query_raw) and acc is not None:
+            try:
+                try:
+                    orders = query_raw(acc, cancelable_only=False)
+                except TypeError:
+                    orders = query_raw(acc)
+                records.extend(self._order_records_to_list(orders))
+            except Exception as e:
+                logger.warning(f"[ASYNC_ORDER_QUERY_FAILED] 原始委托查询失败，尝试包装查询: {e}")
+
+        query_df = getattr(qmt_trader, 'query_stock_orders', None)
+        if callable(query_df):
+            try:
+                orders = query_df()
+                records.extend(self._order_records_to_list(orders))
+            except Exception as e:
+                logger.warning(f"[ASYNC_ORDER_QUERY_FAILED] 包装委托查询失败: {e}")
+
+        return records
+
+    def _order_side_matches(self, order_type, side):
+        if order_type is None or order_type == '':
+            return True
+        side = str(side or '').upper()
+        text = str(order_type).strip().upper()
+        if side == 'BUY':
+            return text in ('23', 'BUY', '买入')
+        if side == 'SELL':
+            return text in ('24', 'SELL', '卖出')
+        return True
+
+    def _order_price_matches(self, order_price, expected_price):
+        if expected_price is None:
+            return True
+        try:
+            order_price = float(order_price)
+            expected_price = float(expected_price)
+        except (TypeError, ValueError):
+            return True
+        if order_price <= 0:
+            return True
+        return abs(order_price - expected_price) <= 0.05
+
+    def _resolve_real_order_id_from_orders(self, returned_id, stock_code, side,
+                                           volume, strategy, order_remark,
+                                           submitted_at, price=None):
+        if not stock_code or not side or volume is None:
+            return None
+
+        stock_base = self._plain_stock_code(stock_code)
+        expected_volume = self._safe_int(volume)
+        expected_strategy = str(strategy or '').strip()
+        submitted_at = submitted_at or time.time()
+        pre_window = float(getattr(config, 'ASYNC_ORDER_QUERY_MATCH_PRE_WINDOW_SECONDS', 5.0))
+        post_window = float(getattr(config, 'ASYNC_ORDER_QUERY_MATCH_POST_WINDOW_SECONDS', 30.0))
+
+        matches = []
+        for order in self._query_today_order_records(stock_base):
+            order_stock = self._plain_stock_code(
+                self._order_field_any(order, ['stock_code', '证券代码', 'code', 'm_strInstrumentID'], '')
+            )
+            if order_stock != stock_base:
+                continue
+
+            order_type = self._order_field_any(order, ['order_type', '委托类型', 'trade_type'], None)
+            if not self._order_side_matches(order_type, side):
+                continue
+
+            order_volume = self._safe_int(
+                self._order_field_any(order, ['order_volume', '委托数量', 'volume'], None)
+            )
+            if expected_volume is not None and order_volume != expected_volume:
+                continue
+
+            order_price = self._order_field_any(order, ['price', '委托价格', '委托价'], None)
+            if not self._order_price_matches(order_price, price):
+                continue
+
+            order_ts = self._order_time_to_timestamp(
+                self._order_field_any(order, ['order_time', '报单时间', '委托时间'], None)
+            )
+            if order_ts is not None:
+                if order_ts < submitted_at - pre_window:
+                    continue
+                if order_ts > submitted_at + post_window:
+                    continue
+
+            order_id = self._safe_int(
+                self._order_field_any(order, ['order_id', '订单编号', 'm_strOrderSysID'], None)
+            )
+            if order_id is None or order_id <= 0:
+                continue
+            matches.append(order_id)
+
+        unique_matches = sorted(set(matches))
+        if len(unique_matches) == 1:
+            real_order_id = unique_matches[0]
+            logger.info(
+                f"[ASYNC_ORDER_QUERY_RESOLVED] seq={returned_id} 通过委托列表反查到真实order_id={real_order_id} "
+                f"({side} {stock_base}, volume={expected_volume}, strategy={expected_strategy})"
+            )
+            try:
+                self.qmt_trader.order_id_map[returned_id] = real_order_id
+            except Exception:
+                pass
+            return real_order_id
+
+        if len(unique_matches) > 1:
+            logger.warning(
+                f"[ASYNC_ORDER_QUERY_AMBIGUOUS] seq={returned_id} 反查到多个候选order_id={unique_matches}，"
+                f"保守返回None"
+            )
+        return None
+
+    def _get_real_order_id(self, returned_id, stock_code=None, side=None,
+                           volume=None, strategy=None, order_remark=None,
+                           submitted_at=None, price=None):
         """
         将buy/sell返回的ID转换为真实order_id
 
         说明:
         - 同步模式(USE_SYNC_ORDER_API=True): buy/sell直接返回order_id
-        - 异步模式(USE_SYNC_ORDER_API=False): buy/sell返回seq号，需要通过回调建立的映射获取order_id
+        - 异步模式(USE_SYNC_ORDER_API=False): buy/sell返回seq号，优先通过回调映射获取order_id；
+          回调未及时到达时，再主动查询当日委托列表反查真实order_id。
 
         参数:
             returned_id: buy/sell方法返回的ID (可能是seq或order_id)
@@ -2857,6 +3093,31 @@ class PositionManager:
 
             logger.warning(f"seq={returned_id}未在order_id_map中找到映射，等待超时")
             logger.debug(f"当前order_id_map内容: {self.qmt_trader.order_id_map}")
+            fallback_timeout = float(getattr(config, 'ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS', 3.0))
+            fallback_interval = float(getattr(config, 'ASYNC_ORDER_QUERY_FALLBACK_INTERVAL_SECONDS', 0.2))
+            if fallback_interval <= 0:
+                fallback_interval = 0.2
+            deadline = time.time() + max(0, fallback_timeout)
+            while True:
+                try:
+                    real_order_id = self._resolve_real_order_id_from_orders(
+                        returned_id=returned_id,
+                        stock_code=stock_code,
+                        side=side,
+                        volume=volume,
+                        strategy=strategy,
+                        order_remark=order_remark,
+                        submitted_at=submitted_at,
+                        price=price,
+                    )
+                except Exception as e:
+                    logger.warning(f"[ASYNC_ORDER_QUERY_FAILED] seq={returned_id} 委托列表反查异常: {e}")
+                    real_order_id = None
+                if real_order_id:
+                    return real_order_id
+                if time.time() >= deadline:
+                    break
+                time.sleep(fallback_interval)
             return None
 
     def _has_pending_orders(self, stock_code):

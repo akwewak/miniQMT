@@ -155,6 +155,10 @@ USE_SYNC_ORDER_API = False          # 使用同步下单接口(True)还是异步
                                      # True: 使用order_stock()直接返回order_id
 ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 2.0  # 异步下单后等待 order_id 回推的最长时间
 ASYNC_ORDER_ID_WAIT_INTERVAL_SECONDS = 0.1  # 检查 seq->order_id 映射的轮询间隔
+ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 30.0  # 回推未到时，主动查询委托列表反查 order_id 的最长时间
+ASYNC_ORDER_QUERY_FALLBACK_INTERVAL_SECONDS = 0.5  # 主动反查委托列表的轮询间隔
+ASYNC_ORDER_QUERY_MATCH_PRE_WINDOW_SECONDS = 5.0  # 允许匹配下单前若干秒内的委托，兼容本机/QMT时间微小偏差
+ASYNC_ORDER_QUERY_MATCH_POST_WINDOW_SECONDS = 30.0  # 允许匹配下单后若干秒内的委托，避免误配历史委托
 ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS = 300  # 正 seq 未确认时，同股同方向暂停再次提交的时间
 QMT_CONNECT_TIMEOUT = 30            # QMT交易接口连接超时(秒)，避免connect卡死
 QMT_STOP_TIMEOUT = 5.0              # QMT交易接口停止超时(秒)，避免旧连接清理卡死
@@ -567,6 +571,7 @@ WEB_SERVER_BASE_PORT = _env_int("WEB_SERVER_PORT", 5000, 1, 65535)
 WEB_SERVER_PORT = WEB_SERVER_BASE_PORT
 WEB_SERVER_DEBUG = False
 WEB_API_TOKEN = os.environ.get("QMT_API_TOKEN", "")  # 设置后启用 Token 验证，空字符串=不验证（仅限内网部署）
+ENABLE_DEBUG_LIVE_SELL_TEST_API = _env_bool("ENABLE_DEBUG_LIVE_SELL_TEST_API", False)  # 实盘卖出调试窄接口，生产默认不注册
 WEB_TRADE_RECORDS_DISPLAY_DAYS = 60  # 下单日志仅展示最近N天（约2个月）的交易记录，避免清单过长
 
 # ======================= 日志清理配置 =======================

@@ -69,10 +69,18 @@ class _FakeTrade:
 
 
 class _FakeOrder:
-    def __init__(self, stock_code, order_status, order_id=None):
+    def __init__(self, stock_code, order_status, order_id=None,
+                 order_type=24, order_volume=100, order_time=None,
+                 strategy_name="", order_remark="", traded_volume=0):
         self.stock_code = stock_code
         self.order_status = order_status
         self.order_id = order_id
+        self.order_type = order_type
+        self.order_volume = order_volume
+        self.order_time = order_time if order_time is not None else int(time.time())
+        self.strategy_name = strategy_name
+        self.order_remark = order_remark
+        self.traded_volume = traded_volume
 
 
 class TestTraderCallback(TestBase):
@@ -1138,6 +1146,367 @@ class TestTraderCallback(TestBase):
         self.assertIsNone(sell_order_id)
         qmt_trader.buy.assert_not_called()
         qmt_trader.sell.assert_not_called()
+
+    def test_h2e_get_real_order_id_falls_back_to_order_query(self):
+        """seq回推未到时，应能从QMT委托列表反查真实order_id并回填映射。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        qmt_trader.xt_trader.query_stock_orders.return_value = [
+            _FakeOrder(
+                stock_code="000799.SZ",
+                order_status=50,
+                order_id=672137248,
+                order_type=24,
+                order_volume=100,
+                order_time=int(time.time()),
+                strategy_name="debug_live_sell_100",
+                order_remark="auto_debug_live_sell_100",
+            )
+        ]
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                70,
+                stock_code="000799.SZ",
+                side="SELL",
+                volume=100,
+                strategy="debug_live_sell_100",
+                order_remark="auto_debug_live_sell_100",
+                submitted_at=time.time() - 1,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137248)
+        self.assertEqual(qmt_trader.order_id_map[70], 672137248)
+
+    def test_h2j_get_real_order_id_matches_active_info_hhmmss_time(self):
+        """应优先使用英文活跃委托信息，并兼容QMT的HHMMSS报单时间。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        now = datetime.now()
+        qmt_trader.get_active_order_info_by_stock.return_value = [{
+            "stock_code": "000799.SZ",
+            "order_status": 50,
+            "order_id": 672137249,
+            "order_type": 24,
+            "order_volume": 100,
+            "order_time": int(now.strftime("%H%M%S")),
+            "strategy_name": "debug_live_sell_100",
+            "order_remark": "auto_debug_live_sell_100",
+        }]
+        qmt_trader.xt_trader.query_stock_orders.return_value = []
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                42,
+                stock_code="000799.SZ",
+                side="SELL",
+                volume=100,
+                strategy="debug_live_sell_100",
+                order_remark="auto_debug_live_sell_100",
+                submitted_at=now.timestamp() - 1,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137249)
+        self.assertEqual(qmt_trader.order_id_map[42], 672137249)
+        qmt_trader.get_active_order_info_by_stock.assert_called_with("000799")
+
+    def test_h2k_get_real_order_id_matches_yyyymmddhhmmss_time_and_price(self):
+        """应兼容QMT的YYYYMMDDHHMMSS报单时间，并允许价格最小跳动差异。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        submitted = datetime.now().replace(microsecond=0)
+        qmt_trader.get_active_order_info_by_stock.return_value = []
+        qmt_trader.xt_trader.query_stock_orders.return_value = [
+            _FakeOrder(
+                stock_code="000799.SZ",
+                order_status=50,
+                order_id=672137250,
+                order_type=24,
+                order_volume=100,
+                order_time=int(submitted.strftime("%Y%m%d%H%M%S")),
+                strategy_name="debug_live_sell_100",
+                order_remark="auto_debug_live_sell_100",
+            )
+        ]
+        qmt_trader.xt_trader.query_stock_orders.return_value[0].price = 45.59
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                41,
+                stock_code="000799.SZ",
+                side="SELL",
+                volume=100,
+                strategy="debug_live_sell_100",
+                order_remark="auto_debug_live_sell_100",
+                submitted_at=submitted.timestamp() - 1,
+                price=45.60,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137250)
+        self.assertEqual(qmt_trader.order_id_map[41], 672137250)
+
+    def test_h2l_get_real_order_id_does_not_require_remark_exact_match(self):
+        """券商可能改写委托备注；强条件唯一命中时不应因备注差异丢失order_id。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        submitted = datetime.now().replace(microsecond=0)
+        qmt_trader.get_active_order_info_by_stock.return_value = [{
+            "stock_code": "000799.SZ",
+            "order_status": 50,
+            "order_id": 672137251,
+            "order_type": 24,
+            "order_volume": 100,
+            "order_time": int(submitted.timestamp()),
+            "strategy_name": "debug_live_sell_100",
+            "order_remark": "broker_rewritten_remark",
+            "price": 45.59,
+        }]
+        qmt_trader.xt_trader.query_stock_orders.return_value = []
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                33,
+                stock_code="000799.SZ",
+                side="SELL",
+                volume=100,
+                strategy="debug_live_sell_100",
+                order_remark="auto_debug_live_sell_100",
+                submitted_at=submitted.timestamp() - 1,
+                price=45.60,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137251)
+        self.assertEqual(qmt_trader.order_id_map[33], 672137251)
+
+    def test_h2f_get_real_order_id_query_fallback_rejects_ambiguous_matches(self):
+        """委托列表反查到多个候选时必须保守失败，不能猜order_id。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        now = int(time.time())
+        qmt_trader.xt_trader.query_stock_orders.return_value = [
+            _FakeOrder("000799.SZ", 50, 672137248, 24, 100, now, "grid", "auto_grid"),
+            _FakeOrder("000799.SZ", 50, 672137249, 24, 100, now, "grid", "auto_grid"),
+        ]
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                70,
+                stock_code="000799.SZ",
+                side="SELL",
+                volume=100,
+                strategy="grid",
+                order_remark="auto_grid",
+                submitted_at=time.time() - 1,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertIsNone(order_id)
+        self.assertNotIn(70, qmt_trader.order_id_map)
+
+    def test_h2g_sell_stock_resolves_order_id_from_order_query_fallback(self):
+        """卖出路径在callback映射缺失时，应通过委托列表拿到真实order_id且不重试。"""
+        executor = self._make_live_executor()
+        executor.position_manager = self.pm
+
+        qmt_trader = MagicMock()
+        qmt_trader.adjust_stock.side_effect = (
+            lambda stock: stock if "." in stock else f"{stock}.SZ"
+        )
+        qmt_trader.check_stock_is_av_sell.return_value = True
+        qmt_trader.ensure_trade_push_ready.return_value = True
+        qmt_trader.sell.return_value = 70
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        qmt_trader.xt_trader.query_stock_orders.return_value = [
+            _FakeOrder(
+                stock_code="000799.SZ",
+                order_status=50,
+                order_id=672137248,
+                order_type=24,
+                order_volume=100,
+                order_time=int(time.time()),
+                strategy_name="debug_live_sell_100",
+                order_remark="auto_debug_live_sell_100",
+            )
+        ]
+        self.pm.qmt_trader = qmt_trader
+
+        old_sim = config.ENABLE_SIMULATION_MODE
+        old_allow_sell = getattr(config, "ENABLE_ALLOW_SELL", True)
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.ENABLE_SIMULATION_MODE = False
+            config.ENABLE_ALLOW_SELL = True
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            with patch("config.is_trade_time", return_value=True):
+                order_id = executor.sell_stock(
+                    "000799",
+                    volume=100,
+                    price=41.50,
+                    strategy="debug_live_sell_100",
+                )
+        finally:
+            config.ENABLE_SIMULATION_MODE = old_sim
+            config.ENABLE_ALLOW_SELL = old_allow_sell
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137248)
+        qmt_trader.sell.assert_called_once()
+        self.assertEqual(qmt_trader.order_id_map[70], 672137248)
+        self.assertIn("672137248", executor.order_cache)
+
+    def test_h2h_get_real_order_id_falls_back_to_dataframe_query(self):
+        """原始QMT委托查询失败时，应能降级到包装查询返回的DataFrame反查order_id。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        qmt_trader.xt_trader.query_stock_orders.side_effect = RuntimeError("raw query failed")
+        qmt_trader.query_stock_orders.return_value = pd.DataFrame([{
+            "证券代码": "000799",
+            "订单编号": 672137250,
+            "报单时间": datetime.now(),
+            "委托类型": 24,
+            "委托数量": 100,
+            "策略名称": "debug_live_sell_100",
+            "委托备注": "auto_debug_live_sell_100",
+        }])
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                71,
+                stock_code="000799.SZ",
+                side="SELL",
+                volume=100,
+                strategy="debug_live_sell_100",
+                order_remark="auto_debug_live_sell_100",
+                submitted_at=time.time() - 1,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137250)
+        self.assertEqual(qmt_trader.order_id_map[71], 672137250)
+
+    def test_h2i_sell_stock_stops_retry_when_order_query_fails(self):
+        """委托反查接口异常时，卖出应标记未知提交并停止重试，避免重复实盘发单。"""
+        executor = self._make_live_executor()
+        executor.position_manager = self.pm
+
+        qmt_trader = MagicMock()
+        qmt_trader.adjust_stock.side_effect = (
+            lambda stock: stock if "." in stock else f"{stock}.SZ"
+        )
+        qmt_trader.check_stock_is_av_sell.return_value = True
+        qmt_trader.ensure_trade_push_ready.return_value = True
+        qmt_trader.sell.return_value = 71
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        qmt_trader.xt_trader.query_stock_orders.side_effect = RuntimeError("raw query failed")
+        qmt_trader.query_stock_orders.side_effect = RuntimeError("wrapper query failed")
+        self.pm.qmt_trader = qmt_trader
+
+        old_sim = config.ENABLE_SIMULATION_MODE
+        old_allow_sell = getattr(config, "ENABLE_ALLOW_SELL", True)
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.ENABLE_SIMULATION_MODE = False
+            config.ENABLE_ALLOW_SELL = True
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            with patch("config.is_trade_time", return_value=True):
+                order_id = executor.sell_stock(
+                    "000799",
+                    volume=100,
+                    price=41.50,
+                    strategy="debug_live_sell_100",
+                )
+        finally:
+            config.ENABLE_SIMULATION_MODE = old_sim
+            config.ENABLE_ALLOW_SELL = old_allow_sell
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertIsNone(order_id)
+        qmt_trader.sell.assert_called_once()
+        self.assertIn(("000799.SZ", "SELL"), executor._unknown_order_submissions)
 
     def test_h3_confirmed_dynamic_deal_writes_trade_record_once(self):
         """真实成交确认后才写 trade_records，同一成交号重复确认应幂等"""

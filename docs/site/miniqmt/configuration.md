@@ -310,6 +310,7 @@ DYNAMIC_TAKE_PROFIT = [
 | `WEB_SERVER_HOST` | `"127.0.0.1"` | web1.0 Flask 监听地址，默认仅本机访问 |
 | `WEB_SERVER_PORT` | `5000` | 监听端口 |
 | `WEB_API_TOKEN` | `""` | API Token（通过 `QMT_API_TOKEN` 环境变量设置） |
+| `ENABLE_DEBUG_LIVE_SELL_TEST_API` | `False` | 实盘卖出调试窄接口开关；生产默认不注册 `/api/debug/live-sell-100-guard` |
 
 ---
 

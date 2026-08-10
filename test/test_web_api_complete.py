@@ -1836,7 +1836,13 @@ class TestLiveSell100GuardApi(WebAPITestBase):
 
     def _guard_post(self, payload, token=None):
         headers = {'X-API-Token': token or self.token}
-        return self.client.post(self.endpoint, json=payload, headers=headers)
+        with web_server.app.test_request_context(
+            self.endpoint,
+            method='POST',
+            json=payload,
+            headers=headers,
+        ):
+            return web_server.app.make_response(web_server.debug_live_sell_100_guard())
 
     def _valid_payload(self, dry_run=True):
         return {
@@ -1846,9 +1852,14 @@ class TestLiveSell100GuardApi(WebAPITestBase):
             'confirm': self.confirm if not dry_run else '',
         }
 
+    def test_00_route_is_not_registered_by_default(self):
+        rules = {rule.rule for rule in web_server.app.url_map.iter_rules()}
+        self.assertFalse(getattr(config, 'ENABLE_DEBUG_LIVE_SELL_TEST_API', False))
+        self.assertNotIn(self.endpoint, rules)
+
     def test_01_token_not_configured_is_rejected(self):
         config.WEB_API_TOKEN = ''
-        resp = self.client.post(self.endpoint, json=self._valid_payload())
+        resp = self._guard_post(self._valid_payload())
         data = resp.get_json()
         self.assertEqual(resp.status_code, 403)
         self.assertFalse(data['success'])
@@ -1938,7 +1949,7 @@ class TestLiveSell100GuardApi(WebAPITestBase):
         self.assertEqual(kwargs['stock_code'], '000799')
         self.assertEqual(kwargs['volume'], 100)
         self.assertIsNone(kwargs['price'])
-        self.assertEqual(kwargs['price_type'], 5)
+        self.assertEqual(kwargs['price_type'], 11)
         self.assertEqual(kwargs['strategy'], 'debug_live_sell_100')
 
 
