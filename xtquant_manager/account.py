@@ -567,6 +567,11 @@ class XtQuantAccount:
             return []
         result = []
         for pos in positions:
+            stock_name = (
+                getattr(pos, "m_strInstrumentName", None)
+                or getattr(pos, "stock_name", None)
+                or getattr(pos, "instrument_name", None)
+            )
             result.append({
                 "账号类型": pos.account_type,
                 "资金账号": pos.account_id,
@@ -580,7 +585,7 @@ class XtQuantAccount:
                 "持股天数": None,
                 "交易状态": None,
                 "明细": None,
-                "证券名称": None,
+                "证券名称": stock_name,
                 "冻结数量": pos.volume - pos.can_use_volume,
                 "市价": None,
                 "盈亏": None,

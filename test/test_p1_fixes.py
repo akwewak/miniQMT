@@ -135,6 +135,7 @@ class TestP1QmtSelfRecoveryProbe(_P1PositionManagerBase):
     def _trader_with_ping(self, ping_result):
         trader = MagicMock()
         trader.ping_xttrader.return_value = ping_result
+        trader.ensure_trade_push_ready.return_value = True
         return trader
 
     def test_p1_3_probe_true_when_ping_succeeds(self):
@@ -142,6 +143,19 @@ class TestP1QmtSelfRecoveryProbe(_P1PositionManagerBase):
         with patch.object(config, "ENABLE_SIMULATION_MODE", False), \
              patch.object(config, "ENABLE_XTQUANT_MANAGER", False, create=True):
             self.assertTrue(self.pm._probe_qmt_recovered())
+        self.pm.qmt_trader.ensure_trade_push_ready.assert_called_once()
+        self.pm.qmt_trader.register_trade_callback.assert_called_once()
+        self.pm.qmt_trader.register_order_callback.assert_called_once()
+        self.pm.qmt_trader.register_disconnect_callback.assert_called_once()
+
+    def test_p1_3_probe_false_when_push_not_ready(self):
+        trader = self._trader_with_ping(True)
+        trader.ensure_trade_push_ready.return_value = False
+        self.pm.qmt_trader = trader
+        with patch.object(config, "ENABLE_SIMULATION_MODE", False), \
+             patch.object(config, "ENABLE_XTQUANT_MANAGER", False, create=True):
+            self.assertFalse(self.pm._probe_qmt_recovered(),
+                             "ping 成功但主推订阅失败时不能标记为恢复")
 
     def test_p1_3_probe_false_when_ping_fails(self):
         self.pm.qmt_trader = self._trader_with_ping(False)

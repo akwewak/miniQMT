@@ -565,9 +565,35 @@ class TestRestartAvailableRecovery(unittest.TestCase):
         self.assertEqual(int(row_after_realtime[0]), 750,
                          f"步骤2: 实盘同步后内存 available 应为 750，实际为 {row_after_realtime[0]}")
 
+    def test_B4_realtime_sync_preserves_qmt_etf_stock_name(self):
+        """实盘同步应保留 QMT 返回的 ETF 中文名称，避免 web2.0 名称列退回代码。"""
+        from position_manager import PositionManager
+
+        pm, mem_conn, sqlite_conn = self._make_full_pm_stub()
+        real_df = pd.DataFrame([{
+            '证券代码': '515050',
+            '证券名称': '中概互联ETF',
+            '股票余额': 1000,
+            '可用余额': 1000,
+            '成本价': 1.0,
+            '市值': 1050.0,
+        }])
+
+        with patch.object(config, 'ENABLE_SIMULATION_MODE', False):
+            PositionManager._sync_real_positions_to_memory(pm, real_df)
+
+        sqlite_conn.close()
+        row = mem_conn.execute(
+            "SELECT stock_name FROM positions WHERE stock_code=?", ("515050",)
+        ).fetchone()
+        mem_conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], '中概互联ETF')
+
 
 # --------------------------------------------------------------------------
-# 测试组 B4：实盘空持仓确认清理
+# 测试组 B5：实盘空持仓确认清理
 # --------------------------------------------------------------------------
 class TestEmptyRealPositionCleanup(unittest.TestCase):
     """

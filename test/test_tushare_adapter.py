@@ -49,11 +49,13 @@ class TestTushareCodeConversion(unittest.TestCase):
         """裸代码 6xxx/5xxx/9xxx → xxxxxx.SH"""
         self.assertEqual(_to_tushare_code('600036'), '600036.SH')
         self.assertEqual(_to_tushare_code('688001'), '688001.SH')
+        self.assertEqual(_to_tushare_code('515050'), '515050.SH')
 
     def test_bare_code_sz(self):
         """裸代码 0xxx/3xxx → xxxxxx.SZ"""
         self.assertEqual(_to_tushare_code('000001'), '000001.SZ')
         self.assertEqual(_to_tushare_code('300750'), '300750.SZ')
+        self.assertEqual(_to_tushare_code('159381'), '159381.SZ')
 
     def test_lowercase_normalized(self):
         """小写代码转大写"""
@@ -167,6 +169,31 @@ class TestTushareHistoryData(TestBase):
         # Tushare 原始列 'trade_date' / 'vol' 不应存在
         self.assertNotIn('trade_date', df.columns)
         self.assertNotIn('vol', df.columns)
+
+    def test_download_history_etf_uses_fund_daily(self):
+        """ETF/场内基金应走 Tushare fund_daily，避免 daily 返回空导致无操作建议。"""
+        mock_pro = MagicMock()
+        mock_pro.fund_daily.return_value = pd.DataFrame({
+            'ts_code': ['515050.SH', '515050.SH'],
+            'trade_date': ['20260701', '20260702'],
+            'open': [1.0, 1.02],
+            'high': [1.03, 1.05],
+            'low': [0.99, 1.01],
+            'close': [1.02, 1.04],
+            'vol': [100000.0, 120000.0],
+            'amount': [102000.0, 124800.0],
+        })
+        self._mock_tushare_pro(mock_pro)
+
+        df = self.dm._download_history_tushare('515050',
+                                                start_date='20260701',
+                                                end_date='20260702')
+
+        self.assertIsNotNone(df)
+        self.assertFalse(df.empty)
+        self.assertIn('date', df.columns)
+        mock_pro.fund_daily.assert_called_once()
+        mock_pro.daily.assert_not_called()
 
     def test_download_history_date_format(self):
         """验证日期格式为 YYYY-MM-DD"""
@@ -311,6 +338,24 @@ class TestTushareStockName(TestBase):
         self._mock_tushare_stock_basic('平安银行')
         name = self.dm._get_stock_name_from_tushare('000001.SZ')
         self.assertEqual(name, '平安银行')
+
+    def test_get_etf_name_uses_fund_basic(self):
+        """ETF/场内基金名称应走 fund_basic，而不是只查 stock_basic。"""
+        mock_pro = MagicMock()
+        mock_pro.fund_basic.return_value = pd.DataFrame({
+            'ts_code': ['515050.SH'],
+            'name': ['中概互联ETF'],
+        })
+        self.dm._tushare_pro = mock_pro
+        self.dm._tushare_token_attempted = True
+
+        name = self.dm._get_stock_name_from_tushare('515050')
+
+        self.assertEqual(name, '中概互联ETF')
+        self.assertEqual(self.dm.stock_names_cache['515050'], '中概互联ETF')
+        self.assertEqual(self.dm.stock_names_cache['515050.SH'], '中概互联ETF')
+        mock_pro.fund_basic.assert_called_once()
+        mock_pro.stock_basic.assert_not_called()
 
     def test_get_stock_name_caches_result(self):
         """结果写入缓存"""

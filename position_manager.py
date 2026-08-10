@@ -414,7 +414,21 @@ class PositionManager:
         if trader is None or not hasattr(trader, 'ping_xttrader'):
             return False
         try:
-            return bool(trader.ping_xttrader())
+            if not trader.ping_xttrader():
+                return False
+            ensure_push_ready = getattr(trader, 'ensure_trade_push_ready', None)
+            if callable(ensure_push_ready) and not ensure_push_ready():
+                logger.warning('[MONITOR] QMT 同步查询已恢复，但交易主推订阅未恢复，保持断连状态')
+                return False
+            try:
+                trader.register_trade_callback(self._on_trade_callback)
+                if hasattr(trader, 'register_order_callback'):
+                    trader.register_order_callback(self._on_order_callback)
+                trader.register_disconnect_callback(self._on_qmt_disconnect)
+            except Exception as cb_error:
+                logger.warning(f'[MONITOR] QMT 恢复后重新注册回调失败，保持断连状态: {cb_error}')
+                return False
+            return True
         except Exception as e:
             logger.debug(f'[MONITOR] QMT 恢复探测异常(视为未恢复): {e}')
             return False
@@ -544,6 +558,7 @@ class PositionManager:
                         stock_code = str(row['证券代码']) if row['证券代码'] is not None else None
                         if not stock_code:
                             continue  # 跳过无效数据
+                        stock_name = row.get('证券名称') if '证券名称' in row.index else None
 
                         # 安全提取并转换数值
                         try:
@@ -600,6 +615,7 @@ class PositionManager:
                                 highest_price=highest_price,
                                 open_date=open_date,
                                 stop_loss_price=stop_loss_price,
+                                stock_name=stock_name,
                                 base_cost_price=base_cost_price  # 🔧 传递base_cost_price
                             )
                         else:
@@ -611,6 +627,7 @@ class PositionManager:
                                 available=available,
                                 market_value=market_value,
                                 current_price=current_price,
+                                stock_name=stock_name,
                                 open_date=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             )
 
@@ -2824,13 +2841,19 @@ class PositionManager:
             import time
             logger.debug(f"异步模式，查找seq={returned_id}的映射")
 
-            # 等待最多2秒让回调建立映射
-            for i in range(20):
+            wait_timeout = float(getattr(config, 'ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS', 2.0))
+            wait_interval = float(getattr(config, 'ASYNC_ORDER_ID_WAIT_INTERVAL_SECONDS', 0.1))
+            if wait_interval <= 0:
+                wait_interval = 0.1
+            wait_count = max(1, int(wait_timeout / wait_interval))
+
+            # 等待配置时间让回调建立映射
+            for i in range(wait_count):
                 if returned_id in self.qmt_trader.order_id_map:
                     real_order_id = self.qmt_trader.order_id_map[returned_id]
                     logger.debug(f"映射成功: seq={returned_id} -> order_id={real_order_id}")
                     return real_order_id
-                time.sleep(0.1)
+                time.sleep(wait_interval)
 
             logger.warning(f"seq={returned_id}未在order_id_map中找到映射，等待超时")
             logger.debug(f"当前order_id_map内容: {self.qmt_trader.order_id_map}")

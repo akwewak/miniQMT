@@ -11,7 +11,7 @@
           - 若断连 (ping=False) → 调用 connect() 重建连接
 
 测试场景:
-  TC1: QMT 正在运行，xttrader 已连通 → 跳过 connect()，qmt_connected=True
+  TC1: QMT 正在运行，xttrader 已连通 → 跳过 connect()，确认主推订阅，qmt_connected=True
   TC2: QMT 断连 → 调用 connect()，connect 成功 → qmt_connected=True，回调重注册
   TC3: QMT 断连 → 调用 connect()，connect 失败 → qmt_connected=False，返回 False
   TC4: ping 抛异常 → 当作断连处理，继续尝试 connect()
@@ -34,7 +34,9 @@ import config
 class TestReinitXtquantTrader(unittest.TestCase):
     """reinit_xtquant_trader() 新 ping-first 行为的单元测试"""
 
-    def _make_pm(self, ping_result=True, connect_result='tuple', has_trade_cb=True, has_disconnect_cb=True):
+    def _make_pm(self, ping_result=True, connect_result='tuple',
+                 has_trade_cb=True, has_order_cb=True, has_disconnect_cb=True,
+                 ensure_push_result=True):
         """
         构造 mock position_manager + qmt_trader 对象。
 
@@ -42,6 +44,7 @@ class TestReinitXtquantTrader(unittest.TestCase):
             ping_result:      ping_xttrader() 的返回值 (bool 或 Exception)
             connect_result:   'tuple'=连接成功, None=连接失败
             has_trade_cb:     是否有 _on_trade_callback 属性
+            has_order_cb:     是否有 _on_order_callback 属性
             has_disconnect_cb: 是否有 _on_qmt_disconnect 属性
         """
         pm = MagicMock()
@@ -58,6 +61,7 @@ class TestReinitXtquantTrader(unittest.TestCase):
             qmt_trader.connect.return_value = (MagicMock(), MagicMock())  # 成功返回 (xt_trader, acc)
         else:
             qmt_trader.connect.return_value = connect_result  # None = 失败
+        qmt_trader.ensure_trade_push_ready.return_value = ensure_push_result
 
         pm.qmt_trader = qmt_trader
 
@@ -66,6 +70,11 @@ class TestReinitXtquantTrader(unittest.TestCase):
         else:
             # 确保 hasattr 返回 False
             del pm._on_trade_callback
+
+        if has_order_cb:
+            pm._on_order_callback = MagicMock()
+        else:
+            del pm._on_order_callback
 
         if has_disconnect_cb:
             pm._on_qmt_disconnect = MagicMock()
@@ -86,14 +95,30 @@ class TestReinitXtquantTrader(unittest.TestCase):
     # TC1: 连接正常时跳过 connect()
     # ------------------------------------------------------------------
     def test_tc1_ping_ok_skips_connect(self):
-        """TC1: xttrader 已连通 → 不调用 connect()，qmt_connected 保持 True"""
+        """TC1: xttrader 已连通 → 不调用 connect()，但必须确认主推订阅和回调"""
         pm, qmt_trader = self._make_pm(ping_result=True)
 
         result = self._run_reinit(pm)
 
         self.assertTrue(result, "连接正常时应返回 True")
         qmt_trader.connect.assert_not_called()
+        qmt_trader.ensure_trade_push_ready.assert_called_once()
+        qmt_trader.register_trade_callback.assert_called_once()
+        qmt_trader.register_order_callback.assert_called_once()
+        qmt_trader.register_disconnect_callback.assert_called_once()
         self.assertTrue(pm.qmt_connected, "qmt_connected 应为 True")
+
+    def test_tc1b_ping_ok_but_push_not_ready_returns_false(self):
+        """TC1b: ping 成功但交易主推不可用 → 不应假健康。"""
+        pm, qmt_trader = self._make_pm(ping_result=True, ensure_push_result=False)
+
+        result = self._run_reinit(pm)
+
+        self.assertFalse(result, "主推订阅失败时应返回 False")
+        qmt_trader.connect.assert_not_called()
+        qmt_trader.ensure_trade_push_ready.assert_called_once()
+        qmt_trader.register_trade_callback.assert_not_called()
+        self.assertFalse(pm.qmt_connected, "主推未恢复时 qmt_connected 必须为 False")
 
     # ------------------------------------------------------------------
     # TC2: 连接断开时调用 connect()，重连成功
@@ -110,6 +135,7 @@ class TestReinitXtquantTrader(unittest.TestCase):
         self.assertTrue(pm.qmt_connected, "重连成功后 qmt_connected 应为 True")
         # 验证回调被重新注册
         qmt_trader.register_trade_callback.assert_called_once()
+        qmt_trader.register_order_callback.assert_called_once()
         qmt_trader.register_disconnect_callback.assert_called_once()
 
     # ------------------------------------------------------------------
@@ -182,6 +208,7 @@ class TestReinitXtquantTrader(unittest.TestCase):
             ping_result=False,
             connect_result='tuple',
             has_trade_cb=False,
+            has_order_cb=True,
             has_disconnect_cb=True
         )
 
@@ -189,6 +216,7 @@ class TestReinitXtquantTrader(unittest.TestCase):
 
         self.assertTrue(result, "无 trade_callback 时应正常返回 True")
         qmt_trader.register_trade_callback.assert_not_called()
+        qmt_trader.register_order_callback.assert_called_once()
         # disconnect_callback 仍应注册
         qmt_trader.register_disconnect_callback.assert_called_once()
 
@@ -201,6 +229,7 @@ class TestReinitXtquantTrader(unittest.TestCase):
             ping_result=False,
             connect_result='tuple',
             has_trade_cb=True,
+            has_order_cb=True,
             has_disconnect_cb=False
         )
 
@@ -208,6 +237,7 @@ class TestReinitXtquantTrader(unittest.TestCase):
 
         self.assertTrue(result, "无 disconnect_callback 时应正常返回 True")
         qmt_trader.register_trade_callback.assert_called_once()
+        qmt_trader.register_order_callback.assert_called_once()
         qmt_trader.register_disconnect_callback.assert_not_called()
 
     # ------------------------------------------------------------------

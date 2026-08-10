@@ -1659,6 +1659,13 @@ class DataManager:
             return code + '.SZ'
 
     @staticmethod
+    def _is_tushare_fund_code(stock_code):
+        """判断是否应按场内基金/ETF 调用 Tushare 基金接口。"""
+        ts_code = DataManager._to_tushare_code(stock_code)
+        simple_code = ts_code.split('.')[0]
+        return Methods.select_data_type(simple_code) == 'fund'
+
+    @staticmethod
     def _format_tushare_date(value):
         """将常见日期格式转为 Tushare daily 接口要求的 YYYYMMDD。"""
         if not value:
@@ -1698,6 +1705,10 @@ class DataManager:
             return None
 
         ts_code = self._to_tushare_code(stock_code)
+        query_func = getattr(pro, 'fund_daily', None) if self._is_tushare_fund_code(ts_code) else getattr(pro, 'daily', None)
+        if query_func is None:
+            logger.debug(f"Tushare: 当前客户端不支持 {stock_code} 的历史数据接口")
+            return None
 
         # 日期格式转换：Tushare daily 入参必须是 YYYYMMDD
         ts_start = self._format_tushare_date(start_date) or (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
@@ -1709,7 +1720,7 @@ class DataManager:
         try:
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             future = executor.submit(
-                pro.daily,
+                query_func,
                 ts_code=ts_code,
                 start_date=ts_start,
                 end_date=ts_end,
@@ -1725,7 +1736,7 @@ class DataManager:
                 self._check_tushare_cooldown()
                 return None
 
-            # 列重命名：Tushare daily() 返回 trade_date, open, high, low, close, vol, amount
+            # 列重命名：Tushare daily/fund_daily 返回 trade_date, open, high, low, close, vol, amount
             df = df.rename(columns={
                 'trade_date': 'date',
                 'vol': 'volume',
@@ -1800,30 +1811,39 @@ class DataManager:
             return None
 
         ts_code = self._to_tushare_code(stock_code)
+        query_methods = []
+        if self._is_tushare_fund_code(ts_code):
+            query_methods.append(('fund_basic', getattr(pro, 'fund_basic', None)))
+        query_methods.append(('stock_basic', getattr(pro, 'stock_basic', None)))
+
         import concurrent.futures
         start_ts = time.time()
 
         try:
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(
-                pro.stock_basic,
-                ts_code=ts_code,
-                fields='ts_code,name',
-            )
-            executor.shutdown(wait=False)
-            df = future.result(timeout=getattr(config, 'TUSHARE_STOCK_NAME_TIMEOUT', 5))
+            for method_name, query_func in query_methods:
+                if query_func is None:
+                    continue
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(
+                    query_func,
+                    ts_code=ts_code,
+                    fields='ts_code,name',
+                )
+                executor.shutdown(wait=False)
+                df = future.result(timeout=getattr(config, 'TUSHARE_STOCK_NAME_TIMEOUT', 5))
+
+                latency_ms = int((time.time() - start_ts) * 1000)
+
+                if df is not None and not df.empty:
+                    name = str(df.iloc[0].get('name', '')).strip()
+                    if self._is_valid_stock_name(stock_code, name):
+                        self._record_market_health("Tushare", "stock_name", stock_code, True, latency_ms, reason=method_name)
+                        # 成功：重置失败计数
+                        self._ts_consecutive_failures = 0
+                        self._ts_cooldown_until = 0.0
+                        return self._cache_stock_name(stock_code, name)
 
             latency_ms = int((time.time() - start_ts) * 1000)
-
-            if df is not None and not df.empty:
-                name = str(df.iloc[0].get('name', '')).strip()
-                if self._is_valid_stock_name(stock_code, name):
-                    self._record_market_health("Tushare", "stock_name", stock_code, True, latency_ms, reason="success")
-                    # 成功：重置失败计数
-                    self._ts_consecutive_failures = 0
-                    self._ts_cooldown_until = 0.0
-                    return self._cache_stock_name(stock_code, name)
-
             self._record_market_health("Tushare", "stock_name", stock_code, False, latency_ms, reason="empty_or_invalid")
             self._ts_consecutive_failures += 1
             self._check_tushare_cooldown()

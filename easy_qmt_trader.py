@@ -188,14 +188,14 @@ class easy_qmt_trader:
     def register_trade_callback(self, cb):
         """注册成交回报外部回调，cb(trade) 在每次成交时被调用"""
         if self._callback is not None:
-            self._callback.trade_callbacks.append(cb)
+            self._append_unique_callback(self._callback.trade_callbacks, cb, "trade_callback")
         else:
             logger.warning("register_trade_callback: callback尚未初始化，请在connect()后调用")
 
     def register_order_callback(self, cb):
         """注册委托状态外部回调，cb(order) 在委托状态变化时调用。"""
         if self._callback is not None:
-            self._callback.order_callbacks.append(cb)
+            self._append_unique_callback(self._callback.order_callbacks, cb, "order_callback")
         else:
             logger.warning("register_order_callback: callback尚未初始化，请在connect()后调用")
 
@@ -205,10 +205,50 @@ class easy_qmt_trader:
         主要供 PositionManager 注册以即时更新 qmt_connected 标志。
         """
         if self._callback is not None:
-            self._callback.disconnect_callbacks.append(cb)
+            self._append_unique_callback(self._callback.disconnect_callbacks, cb, "disconnect_callback")
         else:
             logger.warning("register_disconnect_callback: callback尚未初始化，请在connect()后调用")
-        
+
+    def _append_unique_callback(self, callback_list, cb, name):
+        if cb in callback_list:
+            logger.debug(f"{name} 已注册，跳过重复注册")
+            return
+        callback_list.append(cb)
+
+    def ensure_trade_push_ready(self):
+        """
+        确保 xttrader 的交易主推通道处于可用状态。
+
+        ping_xttrader() 只能证明同步查询可用，不能证明异步下单回报/委托/成交主推可用。
+        因此在盘前同步、自恢复探测等“保留现有连接”的路径里，需要重新注册 callback 并订阅账号。
+        """
+        xt_trader = getattr(self, 'xt_trader', None)
+        acc = getattr(self, 'acc', None)
+        if not xt_trader or xt_trader == '' or not acc or acc == '':
+            logger.warning("ensure_trade_push_ready: xt_trader或账号对象未初始化")
+            return False
+
+        callback = getattr(self, '_callback', None)
+        if callback is None or getattr(callback, 'detached', False):
+            old_trade_callbacks = list(getattr(callback, 'trade_callbacks', [])) if callback is not None else []
+            callback = MyXtQuantTraderCallback(self.order_id_map)
+            for cb in old_trade_callbacks:
+                self._append_unique_callback(callback.trade_callbacks, cb, "trade_callback")
+            self._callback = callback
+            logger.warning("交易主推callback缺失或已失效，已创建新的callback")
+
+        try:
+            xt_trader.register_callback(callback)
+            subscribe_result = xt_trader.subscribe(acc)
+            if subscribe_result == 0:
+                logger.info(f"交易主推订阅确认成功, subscribe_result={subscribe_result}")
+                return True
+            logger.warning(f"交易主推订阅结果异常: {subscribe_result}")
+            return False
+        except Exception as e:
+            logger.warning(f"交易主推订阅确认失败: {e}")
+            return False
+
     def random_session_id(self):
         '''
         随机id
@@ -989,6 +1029,11 @@ class easy_qmt_trader:
             if len(positions) > 0:
                 data_list = []
                 for pos in positions:
+                    stock_name = (
+                        getattr(pos, 'm_strInstrumentName', None)
+                        or getattr(pos, 'stock_name', None)
+                        or getattr(pos, 'instrument_name', None)
+                    )
                     data_list.append({
                         '账号类型': pos.account_type,
                         '资金账号': pos.account_id,
@@ -997,7 +1042,8 @@ class easy_qmt_trader:
                         '可用余额': pos.can_use_volume,
                         '成本价': pos.open_price,
                         '参考成本价': pos.open_price,
-                        '市值': pos.market_value
+                        '市值': pos.market_value,
+                        '证券名称': stock_name
                     })
 
                 # 一次性创建DataFrame

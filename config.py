@@ -153,6 +153,9 @@ ENABLE_DB_MAINTENANCE = True        # 是否启用数据库维护任务
 USE_SYNC_ORDER_API = False          # 使用同步下单接口(True)还是异步接口(False)
                                      # False: 使用order_stock_async()返回seq号,需要回调映射
                                      # True: 使用order_stock()直接返回order_id
+ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 2.0  # 异步下单后等待 order_id 回推的最长时间
+ASYNC_ORDER_ID_WAIT_INTERVAL_SECONDS = 0.1  # 检查 seq->order_id 映射的轮询间隔
+ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS = 300  # 正 seq 未确认时，同股同方向暂停再次提交的时间
 QMT_CONNECT_TIMEOUT = 30            # QMT交易接口连接超时(秒)，避免connect卡死
 QMT_STOP_TIMEOUT = 5.0              # QMT交易接口停止超时(秒)，避免旧连接清理卡死
 

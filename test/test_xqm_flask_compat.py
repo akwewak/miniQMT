@@ -210,6 +210,24 @@ class TestFlaskCompatEndpoints(unittest.TestCase):
         p = r.json()["data"]["positions"][0]
         self.assertEqual(p["stock_name"], "招商银行")
 
+    def test_positions_stock_name_fallback_to_qmt_raw_name_for_etf(self):
+        """SQLite 暂无名称时，ETF 应优先使用 QMT 原始持仓中的证券名称。"""
+        raw = [{
+            "证券代码": "515050",
+            "股票余额": 1000,
+            "可用余额": 1000,
+            "成本价": 1.0,
+            "参考成本价": 1.0,
+            "市值": 1050.0,
+            "证券名称": "中概互联ETF",
+        }]
+        with patch.object(self.manager, "query_positions", return_value=raw):
+            r = self.client.get("/api/positions", headers={"X-Account-Id": ACC1})
+
+        p = r.json()["data"]["positions"][0]
+        self.assertEqual(p["stock_code"], "515050")
+        self.assertEqual(p["stock_name"], "中概互联ETF")
+
     def test_positions_open_date_from_sqlite(self):
         """建仓日期从 SQLite 读取"""
         r = self.client.get("/api/positions", headers={"X-Account-Id": ACC1})

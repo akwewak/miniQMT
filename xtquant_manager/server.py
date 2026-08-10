@@ -893,7 +893,7 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         code = p.get("证券代码", "")
 
         # SQLite 持久化元数据（由 _enrich_positions_from_sqlite 注入）
-        name     = p.get("_sqlite_name") or ""
+        name     = p.get("_sqlite_name") or p.get("证券名称") or p.get("stock_name") or ""
         open_dt  = p.get("_sqlite_open_date") or ""
         sl_price = p.get("_sqlite_stop_loss_price")
         trig     = p.get("_sqlite_profit_triggered", False)

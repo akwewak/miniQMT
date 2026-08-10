@@ -159,6 +159,7 @@ class TestTraderCallback(TestBase):
         executor.callbacks = {}
         executor.trade_lock = threading.Lock()
         executor._trade_record_lock = threading.RLock()
+        executor._unknown_order_submissions = {}
         return executor
 
     def _make_name_resolving_data_manager(self):
@@ -183,6 +184,7 @@ class TestTraderCallback(TestBase):
         )
         qmt_trader.check_stock_is_av_sell.return_value = True
         qmt_trader.check_stock_is_av_buy.return_value = True
+        qmt_trader.ensure_trade_push_ready.return_value = True
         qmt_trader.sell.return_value = 1
         qmt_trader.buy.return_value = 1
         executor.position_manager.qmt_trader = qmt_trader
@@ -237,6 +239,53 @@ class TestTraderCallback(TestBase):
         cb_obj.on_stock_trade(trade)
 
         self.assertEqual(results, [333])
+
+    def test_a4_register_callbacks_are_deduplicated(self):
+        """重复注册同一个外部回调时，不应在 callback 列表中堆叠多份。"""
+        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader._callback = MyXtQuantTraderCallback({})
+        cb = lambda event: event
+
+        trader.register_trade_callback(cb)
+        trader.register_trade_callback(cb)
+        trader.register_order_callback(cb)
+        trader.register_order_callback(cb)
+        trader.register_disconnect_callback(cb)
+        trader.register_disconnect_callback(cb)
+
+        self.assertEqual(trader._callback.trade_callbacks, [cb])
+        self.assertEqual(trader._callback.order_callbacks, [cb])
+        self.assertEqual(trader._callback.disconnect_callbacks, [cb])
+
+    def test_a5_ensure_trade_push_ready_rebuilds_detached_callback(self):
+        """callback 已失效时，ensure_trade_push_ready 应重建 callback 并重新订阅。"""
+        class StubXtTrader:
+            def __init__(self):
+                self.registered_callback = None
+                self.subscribe_calls = []
+
+            def register_callback(self, callback):
+                self.registered_callback = callback
+
+            def subscribe(self, account):
+                self.subscribe_calls.append(account)
+                return 0
+
+        trader = easy_qmt_trader(path="dummy", account="25105132")
+        old_callback = MyXtQuantTraderCallback(trader.order_id_map)
+        trade_cb = lambda trade: trade
+        old_callback.trade_callbacks.append(trade_cb)
+        old_callback.detach()
+        trader._callback = old_callback
+        trader.xt_trader = StubXtTrader()
+        trader.acc = object()
+
+        self.assertTrue(trader.ensure_trade_push_ready())
+        self.assertIsNot(trader._callback, old_callback)
+        self.assertFalse(trader._callback.detached)
+        self.assertEqual(trader._callback.trade_callbacks, [trade_cb])
+        self.assertIs(trader.xt_trader.registered_callback, trader._callback)
+        self.assertEqual(trader.xt_trader.subscribe_calls, [trader.acc])
 
     # ===================================================================
     # Group B: pending_orders 生命周期（callback 路径）
@@ -993,6 +1042,102 @@ class TestTraderCallback(TestBase):
         self.assertEqual(track_kwargs["signal_type"], "add_position")
         self.assertEqual(track_kwargs["signal_info"]["order_side"], "BUY")
         self.assertEqual(track_kwargs["signal_info"]["volume"], 100)
+
+    def test_h2a_sell_positive_seq_without_order_id_does_not_resubmit(self):
+        """异步卖出返回正 seq 但无 order_id 回推时，必须停止重试并进入冷却。"""
+        executor = self._make_orderable_executor()
+        executor.position_manager._get_real_order_id.return_value = None
+        executor.position_manager.qmt_trader.sell.return_value = 5209
+
+        old_sim = config.ENABLE_SIMULATION_MODE
+        old_allow_sell = getattr(config, "ENABLE_ALLOW_SELL", True)
+        old_cooldown = config.ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS
+        try:
+            config.ENABLE_SIMULATION_MODE = False
+            config.ENABLE_ALLOW_SELL = True
+            config.ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS = 300
+            with patch("config.is_trade_time", return_value=True):
+                first = executor.sell_stock("301560", volume=100, price=44.09, strategy="grid")
+                second = executor.sell_stock("301560", volume=100, price=44.09, strategy="grid")
+        finally:
+            config.ENABLE_SIMULATION_MODE = old_sim
+            config.ENABLE_ALLOW_SELL = old_allow_sell
+            config.ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS = old_cooldown
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(
+            executor.position_manager.qmt_trader.sell.call_count,
+            1,
+            "正 seq 未确认时，同一次和紧随其后的调用都不能重复提交卖单"
+        )
+
+    def test_h2b_buy_positive_seq_without_order_id_does_not_resubmit(self):
+        """异步买入返回正 seq 但无 order_id 回推时，必须停止重试并进入冷却。"""
+        executor = self._make_orderable_executor()
+        executor.position_manager._get_real_order_id.return_value = None
+        executor.position_manager.qmt_trader.buy.return_value = 6209
+
+        old_sim = config.ENABLE_SIMULATION_MODE
+        old_allow_buy = getattr(config, "ENABLE_ALLOW_BUY", True)
+        old_cooldown = config.ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS
+        try:
+            config.ENABLE_SIMULATION_MODE = False
+            config.ENABLE_ALLOW_BUY = True
+            config.ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS = 300
+            with patch("config.is_trade_time", return_value=True):
+                first = executor.buy_stock("301560", volume=100, price=44.09, strategy="add_position")
+                second = executor.buy_stock("301560", volume=100, price=44.09, strategy="add_position")
+        finally:
+            config.ENABLE_SIMULATION_MODE = old_sim
+            config.ENABLE_ALLOW_BUY = old_allow_buy
+            config.ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS = old_cooldown
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(
+            executor.position_manager.qmt_trader.buy.call_count,
+            1,
+            "正 seq 未确认时，同一次和紧随其后的调用都不能重复提交买单"
+        )
+
+    def test_h2c_unknown_submission_clears_after_order_id_map_arrives(self):
+        """未知提交冷却期间若迟到的 seq->order_id 映射到达，应允许后续新请求。"""
+        executor = self._make_orderable_executor()
+        qmt_trader = executor.position_manager.qmt_trader
+        qmt_trader.order_id_map = {5209: 940572811}
+        executor._mark_unknown_order_submission(
+            "301560.SZ", "SELL", 5209, 44.09, 100, "grid"
+        )
+
+        self.assertFalse(executor._has_recent_unknown_order_submission("301560.SZ", "SELL"))
+        self.assertEqual(executor._unknown_order_submissions, {})
+
+    def test_h2d_push_not_ready_blocks_live_order_submit(self):
+        """实盘下单前若交易主推订阅不可用，应拒绝提交委托。"""
+        executor = self._make_orderable_executor()
+        qmt_trader = executor.position_manager.qmt_trader
+        qmt_trader.ensure_trade_push_ready.return_value = False
+
+        old_sim = config.ENABLE_SIMULATION_MODE
+        old_allow_buy = getattr(config, "ENABLE_ALLOW_BUY", True)
+        old_allow_sell = getattr(config, "ENABLE_ALLOW_SELL", True)
+        try:
+            config.ENABLE_SIMULATION_MODE = False
+            config.ENABLE_ALLOW_BUY = True
+            config.ENABLE_ALLOW_SELL = True
+            with patch("config.is_trade_time", return_value=True):
+                buy_order_id = executor.buy_stock("301560", volume=100, price=44.09)
+                sell_order_id = executor.sell_stock("301560", volume=100, price=44.09)
+        finally:
+            config.ENABLE_SIMULATION_MODE = old_sim
+            config.ENABLE_ALLOW_BUY = old_allow_buy
+            config.ENABLE_ALLOW_SELL = old_allow_sell
+
+        self.assertIsNone(buy_order_id)
+        self.assertIsNone(sell_order_id)
+        qmt_trader.buy.assert_not_called()
+        qmt_trader.sell.assert_not_called()
 
     def test_h3_confirmed_dynamic_deal_writes_trade_record_once(self):
         """真实成交确认后才写 trade_records，同一成交号重复确认应幂等"""

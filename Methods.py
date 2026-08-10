@@ -40,7 +40,7 @@ def add_xt_suffix(stock='600031.SH'):
     if stock[-2:]=='SH' or stock[-2:]=='SZ' or stock[-2:]=='sh' or stock[-2:]=='sz':
         stock=stock.upper()
     else:
-        if stock[:3] in ['600','601','603','688','510','511','512','513','515','113','110','118','501'] or stock[:2] in ['11']:
+        if stock[:1] == '5' or stock[:3] in ['600','601','603','688','113','110','118'] or stock[:2] in ['11']:
             stock=stock+'.SH'
         else:
             stock=stock+'.SZ'

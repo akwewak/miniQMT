@@ -57,6 +57,7 @@ class TradingExecutor:
         
         # 调试模式标志 - 新增
         self.debug_mode = True
+        self._unknown_order_submissions = {}
 
     def init_simulation_account(self, balance=1000000):
         """初始化模拟账户资金，在测试中使用"""
@@ -79,6 +80,78 @@ class TradingExecutor:
             return True
         except Exception as e:
             logger.error(f"初始化模拟账户出错: {str(e)}")
+            return False
+
+    def _unknown_order_key(self, stock_code, side):
+        return (str(stock_code), str(side).upper())
+
+    def _unknown_order_submissions_map(self):
+        if not hasattr(self, '_unknown_order_submissions'):
+            self._unknown_order_submissions = {}
+        return self._unknown_order_submissions
+
+    def _has_recent_unknown_order_submission(self, stock_code, side):
+        cooldown = float(getattr(config, 'ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS', 300))
+        if cooldown <= 0:
+            return False
+
+        submissions = self._unknown_order_submissions_map()
+        key = self._unknown_order_key(stock_code, side)
+        info = submissions.get(key)
+        if not info:
+            return False
+
+        seq = info.get('seq')
+        qmt_trader = getattr(self.position_manager, 'qmt_trader', None)
+        order_id_map = getattr(qmt_trader, 'order_id_map', {}) if qmt_trader else {}
+        if seq in order_id_map:
+            logger.info(
+                f"[E_ORDER_UNKNOWN_RESOLVED] {side} {stock_code} 的未知委托已收到order_id，"
+                f"seq={seq}, order_id={order_id_map[seq]}"
+            )
+            submissions.pop(key, None)
+            return False
+
+        elapsed = time.time() - info.get('timestamp', 0)
+        if elapsed < cooldown:
+            remaining = int(cooldown - elapsed)
+            logger.warning(
+                f"[E_ORDER_UNKNOWN_GUARD] {side} {stock_code} 存在未确认异步委托，"
+                f"seq={seq}, volume={info.get('volume')}, price={info.get('price')}, "
+                f"strategy={info.get('strategy')}, 剩余冷却{remaining}秒，拒绝重复提交"
+            )
+            return True
+
+        submissions.pop(key, None)
+        return False
+
+    def _mark_unknown_order_submission(self, stock_code, side, seq, price, volume, strategy):
+        self._unknown_order_submissions_map()[self._unknown_order_key(stock_code, side)] = {
+            'seq': seq,
+            'timestamp': time.time(),
+            'price': price,
+            'volume': volume,
+            'strategy': strategy,
+        }
+
+    def _clear_unknown_order_submission(self, stock_code, side):
+        self._unknown_order_submissions_map().pop(self._unknown_order_key(stock_code, side), None)
+
+    def _ensure_trade_push_ready_before_submit(self, stock_code, side):
+        qmt_trader = getattr(self.position_manager, 'qmt_trader', None)
+        ensure_push_ready = getattr(qmt_trader, 'ensure_trade_push_ready', None)
+        if not callable(ensure_push_ready):
+            return True
+        try:
+            if ensure_push_ready():
+                return True
+            logger.error(
+                f"[E_ORDER_PUSH_NOT_READY] {side} {stock_code} 下单前交易主推订阅不可用，"
+                f"拒绝提交实盘委托"
+            )
+            return False
+        except Exception as e:
+            logger.error(f"[E_ORDER_PUSH_NOT_READY] {side} {stock_code} 下单前确认交易主推异常: {e}")
             return False
 
     def _init_xttrader(self):
@@ -1337,12 +1410,19 @@ class TradingExecutor:
                 if not can_buy:
                     logger.error(f"买入 {formatted_stock_code} 未通过可买入检查")
                     return None
-                
+
+                if not self._ensure_trade_push_ready_before_submit(formatted_stock_code, 'BUY'):
+                    return None
+
                 # 重试机制
                 max_retries = 3
                 retry_count = 0
                 order_id = None
-                
+                submitted_but_unconfirmed = False
+
+                if self._has_recent_unknown_order_submission(formatted_stock_code, 'BUY'):
+                    return None
+
                 while retry_count < max_retries:
                     try:
                         # 使用position_manager中的easy_qmt_trader进行买入
@@ -1359,20 +1439,27 @@ class TradingExecutor:
                         if returned_id:
                             order_id = self.position_manager._get_real_order_id(returned_id)
                             if not order_id:
-                                logger.error(f"买入 {formatted_stock_code} 获取真实order_id失败，returned_id={returned_id}")
-                                retry_count += 1
-                                time.sleep(1)
-                                continue
+                                submitted_but_unconfirmed = True
+                                self._mark_unknown_order_submission(
+                                    formatted_stock_code, 'BUY', returned_id, price, volume, strategy
+                                )
+                                logger.error(
+                                    f"[E_ORDER_BUY_UNKNOWN] 买入 {formatted_stock_code} 已收到QMT异步seq但未收到真实order_id，"
+                                    f"seq={returned_id}。本次按未知提交处理并停止重试，避免重复实盘发单"
+                                )
+                                break
                             # order_id=-1 表示QMT拒绝委托（账户限制/行情未就绪等），不重试不保存记录
                             if order_id == -1:
                                 logger.error(f"[E_ORDER_BUY_REJECT] 买入 {formatted_stock_code} 被QMT拒绝 "
                                              f"(order_id=-1, seq={returned_id}), 停止重试，不保存交易记录")
                                 order_id = None
+                                self._clear_unknown_order_submission(formatted_stock_code, 'BUY')
                                 break
                         else:
                             order_id = None
 
                         if order_id and order_id > 0:
+                            self._clear_unknown_order_submission(formatted_stock_code, 'BUY')
                             should_defer_record = self._should_defer_trade_record_until_deal(
                                 strategy,
                                 is_simulation=False
@@ -1437,7 +1524,14 @@ class TradingExecutor:
                         logger.error(f"[E_ORDER_BUY_003] 买入 {formatted_stock_code} 发生异常: {str(e)}，将在1秒后重试 ({retry_count + 1}/{max_retries})")
                         retry_count += 1
                         time.sleep(1)  # 等待1秒再重试
-                
+
+                if submitted_but_unconfirmed:
+                    logger.error(
+                        f"[E_ORDER_BUY_UNKNOWN_FINAL] 买入 {formatted_stock_code} 返回失败给上层，"
+                        f"但券商侧可能已接收该seq，请以QMT委托/成交回报和持仓同步为准"
+                    )
+                    return None
+
                 if not order_id:
                     logger.error(f"[E_ORDER_BUY_099] 买入 {formatted_stock_code} 经过 {max_retries} 次重试后仍然失败，已放弃。建议: 检查QMT连接状态、账户资金是否充足、以及网络是否正常")
                     return None
@@ -1637,12 +1731,19 @@ class TradingExecutor:
                 if not can_sell:
                     logger.error(f"卖出 {formatted_stock_code} 未通过可卖出检查")
                     return None
-                
+
+                if not self._ensure_trade_push_ready_before_submit(formatted_stock_code, 'SELL'):
+                    return None
+
                 # 重试机制
                 max_retries = 3
                 retry_count = 0
                 order_id = None
-                
+                submitted_but_unconfirmed = False
+
+                if self._has_recent_unknown_order_submission(formatted_stock_code, 'SELL'):
+                    return None
+
                 while retry_count < max_retries:
                     try:
                         # 参考buy_stock：使用easy_qmt_trader进行卖出
@@ -1659,20 +1760,27 @@ class TradingExecutor:
                         if returned_id:
                             order_id = self.position_manager._get_real_order_id(returned_id)
                             if not order_id:
-                                logger.error(f"卖出 {formatted_stock_code} 获取真实order_id失败，returned_id={returned_id}")
-                                retry_count += 1
-                                time.sleep(1)
-                                continue
+                                submitted_but_unconfirmed = True
+                                self._mark_unknown_order_submission(
+                                    formatted_stock_code, 'SELL', returned_id, price, volume, strategy
+                                )
+                                logger.error(
+                                    f"[E_ORDER_SELL_UNKNOWN] 卖出 {formatted_stock_code} 已收到QMT异步seq但未收到真实order_id，"
+                                    f"seq={returned_id}。本次按未知提交处理并停止重试，避免重复实盘发单"
+                                )
+                                break
                             # order_id=-1 表示QMT拒绝委托，不重试不保存记录
                             if order_id == -1:
                                 logger.error(f"[E_ORDER_SELL_REJECT] 卖出 {formatted_stock_code} 被QMT拒绝 "
                                              f"(order_id=-1, seq={returned_id}), 停止重试，不保存交易记录")
                                 order_id = None
+                                self._clear_unknown_order_submission(formatted_stock_code, 'SELL')
                                 break
                         else:
                             order_id = None
 
                         if order_id and order_id > 0:
+                            self._clear_unknown_order_submission(formatted_stock_code, 'SELL')
                             should_defer_record = self._should_defer_trade_record_until_deal(
                                 strategy,
                                 is_simulation=False
@@ -1736,12 +1844,19 @@ class TradingExecutor:
                             logger.warning(f"[E_ORDER_SELL_002] 卖出 {formatted_stock_code} 下单失败 (order_id=None)，将在1秒后重试 ({retry_count + 1}/{max_retries})，原因: QMT返回空委托号，可能是持仓不足或账户限制")
                             retry_count += 1
                             time.sleep(1)
-                            
+
                     except Exception as e:
                         logger.error(f"[E_ORDER_SELL_003] 卖出 {formatted_stock_code} 发生异常: {str(e)}，将在1秒后重试 ({retry_count + 1}/{max_retries})")
                         retry_count += 1
                         time.sleep(1)
-                
+
+                if submitted_but_unconfirmed:
+                    logger.error(
+                        f"[E_ORDER_SELL_UNKNOWN_FINAL] 卖出 {formatted_stock_code} 返回失败给上层，"
+                        f"但券商侧可能已接收该seq，请以QMT委托/成交回报和持仓同步为准"
+                    )
+                    return None
+
                 if not order_id:
                     logger.error(f"[E_ORDER_SELL_099] 卖出 {formatted_stock_code} 经过 {max_retries} 次重试后仍然失败，已放弃。建议: 检查QMT连接状态、持仓是否可用、是否有未成交委托单占用可卖数量")
                     return None

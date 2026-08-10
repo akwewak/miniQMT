@@ -480,9 +480,28 @@ def reinit_xtquant_trader():
             ping_ok = False
 
         if ping_ok:
-            # 连接正常，无需 connect()，只同步状态即可
-            logger.info("  ✓ xttrader 连接正常，跳过 connect()（保留现有连接）")
+            # 连接正常，无需 connect()；但仍需确认交易主推订阅和回调链路可用。
+            logger.info("  ✓ xttrader 同步查询正常，跳过 connect()（保留现有连接）")
+            ensure_push_ready = getattr(qmt_trader, 'ensure_trade_push_ready', None)
+            if callable(ensure_push_ready) and not ensure_push_ready():
+                position_manager.qmt_connected = False
+                logger.warning("  ⚠ xttrader 交易主推订阅未恢复，已标记 qmt_connected=False")
+                return False
             position_manager.qmt_connected = True
+            try:
+                if hasattr(position_manager, '_on_trade_callback'):
+                    qmt_trader.register_trade_callback(position_manager._on_trade_callback)
+                    logger.info("  ✓ 已确认 trade_callback")
+                if hasattr(position_manager, '_on_order_callback') and hasattr(qmt_trader, 'register_order_callback'):
+                    qmt_trader.register_order_callback(position_manager._on_order_callback)
+                    logger.info("  ✓ 已确认 order_callback")
+                if hasattr(position_manager, '_on_qmt_disconnect'):
+                    qmt_trader.register_disconnect_callback(position_manager._on_qmt_disconnect)
+                    logger.info("  ✓ 已确认 disconnect_callback")
+            except Exception as cb_e:
+                position_manager.qmt_connected = False
+                logger.warning(f"  ⚠ 重新注册 xttrader 回调失败，已标记断连: {cb_e}")
+                return False
             return True
 
         # 连接不正常，才执行重连
@@ -508,6 +527,12 @@ def reinit_xtquant_trader():
                         logger.info("  ✓ 已重新注册 trade_callback")
                 except Exception as cb_e:
                     logger.warning(f"  ⚠ 重新注册 trade_callback 失败(非致命): {cb_e}")
+                try:
+                    if hasattr(position_manager, '_on_order_callback') and hasattr(qmt_trader, 'register_order_callback'):
+                        qmt_trader.register_order_callback(position_manager._on_order_callback)
+                        logger.info("  ✓ 已重新注册 order_callback")
+                except Exception as cb_e:
+                    logger.warning(f"  ⚠ 重新注册 order_callback 失败(非致命): {cb_e}")
                 try:
                     if hasattr(position_manager, '_on_qmt_disconnect'):
                         qmt_trader.register_disconnect_callback(position_manager._on_qmt_disconnect)
