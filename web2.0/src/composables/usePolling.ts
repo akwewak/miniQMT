@@ -2,6 +2,7 @@ import { ref, onUnmounted } from 'vue'
 import { useSystemStore } from '../stores/system'
 import { usePositionsStore } from '../stores/positions'
 import { useGridStore } from '../stores/grid'
+import { useConfigStore } from '../stores/config'
 
 /**
  * 分级轮询。
@@ -14,6 +15,7 @@ export function usePolling() {
   const system = useSystemStore()
   const positions = usePositionsStore()
   const grid = useGridStore()
+  const config = useConfigStore()
 
   const BASE_INTERVAL = 3000
   const HIDDEN_INTERVAL = 15000
@@ -22,10 +24,11 @@ export function usePolling() {
   let timer: ReturnType<typeof setInterval> | null = null
   let tick = 0
 
-  // 各任务的触发周期（单位：tick）。3s 基准下 → 9s / 15s / 15s / 18s / 30s
+  // 各任务的触发周期（单位：tick）。3s 基准下 → 9s / 15s / 15s / 15s / 18s / 30s
   const EVERY = {
     status: 3,
     connection: 5,
+    config: 5,
     orders: 5,
     trades: 6,
     positions: 10,
@@ -52,6 +55,7 @@ export function usePolling() {
     if (tick % EVERY.status === 0) system.fetchStatus().catch(() => {})
     // 连接状态必须轮询：这是 QMT 掉线时唯一的可见信号
     if (tick % EVERY.connection === 0) system.fetchConnection().catch(() => {})
+    if (tick % EVERY.config === 0) config.fetchConfig().catch(() => {})
     if (tick % EVERY.orders === 0) positions.fetchOrders().catch(() => {})
     if (tick % EVERY.trades === 0) positions.fetchTrades().catch(() => {})
     if (tick % EVERY.positions === 0) {
@@ -68,6 +72,7 @@ export function usePolling() {
       restart(BASE_INTERVAL)
       system.fetchStatus().catch(() => {})
       system.fetchConnection().catch(() => {})
+      config.fetchConfig().catch(() => {})
       positions.fetchAll().catch(() => {})
       grid.fetchSessions().catch(() => {})
     }

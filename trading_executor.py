@@ -747,6 +747,33 @@ class TradingExecutor:
         return str(stock_code or '').split('.')[0]
 
     @staticmethod
+    def _normalize_trade_record_time(trade_time):
+        """统一 trade_records.trade_time 为秒级字符串。"""
+        if isinstance(trade_time, datetime):
+            return trade_time.strftime('%Y-%m-%d %H:%M:%S')
+
+        if trade_time is None:
+            return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        text = str(trade_time).strip()
+        if not text:
+            return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        normalized = text.replace('T', ' ')
+        for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S'):
+            try:
+                return datetime.strptime(normalized, fmt).strftime('%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                pass
+
+        try:
+            return datetime.fromisoformat(normalized).strftime('%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            pass
+
+        return normalized[:19] if len(normalized) >= 19 else normalized
+
+    @staticmethod
     def _trade_record_date(trade_time):
         if isinstance(trade_time, datetime):
             return trade_time.strftime('%Y-%m-%d')
@@ -805,6 +832,7 @@ class TradingExecutor:
     def _save_trade_record(self, stock_code, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy='default', allow_qmt_name_lookup=True):
         """保存交易记录到数据库"""
         try:
+            trade_time = self._normalize_trade_record_time(trade_time)
             record_lock = getattr(self, '_trade_record_lock', None)
             if record_lock is None:
                 record_lock = threading.RLock()

@@ -57,11 +57,12 @@ class TestWeb1GridDialogStatic(unittest.TestCase):
         switch_order = [
             'id="apiToken"',
             'id="simulationMode"',
-            'id="globalAllowBuySell"',
             'id="globalAllowGridTrading"',
+            'id="globalAllowBuySell"',
         ]
         switch_positions = [html.index(marker) for marker in switch_order]
         self.assertEqual(switch_positions, sorted(switch_positions))
+        self.assertIn('class="sp-switch flex-shrink-0" title="允许自动止盈"', html)
         self.assertIn("flex-nowrap", html)
         self.assertIn("overflow-x-auto", html)
 

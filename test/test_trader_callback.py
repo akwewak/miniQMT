@@ -1608,6 +1608,30 @@ class TestTraderCallback(TestBase):
         count = executor.conn.execute("SELECT COUNT(*) FROM trade_records").fetchone()[0]
         self.assertEqual(count, 1)
 
+    def test_h3ab_trade_record_time_is_saved_without_microseconds(self):
+        """trade_records.trade_time 入库时应统一为秒级格式。"""
+        executor = self._make_live_executor()
+
+        self.assertTrue(executor._save_trade_record(
+            stock_code="300454.SZ",
+            trade_time="2026-08-07T09:45:28.310700",
+            trade_type="BUY",
+            price=120.71,
+            volume=100,
+            amount=12071.0,
+            trade_id="GRID_MICROSECOND_TIME",
+            commission=0.0,
+            strategy="grid"
+        ))
+
+        row = executor.conn.execute(
+            "SELECT trade_time FROM trade_records WHERE trade_id=?",
+            ("GRID_MICROSECOND_TIME",)
+        ).fetchone()
+        self.assertEqual(row[0], "2026-08-07 09:45:28")
+        self.assertNotIn(".", row[0])
+        self.assertNotIn("T", row[0])
+
     def test_h3b_unmatched_live_deal_writes_external_trade_record(self):
         """非本机 pending 的实盘成交回报应按 external 补写流水，并保持幂等。"""
         executor = self._make_live_executor()

@@ -681,10 +681,13 @@
                     </div>
                     <input type="checkbox" id="simulationMode" class="form-checkbox h-8 w-8 text-orange-600">
                     <label for="simulationMode" class="text-sm font-bold text-orange-600 whitespace-nowrap">模拟交易模式</label>
-                    <input type="checkbox" id="globalAllowBuySell" class="form-checkbox h-8 w-8 text-blue-600" checked>
-                    <label for="globalAllowBuySell" class="text-base font-bold whitespace-nowrap">允许自动止盈</label>
                     <input type="checkbox" id="globalAllowGridTrading" class="form-checkbox h-8 w-8 text-blue-600" checked>
                     <label for="globalAllowGridTrading" class="text-base font-bold whitespace-nowrap">允许自动网格</label>
+                    <label class="sp-switch flex-shrink-0" title="允许自动止盈">
+                        <input type="checkbox" id="globalAllowBuySell" checked>
+                        <span class="sp-slider"></span>
+                    </label>
+                    <label for="globalAllowBuySell" class="text-base font-bold whitespace-nowrap">允许自动止盈</label>
                 </div>
 
             </div>
