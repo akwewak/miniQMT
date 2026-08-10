@@ -846,12 +846,13 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
     def _to_xt_code(code: str) -> str:
         """6 位证券代码补全市场后缀（xtdata get_full_tick 要求带后缀）。
         持仓接口返回的是 6 位裸代码，需按 A 股规则映射：
-        6/900→.SH（上交所），0/3/200→.SZ（深交所）。已带后缀则原样返回。"""
+        5/6/9→.SH（上交所），0/2/3/15/16/18→.SZ（深交所）。
+        已带后缀则原样返回。"""
         if not code or "." in code:
             return code
-        if code.startswith(("6", "900")):
+        if code.startswith(("5", "6", "9")):
             return f"{code}.SH"
-        if code.startswith(("0", "3", "200")):
+        if code.startswith(("0", "2", "3", "15", "16", "18")):
             return f"{code}.SZ"
         return code
 
