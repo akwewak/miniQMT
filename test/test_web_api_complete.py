@@ -29,6 +29,7 @@ import unittest
 import sqlite3
 import time
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 from io import StringIO
 
@@ -1770,7 +1771,179 @@ class TestAuthentication(WebAPITestBase):
 
 
 # =====================================================================
-# 12. 错误处理
+# 12. 实盘卖出烟测窄接口
+# =====================================================================
+class TestLiveSell100GuardApi(WebAPITestBase):
+    """测试 POST /api/debug/live-sell-100-guard 的硬门禁。"""
+
+    endpoint = '/api/debug/live-sell-100-guard'
+    token = 'guard_test_token'
+    confirm = 'SELL_100_000799_25105132'
+
+    def setUp(self):
+        self._orig_token = getattr(config, 'WEB_API_TOKEN', '')
+        self._orig_sim_mode = getattr(config, 'ENABLE_SIMULATION_MODE', False)
+        self._orig_allow_sell = getattr(config, 'ENABLE_ALLOW_SELL', True)
+        self._orig_is_trade_time = config.is_trade_time
+        self._orig_pm_qmt_trader = mock_pm.qmt_trader
+        self._orig_pm_qmt_connected = getattr(mock_pm, 'qmt_connected', None)
+        self._orig_get_position_return = mock_pm.get_position.return_value
+        self._orig_get_position_side_effect = mock_pm.get_position.side_effect
+        self._orig_sell_return = mock_executor.sell_stock.return_value
+        self._orig_sell_side_effect = mock_executor.sell_stock.side_effect
+
+        config.WEB_API_TOKEN = self.token
+        config.ENABLE_SIMULATION_MODE = False
+        config.ENABLE_ALLOW_SELL = True
+        config.is_trade_time = lambda: True
+
+        self.xt_trader = SimpleNamespace(
+            query_stock_orders=lambda acc, cancelable_only=False: [],
+            is_connected=lambda: True,
+        )
+        self.qmt_trader = SimpleNamespace(
+            acc=SimpleNamespace(account_id='25105132'),
+            account='25105132',
+            xt_trader=self.xt_trader,
+            ensure_trade_push_ready=MagicMock(return_value=True),
+        )
+        mock_pm.qmt_trader = self.qmt_trader
+        mock_pm.qmt_connected = True
+        mock_pm.get_position.side_effect = None
+        mock_pm.get_position.return_value = {
+            'stock_code': '000799',
+            'volume': 1900,
+            'available': 1900,
+        }
+        mock_executor.sell_stock.side_effect = None
+        mock_executor.sell_stock.return_value = 'ORDER123'
+        mock_executor.sell_stock.reset_mock()
+        web_server.set_position_manager(mock_pm)
+
+    def tearDown(self):
+        config.WEB_API_TOKEN = self._orig_token
+        config.ENABLE_SIMULATION_MODE = self._orig_sim_mode
+        config.ENABLE_ALLOW_SELL = self._orig_allow_sell
+        config.is_trade_time = self._orig_is_trade_time
+        mock_pm.qmt_trader = self._orig_pm_qmt_trader
+        mock_pm.qmt_connected = self._orig_pm_qmt_connected
+        mock_pm.get_position.return_value = self._orig_get_position_return
+        mock_pm.get_position.side_effect = self._orig_get_position_side_effect
+        mock_executor.sell_stock.return_value = self._orig_sell_return
+        mock_executor.sell_stock.side_effect = self._orig_sell_side_effect
+        mock_executor.sell_stock.reset_mock()
+        web_server.set_position_manager(mock_pm)
+
+    def _guard_post(self, payload, token=None):
+        headers = {'X-API-Token': token or self.token}
+        return self.client.post(self.endpoint, json=payload, headers=headers)
+
+    def _valid_payload(self, dry_run=True):
+        return {
+            'dry_run': dry_run,
+            'stock_code': '000799',
+            'volume': 100,
+            'confirm': self.confirm if not dry_run else '',
+        }
+
+    def test_01_token_not_configured_is_rejected(self):
+        config.WEB_API_TOKEN = ''
+        resp = self.client.post(self.endpoint, json=self._valid_payload())
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(data['success'])
+        self.assertIn('WEB_API_TOKEN', data['error'])
+        mock_executor.sell_stock.assert_not_called()
+
+    def test_02_dry_run_success_without_sell_submit(self):
+        resp = self._guard_post(self._valid_payload(dry_run=True))
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(data['success'])
+        self.assertTrue(data['dry_run'])
+        self.assertTrue(data['checks']['preflight_ready'])
+        mock_executor.sell_stock.assert_not_called()
+
+    def test_03_stock_volume_account_mismatch_rejected(self):
+        cases = [
+            ({'stock_code': '000001', 'volume': 100}, None, 400),
+            ({'stock_code': '000799', 'volume': 200}, None, 400),
+            ({'stock_code': '000799', 'volume': 100}, 'OTHER_ACCOUNT', 403),
+        ]
+
+        for payload, account_id, expected_status in cases:
+            with self.subTest(payload=payload, account_id=account_id):
+                self.qmt_trader.acc.account_id = account_id or '25105132'
+                resp = self._guard_post({'dry_run': True, **payload})
+                data = resp.get_json()
+                self.assertEqual(resp.status_code, expected_status)
+                self.assertFalse(data['success'])
+
+        mock_executor.sell_stock.assert_not_called()
+
+    def test_04_live_submit_requires_confirm(self):
+        payload = self._valid_payload(dry_run=False)
+        payload['confirm'] = ''
+        resp = self._guard_post(payload)
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(data['success'])
+        mock_executor.sell_stock.assert_not_called()
+
+    def test_05_live_submit_rejects_non_trade_time(self):
+        config.is_trade_time = lambda: False
+        resp = self._guard_post(self._valid_payload(dry_run=False))
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(data['success'])
+        self.assertFalse(data['checks']['trade_time'])
+        mock_executor.sell_stock.assert_not_called()
+
+    def test_06_live_submit_rejects_push_not_ready(self):
+        self.qmt_trader.ensure_trade_push_ready.return_value = False
+        resp = self._guard_post(self._valid_payload(dry_run=False))
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 503)
+        self.assertFalse(data['success'])
+        self.assertFalse(data['checks']['push_ready'])
+        mock_executor.sell_stock.assert_not_called()
+
+    def test_07_live_submit_rejects_pending_order(self):
+        self.xt_trader.query_stock_orders = lambda acc, cancelable_only=False: [
+            SimpleNamespace(
+                order_id='PENDING001',
+                stock_code='000799.SZ',
+                order_status=50,
+                order_type=24,
+                order_volume=100,
+                traded_volume=0,
+                status_msg='已报',
+            )
+        ]
+        resp = self._guard_post(self._valid_payload(dry_run=False))
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 409)
+        self.assertFalse(data['success'])
+        self.assertTrue(data['checks']['has_pending_order'])
+        mock_executor.sell_stock.assert_not_called()
+
+    def test_08_live_submit_calls_sell_stock_with_fixed_args(self):
+        resp = self._guard_post(self._valid_payload(dry_run=False))
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(data['success'])
+        self.assertEqual(data['order_id'], 'ORDER123')
+        mock_executor.sell_stock.assert_called_once()
+        kwargs = mock_executor.sell_stock.call_args.kwargs
+        self.assertEqual(kwargs['stock_code'], '000799')
+        self.assertEqual(kwargs['volume'], 100)
+        self.assertIsNone(kwargs['price'])
+        self.assertEqual(kwargs['price_type'], 5)
+        self.assertEqual(kwargs['strategy'], 'debug_live_sell_100')
+
+
+# =====================================================================
+# 13. 错误处理
 # =====================================================================
 class TestErrorHandling(WebAPITestBase):
     """测试错误处理机制"""
@@ -1978,6 +2151,7 @@ def main():
         TestTradeExecution,
         TestGridTrading,
         TestAuthentication,
+        TestLiveSell100GuardApi,
         TestErrorHandling,
     ]
 

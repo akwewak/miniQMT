@@ -27,6 +27,7 @@ from config_manager import get_config_manager
 from grid_validation import validate_grid_config, validate_grid_template
 from order_utils import (
     ORDER_TYPE_BUY,
+    ORDER_TYPE_SELL,
     format_order_time,
     is_pending as order_is_pending,
     sort_orders,
@@ -200,6 +201,118 @@ def get_position_manager_instance():
         return get_position_manager()
     # logger.debug(f"[DEBUG] get_position_manager_instance: 返回position_manager id={id(_position_manager_instance)}")
     return _position_manager_instance
+
+
+_LIVE_SELL_TEST_ACCOUNT_ID = "25105132"
+_LIVE_SELL_TEST_STOCK = "000799"
+_LIVE_SELL_TEST_VOLUME = 100
+_LIVE_SELL_TEST_CONFIRM = "SELL_100_000799_25105132"
+_LIVE_SELL_TEST_STRATEGY = "debug_live_sell_100"
+
+
+def _plain_stock_code(stock_code):
+    code = str(stock_code or '').strip().upper()
+    if '.' in code:
+        code = code.split('.')[0]
+    return code
+
+
+def _record_value(record, names, default=None):
+    if record is None:
+        return default
+    if isinstance(record, dict):
+        for name in names:
+            if name in record:
+                return record.get(name)
+        return default
+    for name in names:
+        value = getattr(record, name, default)
+        if value is not default:
+            return value
+    return default
+
+
+def _as_int(value, default=0):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_current_account_id(qmt_trader=None):
+    candidates = [
+        getattr(getattr(qmt_trader, 'acc', None), 'account_id', None),
+        getattr(qmt_trader, 'account', None),
+        getattr(qmt_trader, 'account_id', None),
+        config.ACCOUNT_CONFIG.get('account_id', '') if hasattr(config, 'ACCOUNT_CONFIG') else '',
+        os.environ.get('QMT_ACCOUNT_ID', ''),
+    ]
+    for candidate in candidates:
+        text = str(candidate or '').strip()
+        if type(candidate).__module__.startswith("unittest.mock"):
+            text = ''
+        if text:
+            return text
+    return ''
+
+
+def _is_qmt_trader_connected(position_manager, qmt_trader):
+    if bool(getattr(position_manager, 'qmt_connected', False)):
+        return True
+    is_connected = getattr(getattr(qmt_trader, 'xt_trader', None), 'is_connected', None)
+    if callable(is_connected):
+        try:
+            return bool(is_connected())
+        except Exception:
+            return False
+    return False
+
+
+def _get_position_available(position_manager, stock_code):
+    get_position = getattr(position_manager, 'get_position', None)
+    if not callable(get_position):
+        return False, 0
+    position = get_position(stock_code)
+    if position is None:
+        return False, 0
+    available = _record_value(position, ['available', '可用余额'], 0)
+    return True, _as_int(available)
+
+
+def _find_pending_orders_for_stock(qmt_trader, stock_code):
+    base_code = _plain_stock_code(stock_code)
+    pending_orders = []
+
+    active_orders = getattr(qmt_trader, 'get_active_order_info_by_stock', None)
+    if callable(active_orders):
+        raw_orders = active_orders(base_code)
+    else:
+        xt_trader = getattr(qmt_trader, 'xt_trader', None)
+        query_orders = getattr(xt_trader, 'query_stock_orders', None)
+        if not callable(query_orders):
+            raise RuntimeError("无法查询QMT委托列表")
+        raw_orders = query_orders(getattr(qmt_trader, 'acc', None), cancelable_only=False)
+
+    for order in raw_orders or []:
+        order_stock = _plain_stock_code(_record_value(order, ['stock_code', '证券代码', 'code'], ''))
+        if order_stock != base_code:
+            continue
+        status = _as_int(_record_value(order, ['order_status', 'status', '委托状态'], 0))
+        if not order_is_pending(status):
+            continue
+        order_type = _as_int(_record_value(order, ['order_type', 'trade_type', '委托类型'], 0))
+        pending_orders.append({
+            'source': 'qmt',
+            'order_id': str(_record_value(order, ['order_id', '委托编号'], '') or ''),
+            'stock_code': order_stock,
+            'trade_type': 'BUY' if order_type == ORDER_TYPE_BUY else 'SELL' if order_type == ORDER_TYPE_SELL else str(order_type or ''),
+            'status': status,
+            'status_desc': order_status_desc(status, _record_value(order, ['status_msg', '状态说明'], '')),
+            'volume': _as_int(_record_value(order, ['order_volume', 'volume', '委托数量'], 0)),
+            'traded_volume': _as_int(_record_value(order, ['traded_volume', '成交数量'], 0)),
+        })
+
+    return pending_orders
 
 # 实时推送的数据
 realtime_data = {
@@ -1297,6 +1410,185 @@ def debug_status():
             'status': 'error',
             'message': f"获取调试状态失败: {str(e)}"
         }), 500
+
+
+@app.route('/api/debug/live-sell-100-guard', methods=['POST'])
+@require_token
+def debug_live_sell_100_guard():
+    """仅用于 25105132 / 000799 / 100股 的实盘卖出烟测窄接口。"""
+    checks = {
+        'target_account_id': _LIVE_SELL_TEST_ACCOUNT_ID,
+        'target_stock_code': _LIVE_SELL_TEST_STOCK,
+        'target_volume': _LIVE_SELL_TEST_VOLUME,
+        'strategy': _LIVE_SELL_TEST_STRATEGY,
+        'price_type': 5,
+    }
+
+    def _fail(message, http_status=400):
+        return jsonify({
+            'success': False,
+            'status': 'error',
+            'error': message,
+            'checks': checks,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }), http_status
+
+    try:
+        data = request.get_json(silent=True) or {}
+        dry_run_raw = data.get('dry_run', True)
+        if isinstance(dry_run_raw, str):
+            dry_run = dry_run_raw.strip().lower() not in ('false', '0', 'no', 'off')
+        else:
+            dry_run = bool(dry_run_raw)
+
+        stock_code = _plain_stock_code(data.get('stock_code'))
+        volume = _as_int(data.get('volume'), None)
+        confirm = str(data.get('confirm', '') or '').strip()
+        price_type = _as_int(data.get('price_type', 5), None)
+
+        price = None
+        if data.get('price') not in (None, ''):
+            try:
+                price = float(data.get('price'))
+            except (TypeError, ValueError):
+                return _fail("price必须为空或正数", 400)
+            if price <= 0:
+                return _fail("price必须为空或正数", 400)
+
+        position_manager = get_position_manager_instance()
+        qmt_trader = getattr(position_manager, 'qmt_trader', None)
+        account_id = _get_current_account_id(qmt_trader)
+
+        checks.update({
+            'dry_run': dry_run,
+            'token_configured': bool(getattr(config, 'WEB_API_TOKEN', '')),
+            'current_account_id': account_id,
+            'account_allowed': account_id == _LIVE_SELL_TEST_ACCOUNT_ID,
+            'stock_code': stock_code,
+            'stock_allowed': stock_code == _LIVE_SELL_TEST_STOCK,
+            'volume': volume,
+            'volume_allowed': volume == _LIVE_SELL_TEST_VOLUME,
+            'price': price,
+            'requested_price_type': price_type,
+            'price_type_allowed': price_type == 5,
+            'simulation_mode': bool(getattr(config, 'ENABLE_SIMULATION_MODE', False)),
+            'live_mode': not bool(getattr(config, 'ENABLE_SIMULATION_MODE', False)),
+            'allow_sell': bool(getattr(config, 'ENABLE_ALLOW_SELL', True)),
+        })
+
+        if not checks['token_configured']:
+            return _fail("WEB_API_TOKEN未配置，拒绝启用实盘调试接口", 403)
+        if not checks['account_allowed']:
+            return _fail("当前账号不是25105132，拒绝执行", 403)
+        if not checks['stock_allowed']:
+            return _fail("该接口只允许测试000799", 400)
+        if not checks['volume_allowed']:
+            return _fail("该接口只允许卖出100股", 400)
+        if not checks['price_type_allowed']:
+            return _fail("该接口固定使用price_type=5", 400)
+        if not checks['live_mode']:
+            return _fail("当前为模拟交易模式，拒绝实盘调试接口", 403)
+        if not checks['allow_sell']:
+            return _fail("ENABLE_ALLOW_SELL=False，拒绝卖出", 403)
+
+        checks['trade_time'] = bool(config.is_trade_time())
+        checks['qmt_connected'] = bool(qmt_trader) and _is_qmt_trader_connected(position_manager, qmt_trader)
+        position_found, available = _get_position_available(position_manager, _LIVE_SELL_TEST_STOCK)
+        checks['position_found'] = position_found
+        checks['available'] = available
+        checks['available_enough'] = available >= _LIVE_SELL_TEST_VOLUME
+
+        try:
+            pending_orders = _find_pending_orders_for_stock(qmt_trader, _LIVE_SELL_TEST_STOCK)
+            checks['pending_orders_query_ok'] = True
+            checks['pending_orders'] = pending_orders
+            checks['has_pending_order'] = len(pending_orders) > 0
+        except Exception as e:
+            logger.warning(f"[LIVE_SELL_TEST] 查询000799在途委托失败: {e}")
+            checks['pending_orders_query_ok'] = False
+            checks['pending_orders_error'] = str(e)
+            checks['pending_orders'] = []
+            checks['has_pending_order'] = True
+
+        checks['confirm_valid'] = confirm == _LIVE_SELL_TEST_CONFIRM
+        if dry_run or checks['confirm_valid']:
+            ensure_push_ready = getattr(qmt_trader, 'ensure_trade_push_ready', None)
+            if checks['qmt_connected'] and callable(ensure_push_ready):
+                try:
+                    checks['push_ready'] = bool(ensure_push_ready())
+                except Exception as e:
+                    logger.warning(f"[LIVE_SELL_TEST] 交易push确认失败: {e}")
+                    checks['push_ready'] = False
+                    checks['push_ready_error'] = str(e)
+            else:
+                checks['push_ready'] = False
+        else:
+            checks['push_ready'] = False
+            checks['push_ready_skipped'] = 'confirm_invalid'
+
+        preflight_ready = all([
+            checks['trade_time'],
+            checks['qmt_connected'],
+            checks['position_found'],
+            checks['available_enough'],
+            checks['pending_orders_query_ok'],
+            not checks['has_pending_order'],
+            checks['push_ready'],
+        ])
+        checks['preflight_ready'] = preflight_ready
+        checks['ready_for_live_submit'] = preflight_ready and checks['confirm_valid']
+
+        if dry_run:
+            return jsonify({
+                'success': True,
+                'status': 'success',
+                'dry_run': True,
+                'message': 'dry-run完成，未提交任何委托',
+                'checks': checks,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+
+        if not checks['confirm_valid']:
+            return _fail("confirm不匹配，拒绝实盘卖出", 400)
+        if not checks['trade_time']:
+            return _fail("当前不是交易时间，拒绝实盘卖出", 403)
+        if not checks['qmt_connected']:
+            return _fail("QMT未连接，拒绝实盘卖出", 503)
+        if not checks['position_found'] or not checks['available_enough']:
+            return _fail("000799可用持仓不足100股，拒绝实盘卖出", 409)
+        if not checks['pending_orders_query_ok']:
+            return _fail("无法确认000799在途委托，拒绝实盘卖出", 503)
+        if checks['has_pending_order']:
+            return _fail("000799存在在途委托，拒绝重复实盘卖出", 409)
+        if not checks['push_ready']:
+            return _fail("交易push未就绪，拒绝实盘卖出", 503)
+
+        logger.warning(
+            "[LIVE_SELL_TEST] 窄接口提交实盘卖出: "
+            f"account={account_id}, stock={_LIVE_SELL_TEST_STOCK}, volume={_LIVE_SELL_TEST_VOLUME}, "
+            f"price={price}, strategy={_LIVE_SELL_TEST_STRATEGY}"
+        )
+        order_id = trading_executor.sell_stock(
+            stock_code=_LIVE_SELL_TEST_STOCK,
+            volume=_LIVE_SELL_TEST_VOLUME,
+            price=price,
+            price_type=5,
+            strategy=_LIVE_SELL_TEST_STRATEGY
+        )
+        if not order_id:
+            return _fail("sell_stock返回失败，未确认委托提交成功", 502)
+
+        return jsonify({
+            'success': True,
+            'status': 'success',
+            'dry_run': False,
+            'order_id': str(order_id),
+            'checks': checks,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+    except Exception as e:
+        logger.error(f"[LIVE_SELL_TEST] 窄接口执行异常: {str(e)}")
+        return _fail(f"窄接口执行异常: {str(e)}", 500)
 
 # @app.route('/api/debug/db-test', methods=['GET'])
 # def test_database():
