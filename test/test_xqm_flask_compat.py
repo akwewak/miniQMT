@@ -228,6 +228,43 @@ class TestFlaskCompatEndpoints(unittest.TestCase):
         self.assertEqual(p["stock_code"], "515050")
         self.assertEqual(p["stock_name"], "中概互联ETF")
 
+    def test_positions_change_percentage_for_etf_uses_xt_suffix(self):
+        """ETF/基金裸代码应补全交易所后缀后再取 tick 计算涨跌幅。"""
+        raw = [
+            {
+                "证券代码": "515050",
+                "股票余额": 1000,
+                "可用余额": 1000,
+                "成本价": 1.0,
+                "市值": 1050.0,
+                "证券名称": "中概互联ETF",
+            },
+            {
+                "证券代码": "159915",
+                "股票余额": 1000,
+                "可用余额": 1000,
+                "成本价": 2.0,
+                "市值": 1900.0,
+                "证券名称": "创业板ETF",
+            },
+        ]
+        ticks = {
+            "515050.SH": {"lastPrice": 1.05, "lastClose": 1.00},
+            "159915.SZ": {"lastPrice": 1.90, "lastClose": 2.00},
+        }
+
+        with patch.object(self.manager, "query_positions", return_value=raw), \
+             patch.object(self.manager, "get_full_tick", return_value=ticks) as mocked_tick:
+            r = self.client.get("/api/positions", headers={"X-Account-Id": ACC1})
+
+        requested_codes = mocked_tick.call_args.args[1]
+        self.assertIn("515050.SH", requested_codes)
+        self.assertIn("159915.SZ", requested_codes)
+        positions = r.json()["data"]["positions"]
+        by_code = {p["stock_code"]: p for p in positions}
+        self.assertAlmostEqual(by_code["515050"]["change_percentage"], 5.0, places=2)
+        self.assertAlmostEqual(by_code["159915"]["change_percentage"], -5.0, places=2)
+
     def test_positions_open_date_from_sqlite(self):
         """建仓日期从 SQLite 读取"""
         r = self.client.get("/api/positions", headers={"X-Account-Id": ACC1})

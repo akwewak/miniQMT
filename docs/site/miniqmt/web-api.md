@@ -78,7 +78,7 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 
 | 方法 | 路径 | 说明 | 🌐 网关 |
 |------|------|------|--------|
-| GET | `/api/positions` | 当前持仓列表（含 SQLite 持久化字段：名称/建仓日/止损价） | ✅ 完整 |
+| GET | `/api/positions` | 当前持仓列表（含 SQLite 持久化字段：名称/建仓日/止损价；`change_percentage` 由 tick 计算，裸代码自动补交易所后缀） | ✅ 完整 |
 | GET | `/api/positions-all` | 全部持仓详情 | ✅ 完整 |
 | GET | `/api/trade-records` | 交易记录（优先读 SQLite `trade_records`，`trade_time` 统一格式化为 `YYYY-MM-DD HH:MM:SS`） | ✅ 完整 |
 | GET | `/api/orders` | **当日委托列表**（含在途未成交），在途委托排在前面 | ✅ 完整 |

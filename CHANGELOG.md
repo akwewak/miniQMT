@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+## [3.8.7] - 2026-08-10
+
+> 本版本聚焦 **Web 暴露面安全收紧与持仓监控口径修正**：网关与 Flask 端点补齐 Token 鉴权，web1.0 前端堵住已确认的 `innerHTML` 注入点，并修复 web2.0 网关模式下 ETF/基金持仓“涨跌幅”不随行情变化的问题。
+
 ### Security
 > 对 web1.0 / web2.0 / Flask 后端 / xtquant_manager 网关做了一轮完整网络安全审查。本批合并网关侧三项 P0 与 Flask 后端三处 Token 鉴权遗漏；前端 XSS 链另行提交。
 
@@ -25,17 +29,18 @@
 ### Fixed
 - `trust_proxy` 配置在 `StandaloneConfig` → `XtQuantServerConfig` 链路上补齐透传，否则该字段在生产启动路径（`standalone.py`）下会是死配置，用户写进 `xtquant_manager_config.json` 也不生效。
 - **网关手测 UI 对 `/api/v1/health/{id}` 永不发送 Token**：`test_ui_a.html` / `test_ui_b.html` 的 `doHealth()` / `doHealthAccount()` 均以 `noToken=true` 调用 `req()`（基于"健康检查无需认证"的旧假设）。该端点现已要求 Token，若不同步修改，用户在手测 UI 中会稳定收到 401 且无从排查；`/health` 总览也会因不带 Token 而拿不到 `accounts` 明细、健康卡片渲染为空。两处均已改为正常发送 Token，并同步修正端点说明与标签样式。
-
+- **web2.0 网关模式 ETF/基金持仓涨跌幅不变化**：xtquant_manager 的 Flask 兼容持仓接口从 QMT 拿到的常是 6 位裸代码，此前 ETF/基金代码未按交易所规则补全后缀，`get_full_tick` 取不到 `lastPrice` / `lastClose` 时 `change_percentage` 会降级为 0。现统一在请求 tick 前补全后缀：`5/6/9` → `.SH`，`0/2/3/15/16/18` → `.SZ`，覆盖股票、ETF 与基金持仓。
 ### Tests
 - 网关：`test/live_http_xtquant_manager.py` 原用 `X-Forwarded-For` 模拟远程客户端——正是本次禁用的机制。若不处理，其 401 断言会在实际返回 200 时依然"通过"，即**测试会假装安全**。已为该用例显式传入 `trust_proxy=True` 保留模拟意图，并新增两条断言锁住新行为：远程无 Token 时 `/health` 不返回账号明细、伪造 XFF 无法绕过 Token（`trust_proxy=False` 下应 401）。回归验证：`test/test_xtquant_manager/` 222 用例、`test_xqm_flask_compat` + `test_xqm_monitor_endpoints` + `test_multi_account_isolation`、`live_http_xtquant_manager.py` 32/32，全部通过。
 - Flask：web_api 组 170/170、system_integration 39/39、grid_validation 38/38 通过；实测三个端点无 Token 返回 401、带 Token 返回 200，真实账号 ID `25105132` 脱敏为 `****5132`。
-
+- 持仓涨跌幅：`test/test_xqm_flask_compat.py` 新增 ETF/基金裸代码回归用例，模拟 `515050` → `515050.SH`、`159915` → `159915.SZ` 后分别计算 `+5.0%` 与 `-5.0%`，锁住网关模式 `change_percentage` 数据来源。
+- 发布验证：使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test/run_integration_regression_tests.py --all-with-fast` 完整回归，**33 组、123 模块、2453 用例，2453 通过，0 失败，0 错误，0 跳过，成功率 100%**，耗时 840.2 秒。
 ### Docs
 - `docs/site/xqm/guides/security.md`：删除"`/api/v1/health` 和 `/api/v1/health/{id}` 始终无需 Token"的过时描述，新增「端点鉴权一览」与「反向代理与 X-Forwarded-For」两节，安全级别对比表补 `trust_proxy` 列。
 - `docs/site/xqm/api/observability.md`：改写"健康检查接口**无需认证**"，补充带 Token / 不带 Token 两种响应示例。
 - `docs/site/xqm/configuration/reference.md`：补 `trust_proxy` 字段说明，修正 `api_token` 为空时的行为描述（并非"不验证"，而是仅本机可访问）。
 - `docs/site/miniqmt/web-api.md`：认证段拆分 Flask / 网关两种模式的不同口径；`/api/accounts` 行去掉"无 Token"标注。
-- `docs/site/miniqmt/web-frontend.md`：连接设置面板 Token 字段由"留空=不验证"改为"远程访问必填"，并说明测试连接能通不代表数据端点可用。
+- `docs/site/miniqmt/web-frontend.md`：连接设置面板 Token 字段由"留空=不验证"改为"远程访问必填"，说明测试连接能通不代表数据端点可用，并补充持仓涨跌幅的 tick 口径与 ETF/基金后缀映射。
 - `CLAUDE.md`：网关能力边界补充鉴权要求与 `trust_proxy` 约束。
 
 ### Security — web1.0 前端 XSS（`web1.0/script.js`）
@@ -48,7 +53,7 @@
     - MACD 操盘建议 tooltip 的 `trend` / `base_position` / `grid` / `cross` / `updated` / `code` / `dif` / `dea` —— 逐字段转义。
     - 预览股票名称列表的 `name`（后端）/ `code`（用户输入）—— 转义；原仅转义单引号的 `safeCode` 改为 `^\d{6}$` 白名单。
     - 持仓行 `createStockRow` 的 `stock_name` / `open_date` —— 转义；`stock_code` 经 `^\d{6}$` 白名单降级为 `safeCode`（畸形输入 → `------`），用于所有内联事件 / `data-*` 属性 / 显示列。
-- **设计取舍**：`createStockRow` 与预览列表的内联事件（`onmouseenter="showAdviceTooltip(event, '${code}')"`）采用**白名单**而非「改 `addEventListener`」——code 永远只能是纯数字，从根本上规避 HTML 属性 + JS 字符串双重上下文转义的坑，改动最小、零交互行为风险。日志块 [script.js:1564](web1.0/script.js#L1564) 同模式的 code 已走 `escapeLogHtml`，非 XSS（`&#39;` 突破不了属性），保持原样。
+- **设计取舍**：`createStockRow` 与预览列表的内联事件（`onmouseenter="showAdviceTooltip(event, '${code}')"`）采用**白名单**而非「改 `addEventListener`」——code 永远只能是纯数字，从根本上规避 HTML 属性 + JS 字符串双重上下文转义的坑，改动最小、零交互行为风险。日志块 [script.js:1564](https://github.com/weihong-su/miniQMT/blob/main/web1.0/script.js#L1564) 同模式的 code 已走 `escapeLogHtml`，非 XSS（`&#39;` 突破不了属性），保持原样。
 - **未做（有意）**：CSP（Tailwind CDN 会削弱其意义）、Tailwind 本地化、web2.0 `v-html`（审查确认无字符串注入通路）、Token 改 httpOnly cookie（架构变更，单独立项）。
 
 ### Tests — web1.0 前端
@@ -478,7 +483,8 @@
 - 模拟交易模式（无需 QMT 即可验证策略）
 - 回归测试框架基础设施
 
-[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.6...HEAD
+[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.7...HEAD
+[3.8.7]: https://github.com/weihong-su/miniQMT/compare/v3.8.6...v3.8.7
 [3.8.6]: https://github.com/weihong-su/miniQMT/compare/v3.8.5...v3.8.6
 [3.8.5]: https://github.com/weihong-su/miniQMT/compare/v3.8.4...v3.8.5
 [3.8.4]: https://github.com/weihong-su/miniQMT/compare/v3.8.2...v3.8.4
