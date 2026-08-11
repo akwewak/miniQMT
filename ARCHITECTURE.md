@@ -481,7 +481,7 @@ Level 2        reconnect()      ← 指数退避重连(60s→3600s)
 | 需要统一可观测指标 | 设为 `True` |
 | 网络隔离部署 | 设为 `True`（通过局域网访问） |
 
-**v3.x 网关增强**: 内嵌托管 `web2.0/dist/`（`:8888` 即开即用 + SPA fallback）、提供 Flask 兼容端点（`/api/positions` `/api/status` 等）使 web2.0 网关模式零改造、网关模式动态止盈止损后台线程（`xtquant_manager/stop_profit.py`，复用 position_manager 算法）。详见 [docs/xtquant_manager.md](docs/xtquant_manager.md) 与[在线文档站 · XtQuantManager](https://weihong-su.github.io/miniQMT/)。
+**v3.x 网关增强**: 内嵌托管 `web2.0/dist/`（`:8888` 即开即用 + SPA fallback）、提供 Flask 兼容端点（`/api/positions` `/api/status` 等）使 web2.0 网关模式零改造、网关模式动态止盈止损后台线程（`xtquant_manager/stop_profit.py`，复用 position_manager 算法）。详见[在线文档站 · XtQuantManager](https://weihong-su.github.io/miniQMT/xqm/)。
 
 ---
 

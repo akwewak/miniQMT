@@ -89,7 +89,6 @@ test/*_report.md
 # 中间过程的临时文档(不纳入版本管理)
 docs/*
 !docs/plans/
-!docs/xtquant_manager.md
 !docs/site/
 
 # 注意：test/ 目录已改为跟踪，包含正式的回归测试套件

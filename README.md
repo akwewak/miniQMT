@@ -331,7 +331,7 @@ python -m autobuy.app --once        # 单次触发，便于测试配置
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - 详细架构说明
 - **[QUICK_START.md](QUICK_START.md)** - 快速入门指南
 - **[CHANGELOG.md](CHANGELOG.md)** - 版本变更日志
-- **[docs/xtquant_manager.md](docs/xtquant_manager.md)** - XtQuantManager 多账户网关说明
+- **[XtQuantManager 网关文档](https://weihong-su.github.io/miniQMT/xqm/)** - 多账户网关说明（源码在 `docs/site/xqm/`）
 - **[autobuy/README.md](autobuy/README.md)** - 自动买入模块说明
 
 > 无人值守运行、网格交易、自动买入、止盈止损、Web 双模式、数据库表结构等详细文档已迁移至[在线文档站](https://weihong-su.github.io/miniQMT/)，本地源码位于 `docs/site/`。

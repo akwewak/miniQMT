@@ -240,7 +240,7 @@ ENABLE_XTQUANT_MANAGER = True
 XTQUANT_MANAGER_URL = "http://127.0.0.1:8888"
 ```
 
-详见 [docs/xtquant_manager.md](docs/xtquant_manager.md)
+详见 [XtQuantManager 网关文档](https://weihong-su.github.io/miniQMT/xqm/)
 
 ---
 
@@ -265,4 +265,4 @@ XTQUANT_MANAGER_URL = "http://127.0.0.1:8888"
 - **[README.md](README.md)** - 项目总览、功能特性、常见问题
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - 系统架构、数据流、数据库设计
 - **[CLAUDE.md](CLAUDE.md)** - 开发规范（面向 AI 助手和开发者）
-- **[docs/xtquant_manager.md](docs/xtquant_manager.md)** - XtQuantManager 多账户网关
+- **[XtQuantManager 网关文档](https://weihong-su.github.io/miniQMT/xqm/)** - XtQuantManager 多账户网关

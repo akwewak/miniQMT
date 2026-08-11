@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+### Docs
+> 文档库清理：消除双份维护与无人引用的历史产物，收敛到单一信息源。
+
+- **删除从未纳入版本控制的孤儿文档**：`.gitignore` 的 `docs/*` 规则一直把 `docs/` 下除 `plans/` / `site/` 外的内容挡在版本控制外，这些文件（`git log --all` 均为 0 commit）在仓库中已无任何有效引用，结论也已被 CHANGELOG 与 `docs/site/` 吸收。本次删除 `docs/archive/`（19 份 2026-02~03 的一次性 bug fix / code review / optimization 报告）、`docs/superpowers/plans/`（3 份 xtquant_manager 阶段性方案，功能已落地）、以及 `docs/` 根下 5 份报告/设计稿（`LOGGER_COLORS_README.md`、`multi_account_auth_design.md`、`qmt_connection_issue_diagnosis_20260324.md`、`release_report_20260325.md`、`requirements_lock_guide.md`、`盘前同步网格交易初始化实现总结.md`）与 `test/grid_detail_delivery_report.md`。
+- **`AGENTS.md` 由全文副本改为指针文件**：此前与 `CLAUDE.md` 内容 95% 重复却已明显漂移——缺 v3.7.0 交易通道四选一章节、网关 `trust_proxy` 安全条款与个股级止盈开关说明，网关能力边界日期还停在 2026-06-18。两份全文并存必然继续分叉，现改为指向 `CLAUDE.md` 的入口页，仅保留 7 条关键约束速览（供只读 `AGENTS.md` 的 agent 工具兜底）。
+- **删除 `docs/xtquant_manager.md`，统一到文档站**：该 1204 行单文档与 `docs/site/xqm/`（22 文件）章节一一对应，后者是 MkDocs 正式发布内容并有 CI 部署，前者靠 `.gitignore` 白名单例外存续。`README.md` / `QUICK_START.md`（2 处）/ `ARCHITECTURE.md` 的 4 处引用改指 <https://weihong-su.github.io/miniQMT/xqm/>，并移除 `.gitignore` 中的 `!docs/xtquant_manager.md` 例外。
+- 清理 `test/` 下约 9.5MB 的陈旧运行产物（`integration_regression_full_run.log` 等 8 个日志、7 个 `*_report.json`）；`integration_test_report.md` / `.json` / `integration_test_config.json` 予以保留。
+- **删除两份已被正式文档取代的历史文稿**：`test/RELEASE_TEST_REPORT.md`（2026-02-15 的一次性发布报告，数据已过时——263 用例 vs 当前 2453，且全仓无引用、与 `.gitignore` 的 `/*_TEST_REPORT.md` 规则语义冲突）与 `docs/plans/2026-01-24-grid-trading-design.md`（1022 行设计稿，已由 `docs/site/miniqmt/grid-trading.md` 正式化）。
+
 ## [3.8.7] - 2026-08-10
 
 > 本版本聚焦 **Web 暴露面安全收紧与持仓监控口径修正**：网关与 Flask 端点补齐 Token 鉴权，web1.0 前端堵住已确认的 `innerHTML` 注入点，并修复 web2.0 网关模式下 ETF/基金持仓“涨跌幅”不随行情变化的问题。
