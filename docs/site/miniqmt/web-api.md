@@ -132,18 +132,6 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 !!! note "网关下单走 v1 接口"
     xtquant_manager 网关模式下，下单使用 `/api/v1/accounts/{account_id}/orders`。web2.0 在网关模式下通过 v1 接口下单，而不是调用 Flask 的 `/api/actions/execute_buy`。
 
-### QMT order_id 调试窄接口
-
-`/api/debug/order-probe-000799` 仅用于实盘诊断，固定限制为 `25105132 / 000799 / 100股`，支持：
-
-| mode | 行为 |
-|------|------|
-| `preflight` | 只读检查 token、账号、实盘模式、交易时间、QMT 连接、push 订阅、000799 可卖数量和在途委托 |
-| `sell-cancel` | 提交 100 股卖出委托，解析 `seq -> order_id`，随后撤单 |
-| `sell-fill` | 提交 100 股真实卖出成交验证，必须额外传确认参数 |
-
-接口会把下单返回、callback、委托查询、成交查询和目标股票快照写入 `logs/qmt_order_probe/webapi_*.jsonl`。详细操作与实盘结论见 [QMT order_id 匹配](qmt-order-id-matching.md)。
-
 !!! info "模拟模式下的行为差异"
     `ENABLE_SIMULATION_MODE=True` 时该端点的链路为
     `execute_buy` → `manual_buy` → `buy_stock` → `simulate_buy_position`，与实盘相比有三点差异：

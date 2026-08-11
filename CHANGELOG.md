@@ -32,7 +32,7 @@
 - **web2.0 网关模式 ETF/基金持仓涨跌幅不变化**：xtquant_manager 的 Flask 兼容持仓接口从 QMT 拿到的常是 6 位裸代码，此前 ETF/基金代码未按交易所规则补全后缀，`get_full_tick` 取不到 `lastPrice` / `lastClose` 时 `change_percentage` 会降级为 0。现统一在请求 tick 前补全后缀：`5/6/9` → `.SH`，`0/2/3/15/16/18` → `.SZ`，覆盖股票、ETF 与基金持仓。
 ### Tests
 - 网关：`test/live_http_xtquant_manager.py` 原用 `X-Forwarded-For` 模拟远程客户端——正是本次禁用的机制。若不处理，其 401 断言会在实际返回 200 时依然"通过"，即**测试会假装安全**。已为该用例显式传入 `trust_proxy=True` 保留模拟意图，并新增两条断言锁住新行为：远程无 Token 时 `/health` 不返回账号明细、伪造 XFF 无法绕过 Token（`trust_proxy=False` 下应 401）。回归验证：`test/test_xtquant_manager/` 222 用例、`test_xqm_flask_compat` + `test_xqm_monitor_endpoints` + `test_multi_account_isolation`、`live_http_xtquant_manager.py` 32/32，全部通过。
-- Flask：web_api 组 170/170、system_integration 39/39、grid_validation 38/38 通过；实测三个端点无 Token 返回 401、带 Token 返回 200，真实账号 ID `25105132` 脱敏为 `****5132`。
+- Flask：web_api 组 170/170、system_integration 39/39、grid_validation 38/38 通过；实测三个端点无 Token 返回 401、带 Token 返回 200，真实账号 ID 已脱敏。
 - 持仓涨跌幅：`test/test_xqm_flask_compat.py` 新增 ETF/基金裸代码回归用例，模拟 `515050` → `515050.SH`、`159915` → `159915.SZ` 后分别计算 `+5.0%` 与 `-5.0%`，锁住网关模式 `change_percentage` 数据来源。
 - 发布验证：使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test/run_integration_regression_tests.py --all-with-fast` 完整回归，**33 组、123 模块、2453 用例，2453 通过，0 失败，0 错误，0 跳过，成功率 100%**，耗时 840.2 秒。
 ### Docs
@@ -228,7 +228,7 @@
 - `test/test_qmt_rpc_trader.py`：13 → 67 用例。新增连接生命周期、断连回调、Redis 推送事件模拟、卖单路径、资金校验（check_stock_is_av_buy/sell）、健康诊断、order_id_map 截断、市价 vs 限价 price_type、空持仓、空 available 字段降级。
 - `test/test_config_env_overrides.py`：新增 `TestDotenvFallback` 5 用例（补缺/优先级/引用剥离/注释跳过/缺失文件 no-op）。
 - 全量集成回归 `--all-with-fast`：31 组、1912 用例、1912 通过、0 失败、0 错误，成功率 100%。
-- P5 真实联调验证（Redis Memurai + 大QMT BIGQMT_REDIS_DRYRUN，账号 25105132）：L0 redis 库 → L1 Redis 直连 → L2 RPC ping/rpc_alive → 资产/持仓查询返回真实数据（可用46.6万/持仓300105一只）→ 下单闭环（strategy_name 匹配后查到委托、sysid 回填、撤单成功）。非交易时段废单 status=57（预期），完整链路 passorder→sysid→查询→撤单已验证。联调脚本：`test/live_qmt_rpc_readonly_check.py` / `test/live_qmt_rpc_strategy_check.py`。
+- P5 真实联调验证（Redis Memurai + 大QMT BIGQMT_REDIS_DRYRUN，账号已脱敏）：L0 redis 库 → L1 Redis 直连 → L2 RPC ping/rpc_alive → 资产/持仓查询返回真实数据 → 下单闭环（strategy_name 匹配后查到委托、sysid 回填、撤单成功）。非交易时段废单 status=57（预期），完整链路 passorder→sysid→查询→撤单已验证。联调脚本：`test/live_qmt_rpc_readonly_check.py` / `test/live_qmt_rpc_strategy_check.py`。
 
 ### Docs
 - 更新 CLAUDE.md：v3.7.0+ 配置开关、三通道概述、.env fallback 机制、QmtRpcTrader 模块职责、qmt-trader/ 子模块说明。

@@ -268,7 +268,7 @@ class TestTraderCallback(TestBase):
 
     def test_a4_register_callbacks_are_deduplicated(self):
         """重复注册同一个外部回调时，不应在 callback 列表中堆叠多份。"""
-        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader = easy_qmt_trader(path="dummy", account="TEST_ACCOUNT")
         trader._callback = MyXtQuantTraderCallback({})
         cb = lambda event: event
 
@@ -297,7 +297,7 @@ class TestTraderCallback(TestBase):
                 self.subscribe_calls.append(account)
                 return 0
 
-        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader = easy_qmt_trader(path="dummy", account="TEST_ACCOUNT")
         old_callback = MyXtQuantTraderCallback(trader.order_id_map)
         trade_cb = lambda trade: trade
         old_callback.trade_callbacks.append(trade_cb)
@@ -2158,7 +2158,7 @@ class TestTraderCallback(TestBase):
             def subscribe(self, account):
                 return 0
 
-        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader = easy_qmt_trader(path="dummy", account="TEST_ACCOUNT")
         trader.xt_trader = BlockingOldTrader()
 
         old_timeout = getattr(config, "QMT_STOP_TIMEOUT", None)
@@ -2207,7 +2207,7 @@ class TestTraderCallback(TestBase):
 
     def _make_trader_with_old_callback(self):
         """构造一个已有旧 callback 的 easy_qmt_trader，返回 (trader, old_callback)。"""
-        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader = easy_qmt_trader(path="dummy", account="TEST_ACCOUNT")
         old_callback = MyXtQuantTraderCallback({})
         old_trader = self._HangingOldTrader(callback=old_callback)
         trader.xt_trader = old_trader
@@ -2314,7 +2314,7 @@ class TestTraderCallback(TestBase):
 
     def test_i6_connect_detaches_old_callback_before_stopping_old_trader(self):
         """detach 必须发生在 stop() 之前，否则 stop 卡住期间窗口仍然敞开。"""
-        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader = easy_qmt_trader(path="dummy", account="TEST_ACCOUNT")
         old_callback = MyXtQuantTraderCallback({})
         order_of_events = []
 
@@ -2371,7 +2371,7 @@ class TestTraderCallback(TestBase):
                 return 0
 
         stub = _RelaxedStubTrader()
-        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader = easy_qmt_trader(path="dummy", account="TEST_ACCOUNT")
 
         with self._patch_xtquant_trader(stub):
             self.assertIsNotNone(trader.connect())
@@ -2398,7 +2398,7 @@ class TestTraderCallback(TestBase):
             def subscribe(self, account):
                 return 0
 
-        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader = easy_qmt_trader(path="dummy", account="TEST_ACCOUNT")
         trader.xt_trader = _RelaxedPushTrader()
         trader.acc = object()
         trader._callback = MyXtQuantTraderCallback(trader.order_id_map)
@@ -2412,7 +2412,7 @@ class TestTraderCallback(TestBase):
             def set_relaxed_response_order_enabled(self, enabled):
                 raise RuntimeError("mock relaxed failure")
 
-        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader = easy_qmt_trader(path="dummy", account="TEST_ACCOUNT")
 
         with self._patch_xtquant_trader(_FailingRelaxedStubTrader()):
             self.assertIsNotNone(trader.connect())

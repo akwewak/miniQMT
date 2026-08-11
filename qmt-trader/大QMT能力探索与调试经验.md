@@ -114,7 +114,7 @@ tick ok accounts=2 ticks=持续递增
 
 - 预取消链路：先写 `cancel/cancel_<order_id>.json`，再写 `orders/pending/ord_<order_id>.json`，executor 在连接交易 API 前写 `done/cancelled`，`pending/processing/cancel` 均清空，日志无 `order seq=`。
 - BOM 订单文件：PowerShell BOM 文件会被新版 `_load_json(... utf-8-sig)` 正常解析；坏 JSON 会立即写 `done/error`。
-- 空仓卖出拒单：账号 `25105132` 空仓卖出 `000001.SZ` 100 股，真实调用 `order_stock` 后返回 `-1`，executor 写 `done/rejected`，`filled_volume=0`。
+- 空仓卖出拒单：账号已脱敏，空仓卖出 `000001.SZ` 100 股，真实调用 `order_stock` 后返回 `-1`，executor 写 `done/rejected`，`filled_volume=0`。
 
 ## 后续调试建议
 
