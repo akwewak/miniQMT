@@ -57,7 +57,8 @@ logger = get_logger("test_trader_callback")
 # ---------------------------------------------------------------------------
 class _FakeTrade:
     def __init__(self, order_id, stock_code, traded_volume=600, traded_price=44.09,
-                 traded_id=None, order_type=24):
+                 traded_id=None, order_type=24, traded_time=None,
+                 strategy_name="", order_remark=""):
         self.order_id = order_id
         self.stock_code = stock_code
         self.account_id = "TEST_ACCOUNT"
@@ -66,6 +67,9 @@ class _FakeTrade:
         self.traded_amount = traded_volume * traded_price
         self.traded_id = traded_id or f"TRADE_{order_id}"
         self.order_type = order_type
+        self.traded_time = traded_time if traded_time is not None else int(time.time())
+        self.strategy_name = strategy_name
+        self.order_remark = order_remark
 
 
 class _FakeOrder:
@@ -247,6 +251,20 @@ class TestTraderCallback(TestBase):
         cb_obj.on_stock_trade(trade)
 
         self.assertEqual(results, [333])
+
+    def test_a3b_async_response_stores_int_and_string_seq_mapping(self):
+        """QMT异步响应到达后，应同时兼容 int/str 两种 seq 读取方式。"""
+        order_id_map = {}
+        cb_obj = MyXtQuantTraderCallback(order_id_map)
+        response = MagicMock()
+        response.account_id = "TEST_ACCOUNT"
+        response.seq = 1277
+        response.order_id = 940572675
+
+        cb_obj.on_order_stock_async_response(response)
+
+        self.assertEqual(order_id_map[1277], 940572675)
+        self.assertEqual(order_id_map["1277"], 940572675)
 
     def test_a4_register_callbacks_are_deduplicated(self):
         """重复注册同一个外部回调时，不应在 callback 列表中堆叠多份。"""
@@ -1121,6 +1139,20 @@ class TestTraderCallback(TestBase):
         self.assertFalse(executor._has_recent_unknown_order_submission("301560.SZ", "SELL"))
         self.assertEqual(executor._unknown_order_submissions, {})
 
+    def test_h2c2_unknown_submission_accepts_string_seq_mapping(self):
+        """迟到映射只落在字符串seq键上时，也应解除未知委托保护并补齐订单缓存。"""
+        executor = self._make_orderable_executor()
+        qmt_trader = executor.position_manager.qmt_trader
+        qmt_trader.order_id_map = {"5209": 940572812}
+        executor._mark_unknown_order_submission(
+            "301560.SZ", "SELL", 5209, 44.09, 100, "grid"
+        )
+
+        self.assertFalse(executor._has_recent_unknown_order_submission("301560.SZ", "SELL"))
+        self.assertEqual(executor._unknown_order_submissions, {})
+        self.assertIn("940572812", executor.order_cache)
+        self.assertEqual(executor.order_cache["940572812"]["trade_type"], "SELL")
+
     def test_h2d_push_not_ready_blocks_live_order_submit(self):
         """实盘下单前若交易主推订阅不可用，应拒绝提交委托。"""
         executor = self._make_orderable_executor()
@@ -1189,6 +1221,30 @@ class TestTraderCallback(TestBase):
 
         self.assertEqual(order_id, 672137248)
         self.assertEqual(qmt_trader.order_id_map[70], 672137248)
+
+    def test_h2e2_get_real_order_id_accepts_string_seq_map(self):
+        """order_id_map 使用字符串seq作为键时，主程序也应直接命中。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {"1277": 940572675}
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            order_id = self.pm._get_real_order_id(
+                1277,
+                stock_code="000799.SZ",
+                side="SELL",
+                volume=100,
+                strategy="web_probe_sell-fill",
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+
+        self.assertEqual(order_id, 940572675)
 
     def test_h2j_get_real_order_id_matches_active_info_hhmmss_time(self):
         """应优先使用英文活跃委托信息，并兼容QMT的HHMMSS报单时间。"""
@@ -1326,6 +1382,88 @@ class TestTraderCallback(TestBase):
         self.assertEqual(order_id, 672137251)
         self.assertEqual(qmt_trader.order_id_map[33], 672137251)
 
+    def test_h2l2_get_real_order_id_accepts_truncated_strategy_name(self):
+        """券商若截断较长 strategy_name，唯一候选仍应能匹配真实 order_id。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        submitted = datetime.now().replace(microsecond=0)
+        qmt_trader.get_active_order_info_by_stock.return_value = [{
+            "stock_code": "000799.SZ",
+            "order_status": 56,
+            "order_id": 940572675,
+            "order_type": 24,
+            "order_volume": 100,
+            "order_time": int(submitted.timestamp()),
+            "strategy_name": "web_probe_sell-fill",
+            "order_remark": "web_probe_sell-fill_178",
+            "price": 41.54,
+            "traded_volume": 100,
+        }]
+        qmt_trader.xt_trader.query_stock_orders.return_value = []
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                1277,
+                stock_code="000799.SZ",
+                side="SELL",
+                volume=100,
+                strategy="web_probe_sell-fill_debug_extra_suffix",
+                order_remark="web_probe_sell-fill_1786425835",
+                submitted_at=submitted.timestamp() - 1,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 940572675)
+        self.assertEqual(qmt_trader.order_id_map[1277], 940572675)
+
+    def test_h2m_get_real_order_id_normalizes_float_order_type(self):
+        """QMT/表格层可能把委托类型返回为24.0，应按卖出方向精确匹配。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        now = int(time.time())
+        qmt_trader.get_active_order_info_by_stock.return_value = []
+        qmt_trader.xt_trader.query_stock_orders.return_value = [
+            _FakeOrder("000799.SZ", 50, 672137252, 23.0, 100, now, "debug_live_sell_100", "auto_debug_live_sell_100"),
+            _FakeOrder("000799.SZ", 50, 672137253, 24.0, 100, now, "debug_live_sell_100", "auto_debug_live_sell_100"),
+        ]
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                34,
+                stock_code="000799.SZ",
+                side="SELL",
+                volume=100,
+                strategy="debug_live_sell_100",
+                order_remark="auto_debug_live_sell_100",
+                submitted_at=time.time() - 1,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137253)
+        self.assertEqual(qmt_trader.order_id_map[34], 672137253)
+
     def test_h2f_get_real_order_id_query_fallback_rejects_ambiguous_matches(self):
         """委托列表反查到多个候选时必须保守失败，不能猜order_id。"""
         qmt_trader = MagicMock()
@@ -1461,6 +1599,155 @@ class TestTraderCallback(TestBase):
         self.assertEqual(order_id, 672137250)
         self.assertEqual(qmt_trader.order_id_map[71], 672137250)
 
+    def test_h2h2_get_real_order_id_falls_back_to_trade_query(self):
+        """委托回推缺失且委托列表为空时，应能从今日成交反查真实order_id。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        qmt_trader.xt_trader.query_stock_orders.return_value = []
+        qmt_trader.xt_trader.query_stock_trades.return_value = [
+            _FakeTrade(
+                order_id=672137251,
+                stock_code="301218.SZ",
+                traded_volume=1000,
+                traded_price=47.08,
+                order_type=24,
+                traded_time=int(time.time()),
+                strategy_name="auto_partial",
+                order_remark="auto_auto_partial",
+            )
+        ]
+        qmt_trader.query_stock_orders.return_value = pd.DataFrame()
+        qmt_trader.query_stock_trades.return_value = pd.DataFrame()
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                10935,
+                stock_code="301218.SZ",
+                side="SELL",
+                volume=1000,
+                strategy="auto_partial",
+                order_remark="auto_auto_partial",
+                submitted_at=time.time() - 1,
+                price=47.07,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137251)
+        self.assertEqual(qmt_trader.order_id_map[10935], 672137251)
+
+    def test_h2h3_get_real_order_id_accepts_chinese_deal_fields(self):
+        """XtQuantManager/包装查询返回中文成交字段时，也应能反查order_id。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        qmt_trader.xt_trader.query_stock_orders.return_value = []
+        qmt_trader.xt_trader.query_stock_trades.return_value = []
+        qmt_trader.query_stock_orders.return_value = pd.DataFrame()
+        qmt_trader.query_stock_trades.return_value = pd.DataFrame([{
+            "证券代码": "301218",
+            "订单编号": 672137252,
+            "成交时间": datetime.now(),
+            "操作": "证券卖出",
+            "成交数量": 1000,
+            "成交均价": 47.08,
+            "策略名称": "auto_partial",
+            "委托备注": "auto_auto_partial",
+        }])
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                10936,
+                stock_code="301218.SZ",
+                side="SELL",
+                volume=1000,
+                strategy="auto_partial",
+                order_remark="auto_auto_partial",
+                submitted_at=time.time() - 1,
+                price=47.07,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137252)
+        self.assertEqual(qmt_trader.order_id_map[10936], 672137252)
+
+    def test_h2h4_get_real_order_id_accepts_unique_partial_fills(self):
+        """成交被拆成多笔时，只要唯一order_id可确认，也应完成seq映射。"""
+        qmt_trader = MagicMock()
+        qmt_trader.order_id_map = {}
+        qmt_trader.acc = object()
+        qmt_trader.xt_trader.query_stock_orders.return_value = []
+        qmt_trader.xt_trader.query_stock_trades.return_value = [
+            _FakeTrade(
+                order_id=672137253,
+                stock_code="301218.SZ",
+                traded_volume=400,
+                traded_price=47.08,
+                order_type=24,
+                traded_time=int(time.time()),
+                strategy_name="auto_partial",
+                order_remark="auto_auto_partial",
+            ),
+            _FakeTrade(
+                order_id=672137253,
+                stock_code="301218.SZ",
+                traded_volume=600,
+                traded_price=47.08,
+                order_type=24,
+                traded_time=int(time.time()),
+                strategy_name="auto_partial",
+                order_remark="auto_auto_partial",
+            ),
+        ]
+        qmt_trader.query_stock_orders.return_value = pd.DataFrame()
+        qmt_trader.query_stock_trades.return_value = pd.DataFrame()
+        self.pm.qmt_trader = qmt_trader
+
+        old_sync = config.USE_SYNC_ORDER_API
+        old_wait_timeout = config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS
+        old_fallback_timeout = config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS
+        try:
+            config.USE_SYNC_ORDER_API = False
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = 0.01
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = 0
+            order_id = self.pm._get_real_order_id(
+                10937,
+                stock_code="301218.SZ",
+                side="SELL",
+                volume=1000,
+                strategy="auto_partial",
+                order_remark="auto_auto_partial",
+                submitted_at=time.time() - 1,
+                price=47.07,
+            )
+        finally:
+            config.USE_SYNC_ORDER_API = old_sync
+            config.ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS = old_wait_timeout
+            config.ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS = old_fallback_timeout
+
+        self.assertEqual(order_id, 672137253)
+        self.assertEqual(qmt_trader.order_id_map[10937], 672137253)
+
     def test_h2i_sell_stock_stops_retry_when_order_query_fails(self):
         """委托反查接口异常时，卖出应标记未知提交并停止重试，避免重复实盘发单。"""
         executor = self._make_live_executor()
@@ -1507,6 +1794,36 @@ class TestTraderCallback(TestBase):
         self.assertIsNone(order_id)
         qmt_trader.sell.assert_called_once()
         self.assertIn(("000799.SZ", "SELL"), executor._unknown_order_submissions)
+
+    def test_h2i2_sell_stock_non_fixed_price_does_not_filter_order_query_by_price(self):
+        """price_type=5 等非固定价委托，反查 order_id 时不应使用提交前价格做过滤。"""
+        executor = self._make_orderable_executor()
+        qmt_trader = executor.position_manager.qmt_trader
+        qmt_trader.sell.return_value = 1277
+
+        old_sim = config.ENABLE_SIMULATION_MODE
+        old_allow_sell = getattr(config, "ENABLE_ALLOW_SELL", True)
+        old_sync = config.USE_SYNC_ORDER_API
+        try:
+            config.ENABLE_SIMULATION_MODE = False
+            config.ENABLE_ALLOW_SELL = True
+            config.USE_SYNC_ORDER_API = False
+            with patch("config.is_trade_time", return_value=True):
+                order_id = executor.sell_stock(
+                    "000799",
+                    volume=100,
+                    price=41.55,
+                    price_type=5,
+                    strategy="web_probe_sell-fill",
+                )
+        finally:
+            config.ENABLE_SIMULATION_MODE = old_sim
+            config.ENABLE_ALLOW_SELL = old_allow_sell
+            config.USE_SYNC_ORDER_API = old_sync
+
+        self.assertEqual(order_id, 940572800)
+        _, kwargs = executor.position_manager._get_real_order_id.call_args
+        self.assertIsNone(kwargs["price"])
 
     def test_h3_confirmed_dynamic_deal_writes_trade_record_once(self):
         """真实成交确认后才写 trade_records，同一成交号重复确认应幂等"""
@@ -2026,6 +2343,79 @@ class TestTraderCallback(TestBase):
             order_of_events, ["detach", "stop"],
             "必须先 detach 旧 callback 再 stop 旧 trader"
         )
+
+
+    def test_i7_connect_enables_relaxed_response_order_before_register_callback(self):
+        """支持 relaxed response order 的 xtquant 版本，应在注册 callback 前开启该调度。"""
+        class _RelaxedStubTrader:
+            def __init__(self):
+                self.events = []
+                self.callback = None
+
+            def set_relaxed_response_order_enabled(self, enabled):
+                self.events.append(("relaxed", enabled))
+
+            def register_callback(self, callback):
+                self.events.append(("register_callback", True))
+                self.callback = callback
+
+            def start(self):
+                self.events.append(("start", True))
+
+            def connect(self):
+                self.events.append(("connect", True))
+                return 0
+
+            def subscribe(self, account):
+                self.events.append(("subscribe", True))
+                return 0
+
+        stub = _RelaxedStubTrader()
+        trader = easy_qmt_trader(path="dummy", account="25105132")
+
+        with self._patch_xtquant_trader(stub):
+            self.assertIsNotNone(trader.connect())
+
+        self.assertEqual(
+            stub.events[:2],
+            [("relaxed", True), ("register_callback", True)],
+            "relaxed response order 必须早于 callback 注册，避免异步下单响应继续被普通推送队列阻塞"
+        )
+
+    def test_i8_ensure_trade_push_ready_enables_relaxed_response_order(self):
+        """保留现有连接时，确认主推通道也应顺手开启 relaxed response order。"""
+        class _RelaxedPushTrader:
+            def __init__(self):
+                self.relaxed_calls = []
+                self.registered_callback = None
+
+            def set_relaxed_response_order_enabled(self, enabled):
+                self.relaxed_calls.append(enabled)
+
+            def register_callback(self, callback):
+                self.registered_callback = callback
+
+            def subscribe(self, account):
+                return 0
+
+        trader = easy_qmt_trader(path="dummy", account="25105132")
+        trader.xt_trader = _RelaxedPushTrader()
+        trader.acc = object()
+        trader._callback = MyXtQuantTraderCallback(trader.order_id_map)
+
+        self.assertTrue(trader.ensure_trade_push_ready())
+        self.assertEqual(trader.xt_trader.relaxed_calls, [True])
+
+    def test_i9_relaxed_response_order_failure_does_not_block_connect(self):
+        """xtquant 开启 relaxed response order 抛错时，连接流程应继续走默认回调模式。"""
+        class _FailingRelaxedStubTrader(self._StubNewTrader):
+            def set_relaxed_response_order_enabled(self, enabled):
+                raise RuntimeError("mock relaxed failure")
+
+        trader = easy_qmt_trader(path="dummy", account="25105132")
+
+        with self._patch_xtquant_trader(_FailingRelaxedStubTrader()):
+            self.assertIsNotNone(trader.connect())
 
 
 if __name__ == "__main__":

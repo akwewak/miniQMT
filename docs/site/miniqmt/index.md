@@ -71,6 +71,7 @@ python main.py
 - [自动买入](autobuy.md) — 候选池筛选、指数门禁、防重买入、调度与复盘
 - [大QMT文件 IPC](qmt-ipc-fallback.md) — xttrader 失效时的大QMT降级交易通道
 - [大QMT RPC Redis 部署](qmt-rpc-redis-setup.md) — RPC 交易通道的 Redis 安装与配置
+- [QMT order_id 匹配](qmt-order-id-matching.md) — 异步下单 `seq -> order_id` 调试、实盘验证和防重复下单
 - [Web 前端](web-frontend.md) — web1.0 / web2.0 双模式架构、连接设置、远程部署
 - [Web API](web-api.md) — RESTful API 接口文档
 - [无人值守运行](unattended.md) — 长期运行和自动恢复

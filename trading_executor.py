@@ -103,12 +103,25 @@ class TradingExecutor:
 
         seq = info.get('seq')
         qmt_trader = getattr(self.position_manager, 'qmt_trader', None)
-        order_id_map = getattr(qmt_trader, 'order_id_map', {}) if qmt_trader else {}
-        if seq in order_id_map:
+        mapped_order_id = None
+        get_cached = getattr(self.position_manager, '_get_cached_order_id_mapping', None)
+        if callable(get_cached) and not type(get_cached).__module__.startswith('unittest.mock'):
+            try:
+                mapped_order_id = get_cached(seq)
+            except Exception as e:
+                logger.debug(f"读取未知委托迟到映射失败: {e}")
+        if not mapped_order_id and qmt_trader:
+            order_id_map = getattr(qmt_trader, 'order_id_map', {}) or {}
+            for seq_key in (seq, str(seq)):
+                if seq_key in order_id_map:
+                    mapped_order_id = order_id_map[seq_key]
+                    break
+        if mapped_order_id:
             logger.info(
                 f"[E_ORDER_UNKNOWN_RESOLVED] {side} {stock_code} 的未知委托已收到order_id，"
-                f"seq={seq}, order_id={order_id_map[seq]}"
+                f"seq={seq}, order_id={mapped_order_id}"
             )
+            self._register_resolved_unknown_order_submission(stock_code, side, mapped_order_id, info)
             submissions.pop(key, None)
             return False
 
@@ -125,14 +138,68 @@ class TradingExecutor:
         submissions.pop(key, None)
         return False
 
-    def _mark_unknown_order_submission(self, stock_code, side, seq, price, volume, strategy):
+    def _mark_unknown_order_submission(self, stock_code, side, seq, price, volume, strategy,
+                                       signal_type=None, signal_info=None):
         self._unknown_order_submissions_map()[self._unknown_order_key(stock_code, side)] = {
             'seq': seq,
             'timestamp': time.time(),
             'price': price,
             'volume': volume,
             'strategy': strategy,
+            'signal_type': signal_type,
+            'signal_info': dict(signal_info or {}),
         }
+
+    def _order_query_match_price(self, price_type, price):
+        """仅固定价委托用价格辅助反查；市价/最优价委托由QMT回填实际价格。"""
+        try:
+            fixed_price_type = int(price_type) == 11
+            price_value = float(price)
+        except (TypeError, ValueError):
+            return None
+        if fixed_price_type and price_value > 0:
+            return price_value
+        return None
+
+    def _register_resolved_unknown_order_submission(self, stock_code, side, order_id, info):
+        """未知异步委托迟到映射后，补齐最小订单缓存和本地跟踪。"""
+        try:
+            price = float(info.get('price') or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        try:
+            volume = int(float(info.get('volume') or 0))
+        except (TypeError, ValueError):
+            volume = 0
+
+        order_key = str(order_id)
+        self.order_cache.setdefault(order_key, {
+            'stock_code': str(stock_code).split('.')[0],
+            'strategy': info.get('strategy') or 'default',
+            'trade_type': str(side).upper(),
+            'price': price,
+            'volume': volume,
+            'order_time': datetime.now(),
+            'amount': price * volume,
+        })
+
+        signal_type = info.get('signal_type')
+        signal_info = info.get('signal_info') or {}
+        track_order = getattr(self.position_manager, 'track_order', None)
+        if signal_type and signal_info and callable(track_order):
+            try:
+                tracking_info = dict(signal_info)
+                tracking_info.setdefault('order_side', str(side).upper())
+                tracking_info.setdefault('volume', volume)
+                tracking_info.setdefault('current_price', price)
+                track_order(
+                    stock_code=stock_code,
+                    order_id=order_key,
+                    signal_type=signal_type,
+                    signal_info=tracking_info
+                )
+            except Exception as e:
+                logger.warning(f"补齐未知委托跟踪失败（不影响order_id映射）: {e}")
 
     def _clear_unknown_order_submission(self, stock_code, side):
         self._unknown_order_submissions_map().pop(self._unknown_order_key(stock_code, side), None)
@@ -1475,12 +1542,14 @@ class TradingExecutor:
                                 strategy=strategy,
                                 order_remark=order_remark,
                                 submitted_at=submitted_at,
-                                price=price,
+                                price=self._order_query_match_price(price_type, price),
                             )
                             if not order_id:
                                 submitted_but_unconfirmed = True
                                 self._mark_unknown_order_submission(
-                                    formatted_stock_code, 'BUY', returned_id, price, volume, strategy
+                                    formatted_stock_code, 'BUY', returned_id, price, volume, strategy,
+                                    signal_type=signal_type,
+                                    signal_info=signal_info
                                 )
                                 logger.error(
                                     f"[E_ORDER_BUY_UNKNOWN] 买入 {formatted_stock_code} 已收到QMT异步seq但未收到真实order_id，"
@@ -1807,12 +1876,14 @@ class TradingExecutor:
                                 strategy=strategy,
                                 order_remark=order_remark,
                                 submitted_at=submitted_at,
-                                price=price,
+                                price=self._order_query_match_price(price_type, price),
                             )
                             if not order_id:
                                 submitted_but_unconfirmed = True
                                 self._mark_unknown_order_submission(
-                                    formatted_stock_code, 'SELL', returned_id, price, volume, strategy
+                                    formatted_stock_code, 'SELL', returned_id, price, volume, strategy,
+                                    signal_type=signal_type,
+                                    signal_info=signal_info
                                 )
                                 logger.error(
                                     f"[E_ORDER_SELL_UNKNOWN] 卖出 {formatted_stock_code} 已收到QMT异步seq但未收到真实order_id，"

@@ -315,6 +315,428 @@ def _find_pending_orders_for_stock(qmt_trader, stock_code):
     return pending_orders
 
 # 实时推送的数据
+_ORDER_PROBE_CONFIRM_CANCEL = "SELL_CANCEL_100_000799_25105132"
+_ORDER_PROBE_CONFIRM_FILL = "SELL_FILL_100_000799_25105132"
+_ORDER_PROBE_DIR = os.path.join("logs", "qmt_order_probe")
+_ORDER_PROBE_ORDER_FIELDS = [
+    "account_type", "account_id", "stock_code", "order_id", "order_sysid",
+    "order_time", "order_type", "order_volume", "price", "traded_volume",
+    "traded_price", "order_status", "status_msg", "strategy_name",
+    "order_remark",
+]
+_ORDER_PROBE_TRADE_FIELDS = [
+    "account_type", "account_id", "stock_code", "order_id", "order_sysid",
+    "traded_id", "traded_time", "traded_price", "traded_volume",
+    "traded_amount", "order_type", "strategy_name", "order_remark",
+]
+_ORDER_PROBE_RESPONSE_FIELDS = [
+    "account_id", "order_id", "order_sysid", "seq", "cancel_result",
+    "error_id", "error_msg", "strategy_name", "order_remark",
+]
+
+
+def _probe_now_text():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+
+def _probe_safe_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, datetime):
+        return value.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+    if isinstance(value, dict):
+        return {str(k): _probe_safe_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_probe_safe_value(v) for v in value]
+    return str(value)
+
+
+def _probe_record_value(record, names, default=None):
+    if record is None:
+        return default
+    if isinstance(record, dict):
+        for name in names:
+            if name in record:
+                return record.get(name)
+        return default
+    for name in names:
+        try:
+            return getattr(record, name)
+        except Exception:
+            pass
+    return default
+
+
+def _probe_snapshot_object(obj, fields):
+    if obj is None:
+        return None
+    data = {"_type": type(obj).__name__}
+    if isinstance(obj, dict):
+        data.update({str(k): _probe_safe_value(v) for k, v in obj.items()})
+    for field in fields:
+        try:
+            if hasattr(obj, field):
+                data[field] = _probe_safe_value(getattr(obj, field))
+        except Exception as e:
+            data[field] = f"<read-error: {e}>"
+    raw = getattr(obj, "__dict__", None)
+    if isinstance(raw, dict):
+        extra = {
+            str(k): _probe_safe_value(v)
+            for k, v in raw.items()
+            if str(k) not in data and not str(k).startswith("_")
+        }
+        if extra:
+            data["_dict"] = extra
+    return data
+
+
+def _probe_snapshot_records(records, fields):
+    if records is None:
+        return []
+    if hasattr(records, "iterrows"):
+        return [
+            {str(k): _probe_safe_value(v) for k, v in row.to_dict().items()}
+            for _, row in records.iterrows()
+        ]
+    try:
+        return [_probe_snapshot_object(item, fields) for item in list(records or [])]
+    except Exception:
+        return [{"_raw": _probe_safe_value(records)}]
+
+
+def _probe_record_stock_matches(record, stock_code):
+    record_stock = _plain_stock_code(_probe_record_value(record, ['stock_code', '证券代码', 'code'], ''))
+    return record_stock == _plain_stock_code(stock_code)
+
+
+def _probe_filter_snapshot_for_stock(snapshot, stock_code):
+    """仅保留目标股票相关的 QMT 查询数据，方便 order_id 生命周期复盘。"""
+    if not isinstance(snapshot, dict):
+        return {}
+    return {
+        'positions': [
+            item for item in snapshot.get('positions') or []
+            if _probe_record_stock_matches(item, stock_code)
+        ],
+        'orders': [
+            item for item in snapshot.get('orders') or []
+            if _probe_record_stock_matches(item, stock_code)
+        ],
+        'trades': [
+            item for item in snapshot.get('trades') or []
+            if _probe_record_stock_matches(item, stock_code)
+        ],
+        'active_orders_for_stock': snapshot.get('active_orders_for_stock') or [],
+        'errors': {k: v for k, v in snapshot.items() if k.endswith('_error') or k == 'error'},
+    }
+
+
+class _OrderProbeRecorder:
+    def __init__(self, mode):
+        os.makedirs(_ORDER_PROBE_DIR, exist_ok=True)
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.path = os.path.join(_ORDER_PROBE_DIR, f"webapi_{stamp}_{mode}_000799_25105132.jsonl")
+        self.events = []
+
+    def emit(self, event, data=None):
+        payload = {
+            "ts": _probe_now_text(),
+            "monotonic": time.monotonic(),
+            "event": event,
+            "data": _probe_safe_value(data or {}),
+        }
+        self.events.append(payload)
+        line = json.dumps(payload, ensure_ascii=False, default=str)
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        logger.warning(f"[ORDER_PROBE_000799] {event} {json.dumps(payload['data'], ensure_ascii=False, default=str)}")
+        return payload
+
+
+def _probe_get_market_price(position_manager, stock_code):
+    try:
+        position = position_manager.get_position(stock_code)
+        if position:
+            for key in ("current_price", "市价", "lastPrice", "price"):
+                price = _positive_float(position.get(key))
+                if price:
+                    return price
+    except Exception:
+        pass
+    try:
+        latest = data_manager.get_latest_data(stock_code)
+        if latest:
+            for key in ("lastPrice", "price", "close", "last_close"):
+                price = _positive_float(latest.get(key))
+                if price:
+                    return price
+    except Exception:
+        pass
+    return None
+
+
+def _probe_suggest_cancel_price(position_manager, stock_code):
+    price = _probe_get_market_price(position_manager, stock_code)
+    if not price:
+        return None
+    return round(float(price) * 1.08 + 0.004, 2)
+
+
+def _probe_query_snapshot(qmt_trader, stock_code):
+    xt_trader = getattr(qmt_trader, 'xt_trader', None)
+    acc = getattr(qmt_trader, 'acc', None)
+    snapshot = {}
+    if not xt_trader or not acc:
+        snapshot['error'] = 'xt_trader 或 acc 未初始化'
+        return snapshot
+    try:
+        snapshot['asset'] = _probe_snapshot_object(
+            xt_trader.query_stock_asset(acc),
+            ["account_type", "account_id", "cash", "frozen_cash", "market_value", "total_asset"],
+        )
+    except Exception as e:
+        snapshot['asset_error'] = str(e)
+    try:
+        snapshot['positions'] = _probe_snapshot_records(
+            xt_trader.query_stock_positions(acc),
+            ["account_type", "account_id", "stock_code", "volume", "can_use_volume", "open_price", "market_value"],
+        )
+    except Exception as e:
+        snapshot['positions_error'] = str(e)
+    try:
+        snapshot['orders'] = _probe_snapshot_records(
+            xt_trader.query_stock_orders(acc, cancelable_only=False),
+            _ORDER_PROBE_ORDER_FIELDS,
+        )
+    except Exception as e:
+        snapshot['orders_error'] = str(e)
+    try:
+        snapshot['trades'] = _probe_snapshot_records(
+            xt_trader.query_stock_trades(acc),
+            _ORDER_PROBE_TRADE_FIELDS,
+        )
+    except Exception as e:
+        snapshot['trades_error'] = str(e)
+    try:
+        snapshot['active_orders_for_stock'] = _find_pending_orders_for_stock(qmt_trader, stock_code)
+    except Exception as e:
+        snapshot['active_orders_for_stock_error'] = str(e)
+    return snapshot
+
+
+def _probe_find_order(snapshot, order_id):
+    order_text = str(order_id or '')
+    if not order_text:
+        return None
+    for order in snapshot.get('orders') or []:
+        if str(_probe_record_value(order, ['order_id', '委托编号'], '')) == order_text:
+            return order
+    return None
+
+
+def _probe_attach_callbacks(qmt_trader, recorder):
+    callback = getattr(qmt_trader, '_callback', None)
+    if callback is None:
+        return lambda: None
+    attached = []
+
+    def _append(list_name, cb):
+        items = getattr(callback, list_name, None)
+        if items is None:
+            setattr(callback, list_name, [])
+            items = getattr(callback, list_name)
+        items.append(cb)
+        attached.append((items, cb))
+
+    def on_order(order):
+        recorder.emit("callback.stock_order", _probe_snapshot_object(order, _ORDER_PROBE_ORDER_FIELDS))
+
+    def on_trade(trade):
+        recorder.emit("callback.stock_trade", _probe_snapshot_object(trade, _ORDER_PROBE_TRADE_FIELDS))
+
+    def on_async_response(response):
+        recorder.emit("callback.async_order_response", _probe_snapshot_object(response, _ORDER_PROBE_RESPONSE_FIELDS))
+
+    def on_cancel_response(response):
+        recorder.emit("callback.cancel_response", _probe_snapshot_object(response, _ORDER_PROBE_RESPONSE_FIELDS))
+
+    _append('order_callbacks', on_order)
+    _append('trade_callbacks', on_trade)
+    _append('async_order_response_callbacks', on_async_response)
+    _append('cancel_response_callbacks', on_cancel_response)
+
+    def detach():
+        for items, cb in attached:
+            try:
+                while cb in items:
+                    items.remove(cb)
+            except Exception:
+                pass
+
+    return detach
+
+
+def _probe_prepare(position_manager, qmt_trader, recorder):
+    account_id = _get_current_account_id(qmt_trader)
+    checks = {
+        'target_account_id': _LIVE_SELL_TEST_ACCOUNT_ID,
+        'target_stock_code': _LIVE_SELL_TEST_STOCK,
+        'target_volume': _LIVE_SELL_TEST_VOLUME,
+        'current_account_id': account_id,
+        'token_configured': bool(getattr(config, 'WEB_API_TOKEN', '')),
+        'debug_api_enabled': bool(getattr(config, 'ENABLE_DEBUG_LIVE_SELL_TEST_API', False)),
+        'simulation_mode': bool(getattr(config, 'ENABLE_SIMULATION_MODE', False)),
+        'trade_time': bool(config.is_trade_time()),
+        'qmt_connected': bool(qmt_trader) and _is_qmt_trader_connected(position_manager, qmt_trader),
+        'allow_sell': bool(getattr(config, 'ENABLE_ALLOW_SELL', True)),
+    }
+    checks['account_allowed'] = account_id == _LIVE_SELL_TEST_ACCOUNT_ID
+    position_found, available = _get_position_available(position_manager, _LIVE_SELL_TEST_STOCK)
+    checks['position_found'] = position_found
+    checks['available'] = available
+    checks['available_enough'] = available >= _LIVE_SELL_TEST_VOLUME
+    checks['market_price'] = _probe_get_market_price(position_manager, _LIVE_SELL_TEST_STOCK)
+    checks['suggested_cancel_price'] = _probe_suggest_cancel_price(position_manager, _LIVE_SELL_TEST_STOCK)
+    try:
+        pending_orders = _find_pending_orders_for_stock(qmt_trader, _LIVE_SELL_TEST_STOCK)
+        checks['pending_orders_query_ok'] = True
+        checks['pending_orders'] = pending_orders
+        checks['has_pending_order'] = len(pending_orders) > 0
+    except Exception as e:
+        checks['pending_orders_query_ok'] = False
+        checks['pending_orders_error'] = str(e)
+        checks['pending_orders'] = []
+        checks['has_pending_order'] = True
+    ensure_push_ready = getattr(qmt_trader, 'ensure_trade_push_ready', None)
+    if checks['qmt_connected'] and callable(ensure_push_ready):
+        try:
+            checks['push_ready'] = bool(ensure_push_ready())
+        except Exception as e:
+            checks['push_ready'] = False
+            checks['push_ready_error'] = str(e)
+    else:
+        checks['push_ready'] = False
+    checks['preflight_ready'] = all([
+        checks['token_configured'],
+        checks['debug_api_enabled'],
+        not checks['simulation_mode'],
+        checks['trade_time'],
+        checks['qmt_connected'],
+        checks['account_allowed'],
+        checks['allow_sell'],
+        checks['position_found'],
+        checks['available_enough'],
+        checks['pending_orders_query_ok'],
+        not checks['has_pending_order'],
+        checks['push_ready'],
+    ])
+    recorder.emit("preflight.checks", checks)
+    return checks
+
+
+def _probe_wait_for_order_id(position_manager, qmt_trader, seq, timeout, interval,
+                             recorder, stock_code=None, volume=None, strategy=None,
+                             order_remark=None, submitted_at=None, price=None):
+    deadline = time.time() + max(0.1, float(timeout))
+    source = 'timeout'
+    order_id = None
+    while time.time() <= deadline:
+        get_mapping = getattr(qmt_trader, 'get_order_id_by_seq', None)
+        mapped = None
+        if callable(get_mapping) and not type(get_mapping).__module__.startswith('unittest.mock'):
+            try:
+                mapped = get_mapping(seq)
+            except Exception as e:
+                recorder.emit("resolve.order_id_map_error", {"seq": seq, "error": str(e)})
+        if not mapped:
+            order_id_map = getattr(qmt_trader, 'order_id_map', {}) or {}
+            mapped = order_id_map.get(seq)
+            if not mapped:
+                mapped = order_id_map.get(str(seq))
+        if mapped:
+            order_id = mapped
+            source = 'order_id_map'
+            break
+        resolver = getattr(position_manager, '_resolve_real_order_id_from_orders', None)
+        if callable(resolver):
+            try:
+                resolved = resolver(
+                    returned_id=seq,
+                    stock_code=stock_code,
+                    side='SELL',
+                    volume=volume,
+                    strategy=strategy,
+                    order_remark=order_remark,
+                    submitted_at=submitted_at,
+                    price=price,
+                )
+                recorder.emit("resolve.query_attempt", {
+                    "seq": seq,
+                    "order_id": resolved,
+                    "stock_code": stock_code,
+                    "volume": volume,
+                    "strategy": strategy,
+                    "order_remark": order_remark,
+                })
+                if resolved:
+                    order_id = resolved
+                    source = 'query_fallback'
+                    break
+            except Exception as e:
+                recorder.emit("resolve.query_attempt_error", {"seq": seq, "error": str(e)})
+        time.sleep(max(0.1, float(interval)))
+    recorder.emit("resolve.order_id", {"seq": seq, "order_id": order_id, "source": source})
+    return order_id, source
+
+
+def _probe_wait_for_order_status(qmt_trader, order_id, timeout, interval, recorder):
+    deadline = time.time() + max(0.1, float(timeout))
+    last_order = None
+    while time.time() <= deadline:
+        snapshot = _probe_query_snapshot(qmt_trader, _LIVE_SELL_TEST_STOCK)
+        order = _probe_find_order(snapshot, order_id)
+        if order:
+            last_order = order
+            status = _as_int(_probe_record_value(order, ['order_status', 'status'], 0))
+            recorder.emit("wait.order_status", {"order_id": order_id, "status": status, "order": order})
+            if not order_is_pending(status):
+                return order
+        time.sleep(max(0.2, float(interval)))
+    return last_order
+
+
+def _probe_wait_for_fill(qmt_trader, order_id, expected_volume, timeout, interval, recorder):
+    deadline = time.time() + max(0.1, float(timeout))
+    last_fill = {"filled_volume": 0, "trades": []}
+    order_text = str(order_id or '')
+    while time.time() <= deadline:
+        snapshot = _probe_query_snapshot(qmt_trader, _LIVE_SELL_TEST_STOCK)
+        trades = []
+        filled_volume = 0
+        for trade in snapshot.get('trades') or []:
+            if str(_probe_record_value(trade, ['order_id', '委托编号'], '')) != order_text:
+                continue
+            trades.append(trade)
+            filled_volume += _as_int(_probe_record_value(trade, ['traded_volume', '成交数量'], 0), 0)
+        last_fill = {"filled_volume": filled_volume, "trades": trades}
+        recorder.emit("wait.fill_status", {
+            "order_id": order_id,
+            "filled_volume": filled_volume,
+            "expected_volume": expected_volume,
+            "trade_count": len(trades),
+        })
+        if filled_volume >= expected_volume:
+            return last_fill
+        time.sleep(max(0.2, float(interval)))
+    return last_fill
+
+
 realtime_data = {
     'positions': {},
     'latest_prices': {},
@@ -1597,6 +2019,238 @@ if getattr(config, 'ENABLE_DEBUG_LIVE_SELL_TEST_API', False):
         methods=['POST']
     )
     logger.warning("[LIVE_SELL_TEST] 实盘卖出调试窄接口已启用")
+
+
+@app.route('/api/debug/order-probe-000799', methods=['GET', 'POST'])
+@require_token
+def debug_order_probe_000799():
+    """000799 / 100股 QMT order_id 生命周期探测窄接口。"""
+    data = request.get_json(silent=True) or {}
+    if request.method == 'GET':
+        data.update(request.args.to_dict())
+
+    mode = str(data.get('mode') or 'preflight').strip().lower()
+    if mode not in ('preflight', 'sell-cancel', 'sell-fill'):
+        return jsonify({'success': False, 'error': 'mode 仅支持 preflight/sell-cancel/sell-fill'}), 400
+
+    recorder = _OrderProbeRecorder(mode)
+
+    def _finish(summary, http_status=200):
+        recorder.emit("summary", summary)
+        summary['events_file'] = recorder.path
+        summary['events_tail'] = recorder.events[-20:]
+        return jsonify(_probe_safe_value(summary)), http_status
+
+    def _fail(message, http_status=400, extra=None):
+        payload = {
+            'success': False,
+            'status': 'error',
+            'mode': mode,
+            'error': message,
+            'timestamp': _probe_now_text(),
+        }
+        if extra:
+            payload.update(extra)
+        return _finish(payload, http_status)
+
+    if not getattr(config, 'WEB_API_TOKEN', ''):
+        return _fail('QMT_API_TOKEN/WEB_API_TOKEN 未配置，拒绝使用调试窄接口', 403)
+
+    position_manager = get_position_manager_instance()
+    qmt_trader = getattr(position_manager, 'qmt_trader', None)
+    if qmt_trader is None:
+        return _fail('position_manager.qmt_trader 未初始化', 503)
+
+    recorder.emit("request", {
+        'method': request.method,
+        'mode': mode,
+        'remote_addr': request.remote_addr,
+        'payload_keys': sorted(data.keys()),
+    })
+
+    checks = _probe_prepare(position_manager, qmt_trader, recorder)
+    snapshot_before = _probe_query_snapshot(qmt_trader, _LIVE_SELL_TEST_STOCK)
+    recorder.emit("snapshot.before", {
+        'orders': len(snapshot_before.get('orders') or []),
+        'trades': len(snapshot_before.get('trades') or []),
+        'positions': len(snapshot_before.get('positions') or []),
+        'errors': {k: v for k, v in snapshot_before.items() if k.endswith('_error') or k == 'error'},
+    })
+    recorder.emit("snapshot.before.000799", _probe_filter_snapshot_for_stock(snapshot_before, _LIVE_SELL_TEST_STOCK))
+
+    if mode == 'preflight':
+        return _finish({
+            'success': True,
+            'status': 'success',
+            'mode': mode,
+            'ready': bool(checks.get('preflight_ready')),
+            'checks': checks,
+            'snapshot_counts': {
+                'orders': len(snapshot_before.get('orders') or []),
+                'trades': len(snapshot_before.get('trades') or []),
+                'positions': len(snapshot_before.get('positions') or []),
+            },
+            'confirm_sell_cancel': _ORDER_PROBE_CONFIRM_CANCEL,
+            'confirm_sell_fill': _ORDER_PROBE_CONFIRM_FILL,
+            'timestamp': _probe_now_text(),
+        })
+
+    if not checks.get('debug_api_enabled'):
+        return _fail('ENABLE_DEBUG_LIVE_SELL_TEST_API 未开启，拒绝实盘下单测试', 403, {'checks': checks})
+    if not checks.get('preflight_ready'):
+        return _fail('preflight 未通过，拒绝实盘下单测试', 409, {'checks': checks})
+
+    expected_confirm = _ORDER_PROBE_CONFIRM_CANCEL if mode == 'sell-cancel' else _ORDER_PROBE_CONFIRM_FILL
+    confirm = str(data.get('confirm', '') or '').strip()
+    if confirm != expected_confirm:
+        return _fail('confirm 不匹配，拒绝实盘下单测试', 400, {
+            'expected_confirm': expected_confirm,
+            'checks': checks,
+        })
+
+    price_type = _as_int(data.get('price_type', 11 if mode == 'sell-cancel' else 5), None)
+    price = None
+    if data.get('price') not in (None, ''):
+        try:
+            price = float(data.get('price'))
+        except (TypeError, ValueError):
+            return _fail('price 必须为空或正数', 400)
+    elif mode == 'sell-cancel' and str(data.get('use_suggested_price', '')).lower() in ('1', 'true', 'yes', 'on'):
+        price = checks.get('suggested_cancel_price')
+
+    if mode == 'sell-cancel':
+        if price_type != 11:
+            return _fail('sell-cancel 固定要求 price_type=11(FIX_PRICE)', 400)
+        if not price or price <= 0:
+            return _fail('sell-cancel 必须提供正数 price，或传 use_suggested_price=true', 400, {'checks': checks})
+    else:
+        if str(data.get('allow_fill', '')).lower() not in ('1', 'true', 'yes', 'on'):
+            return _fail('sell-fill 会真实卖出成交，必须额外传 allow_fill=true', 400)
+        if price_type == 11 and (not price or price <= 0):
+            return _fail('sell-fill 使用 FIX_PRICE 时必须提供正数 price', 400)
+        if price is None:
+            price = 0.0
+
+    xt_trader = getattr(qmt_trader, 'xt_trader', None)
+    acc = getattr(qmt_trader, 'acc', None)
+    if xt_trader is None or acc is None:
+        return _fail('xt_trader 或 acc 未初始化', 503, {'checks': checks})
+
+    detach_callbacks = _probe_attach_callbacks(qmt_trader, recorder)
+    try:
+        stock_code = qmt_trader.adjust_stock(_LIVE_SELL_TEST_STOCK) if hasattr(qmt_trader, 'adjust_stock') else '000799.SZ'
+        order_remark = str(data.get('order_remark') or f"web_probe_{mode}_{int(time.time())}")
+        strategy_name = str(data.get('strategy') or f"web_probe_{mode}")
+        recorder.emit("submit.sell_start", {
+            'stock_code': stock_code,
+            'volume': _LIVE_SELL_TEST_VOLUME,
+            'price_type': price_type,
+            'price': price,
+            'strategy_name': strategy_name,
+            'order_remark': order_remark,
+        })
+        submitted_at = time.time()
+        seq = xt_trader.order_stock_async(
+            account=acc,
+            stock_code=stock_code,
+            order_type=ORDER_TYPE_SELL,
+            order_volume=_LIVE_SELL_TEST_VOLUME,
+            price_type=price_type,
+            price=price or 0.0,
+            strategy_name=strategy_name,
+            order_remark=order_remark,
+        )
+        seq = _as_int(seq, -1)
+        recorder.emit("submit.sell_return", {'seq': seq})
+        if seq <= 0:
+            return _fail('order_stock_async 返回异常 seq', 502, {'seq': seq, 'checks': checks})
+
+        resolve_timeout = float(data.get('resolve_timeout') or 35.0)
+        poll_interval = float(data.get('poll_interval') or 1.0)
+        match_price = price if price_type == 11 and price and price > 0 else None
+        order_id, resolve_source = _probe_wait_for_order_id(
+            position_manager,
+            qmt_trader,
+            seq,
+            resolve_timeout,
+            poll_interval,
+            recorder,
+            stock_code=stock_code,
+            volume=_LIVE_SELL_TEST_VOLUME,
+            strategy=strategy_name,
+            order_remark=order_remark,
+            submitted_at=submitted_at,
+            price=match_price,
+        )
+        if not order_id:
+            snapshot_after = _probe_query_snapshot(qmt_trader, _LIVE_SELL_TEST_STOCK)
+            recorder.emit("snapshot.after.000799", _probe_filter_snapshot_for_stock(snapshot_after, _LIVE_SELL_TEST_STOCK))
+            return _finish({
+                'success': False,
+                'status': 'unresolved',
+                'mode': mode,
+                'seq': seq,
+                'order_id': None,
+                'resolve_source': resolve_source,
+                'checks': checks,
+                'after_snapshot_counts': {
+                    'orders': len(snapshot_after.get('orders') or []),
+                    'trades': len(snapshot_after.get('trades') or []),
+                },
+                'timestamp': _probe_now_text(),
+            }, 502)
+
+        if mode == 'sell-cancel':
+            cancel_timeout = float(data.get('cancel_timeout') or 30.0)
+            recorder.emit("cancel.start", {'order_id': order_id})
+            cancel_seq = xt_trader.cancel_order_stock_async(account=acc, order_id=int(order_id))
+            cancel_seq = _as_int(cancel_seq, -1)
+            recorder.emit("cancel.return", {'order_id': order_id, 'cancel_seq': cancel_seq})
+            terminal_order = _probe_wait_for_order_status(qmt_trader, order_id, cancel_timeout, poll_interval, recorder)
+            snapshot_after = _probe_query_snapshot(qmt_trader, _LIVE_SELL_TEST_STOCK)
+            recorder.emit("snapshot.after.000799", _probe_filter_snapshot_for_stock(snapshot_after, _LIVE_SELL_TEST_STOCK))
+            return _finish({
+                'success': cancel_seq > 0,
+                'status': 'success' if cancel_seq > 0 else 'cancel_submit_failed',
+                'mode': mode,
+                'seq': seq,
+                'order_id': str(order_id),
+                'resolve_source': resolve_source,
+                'cancel_seq': cancel_seq,
+                'terminal_order': terminal_order,
+                'checks': checks,
+                'after_snapshot_counts': {
+                    'orders': len(snapshot_after.get('orders') or []),
+                    'trades': len(snapshot_after.get('trades') or []),
+                },
+                'timestamp': _probe_now_text(),
+            }, 200 if cancel_seq > 0 else 502)
+
+        fill_timeout = float(data.get('fill_timeout') or 60.0)
+        fill = _probe_wait_for_fill(qmt_trader, order_id, _LIVE_SELL_TEST_VOLUME, fill_timeout, poll_interval, recorder)
+        snapshot_after = _probe_query_snapshot(qmt_trader, _LIVE_SELL_TEST_STOCK)
+        recorder.emit("snapshot.after.000799", _probe_filter_snapshot_for_stock(snapshot_after, _LIVE_SELL_TEST_STOCK))
+        filled_volume = _as_int(fill.get('filled_volume'), 0)
+        return _finish({
+            'success': filled_volume >= _LIVE_SELL_TEST_VOLUME,
+            'status': 'success' if filled_volume >= _LIVE_SELL_TEST_VOLUME else 'fill_timeout',
+            'mode': mode,
+            'seq': seq,
+            'order_id': str(order_id),
+            'resolve_source': resolve_source,
+            'fill': fill,
+            'checks': checks,
+            'after_snapshot_counts': {
+                'orders': len(snapshot_after.get('orders') or []),
+                'trades': len(snapshot_after.get('trades') or []),
+            },
+            'timestamp': _probe_now_text(),
+        }, 200 if filled_volume >= _LIVE_SELL_TEST_VOLUME else 504)
+    except Exception as e:
+        logger.error(f"[ORDER_PROBE_000799] 执行异常: {e}", exc_info=True)
+        return _fail(f"执行异常: {e}", 500, {'checks': checks})
+    finally:
+        detach_callbacks()
 
 
 # @app.route('/api/debug/db-test', methods=['GET'])

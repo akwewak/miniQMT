@@ -84,6 +84,20 @@ python -m unittest test.test_system_integration -v
 python test/run_all_grid_tests.py
 ```
 
+### QMT order_id 实盘窄接口
+
+当需要验证 `order_stock_async()` 返回的 `seq` 如何匹配真实 `order_id` 时，优先使用主程序 Web API 窄接口，而不是绕开主程序直连 QMT。这样可以同时覆盖账号绑定、callback 注册、trade push 订阅、委托查询和成交回报链路。
+
+```powershell
+# 只读检查
+C:\Users\PC\anaconda3\envs\python39\python.exe scripts\probe_order_id_matching.py --base-url http://127.0.0.1:50000 --mode preflight
+
+# 100股高价限价卖出后撤单
+C:\Users\PC\anaconda3\envs\python39\python.exe scripts\probe_order_id_matching.py --base-url http://127.0.0.1:50000 --mode sell-cancel --confirm SELL_CANCEL_100_000799_25105132 --use-suggested-price
+```
+
+真实成交验证需要额外 `--allow-fill`，会实际卖出 100 股。完整流程见 [QMT order_id 匹配](qmt-order-id-matching.md)。
+
 ---
 
 ## 测试报告

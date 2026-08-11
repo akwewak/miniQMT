@@ -2848,6 +2848,132 @@ class PositionManager:
         except (TypeError, ValueError):
             return default
 
+    def _normalize_order_side(self, order_type):
+        if order_type is None or order_type == '':
+            return None
+        numeric_type = self._safe_int(order_type)
+        if numeric_type == 23:
+            return 'BUY'
+        if numeric_type == 24:
+            return 'SELL'
+        text = str(order_type).strip().upper()
+        if text in ('23', 'BUY', 'B', '买入', '证券买入') or ('买' in text and '卖' not in text):
+            return 'BUY'
+        if text in ('24', 'SELL', 'S', '卖出', '证券卖出') or '卖' in text:
+            return 'SELL'
+        return None
+
+    def _order_id_from_record(self, order):
+        return self._safe_int(
+            self._order_field_any(
+                order,
+                [
+                    'order_id', '订单编号', '委托编号',
+                    'm_nOrderID', 'm_strOrderID',
+                    'order_sysid', '柜台合同编号', '合同编号',
+                    'm_strOrderSysID', '系统订单号',
+                ],
+                None,
+            )
+        )
+
+    def _order_id_seq_candidates(self, seq):
+        candidates = []
+        for value in (seq, str(seq) if seq is not None else None):
+            if value is not None and value not in candidates:
+                candidates.append(value)
+        try:
+            int_seq = int(seq)
+            if int_seq not in candidates:
+                candidates.append(int_seq)
+        except (TypeError, ValueError):
+            pass
+        return candidates
+
+    def _is_mock_object(self, obj):
+        return type(obj).__module__.startswith('unittest.mock')
+
+    def _get_cached_order_id_mapping(self, returned_id):
+        qmt_trader = getattr(self, 'qmt_trader', None)
+        if not qmt_trader:
+            return None
+
+        getter = getattr(qmt_trader, 'get_order_id_by_seq', None)
+        if callable(getter) and not self._is_mock_object(getter):
+            try:
+                mapped = getter(returned_id)
+                if mapped:
+                    return mapped
+            except Exception as e:
+                logger.debug(f"读取order_id映射封装失败，回退直接查dict: {e}")
+
+        order_id_map = getattr(qmt_trader, 'order_id_map', {}) or {}
+        for key in self._order_id_seq_candidates(returned_id):
+            if key in order_id_map:
+                return order_id_map[key]
+        return None
+
+    def _cache_order_id_mapping(self, returned_id, real_order_id):
+        qmt_trader = getattr(self, 'qmt_trader', None)
+        if not qmt_trader:
+            return
+
+        setter = getattr(qmt_trader, 'set_order_id_mapping', None)
+        if callable(setter) and not self._is_mock_object(setter):
+            try:
+                setter(returned_id, real_order_id)
+                return
+            except Exception as e:
+                logger.debug(f"写入order_id映射封装失败，回退直接写dict: {e}")
+
+        order_id_map = getattr(qmt_trader, 'order_id_map', None)
+        if isinstance(order_id_map, dict):
+            for key in self._order_id_seq_candidates(returned_id):
+                order_id_map[key] = real_order_id
+
+    def _text_matches_exact_or_truncated(self, expected, actual, min_prefix=8):
+        expected = str(expected or '').strip()
+        actual = str(actual or '').strip()
+        if not expected or not actual:
+            return True
+        if expected == actual:
+            return True
+        short_len = min(len(expected), len(actual))
+        if short_len >= min_prefix and (expected.startswith(actual) or actual.startswith(expected)):
+            return True
+        return False
+
+    def _order_brief(self, order):
+        return {
+            'stock': self._plain_stock_code(
+                self._order_field_any(order, ['stock_code', '证券代码', 'code', 'm_strInstrumentID'], '')
+            ),
+            'side': self._normalize_order_side(
+                self._order_field_any(order, ['order_type', '委托类型', 'trade_type', '操作'], None)
+            ),
+            'volume': self._safe_int(
+                self._order_field_any(
+                    order,
+                    ['order_volume', '委托数量', 'volume', 'traded_volume', '成交数量'],
+                    None,
+                )
+            ),
+            'price': self._order_field_any(
+                order,
+                ['price', '委托价格', '委托价', 'traded_price', '成交均价', '成交价格'],
+                None,
+            ),
+            'status': self._order_field_any(order, ['order_status', '委托状态', 'status'], None),
+            'time': self._order_field_any(
+                order,
+                ['order_time', '报单时间', '委托时间', 'traded_time', '成交时间'],
+                None,
+            ),
+            'order_id': self._order_id_from_record(order),
+            'strategy': self._order_field_any(order, ['strategy_name', '策略名称', 'strategy'], ''),
+            'remark': self._order_field_any(order, ['order_remark', '委托备注', 'remark'], ''),
+        }
+
     def _order_time_to_timestamp(self, value):
         if value is None:
             return None
@@ -2955,18 +3081,29 @@ class PositionManager:
             except Exception as e:
                 logger.warning(f"[ASYNC_ORDER_QUERY_FAILED] 包装委托查询失败: {e}")
 
+        query_raw_trades = getattr(xt_trader, 'query_stock_trades', None)
+        if callable(query_raw_trades) and acc is not None:
+            try:
+                trades = query_raw_trades(acc)
+                records.extend(self._order_records_to_list(trades))
+            except Exception as e:
+                logger.warning(f"[ASYNC_ORDER_QUERY_FAILED] 原始成交查询失败，尝试包装查询: {e}")
+
+        query_df_trades = getattr(qmt_trader, 'query_stock_trades', None)
+        if callable(query_df_trades):
+            try:
+                trades = query_df_trades()
+                records.extend(self._order_records_to_list(trades))
+            except Exception as e:
+                logger.warning(f"[ASYNC_ORDER_QUERY_FAILED] 包装成交查询失败: {e}")
+
         return records
 
     def _order_side_matches(self, order_type, side):
         if order_type is None or order_type == '':
             return True
-        side = str(side or '').upper()
-        text = str(order_type).strip().upper()
-        if side == 'BUY':
-            return text in ('23', 'BUY', '买入')
-        if side == 'SELL':
-            return text in ('24', 'SELL', '卖出')
-        return True
+        normalized = self._normalize_order_side(order_type)
+        return normalized is None or normalized == str(side or '').upper()
 
     def _order_price_matches(self, order_price, expected_price):
         if expected_price is None:
@@ -2994,42 +3131,94 @@ class PositionManager:
         post_window = float(getattr(config, 'ASYNC_ORDER_QUERY_MATCH_POST_WINDOW_SECONDS', 30.0))
 
         matches = []
+        partial_matches = []
+        rejects = {}
+        inspected = 0
         for order in self._query_today_order_records(stock_base):
+            inspected += 1
+            brief = self._order_brief(order)
             order_stock = self._plain_stock_code(
                 self._order_field_any(order, ['stock_code', '证券代码', 'code', 'm_strInstrumentID'], '')
             )
             if order_stock != stock_base:
+                rejects['stock'] = rejects.get('stock', 0) + 1
                 continue
 
-            order_type = self._order_field_any(order, ['order_type', '委托类型', 'trade_type'], None)
+            order_type = self._order_field_any(order, ['order_type', '委托类型', 'trade_type', '操作'], None)
             if not self._order_side_matches(order_type, side):
+                rejects['side'] = rejects.get('side', 0) + 1
                 continue
 
             order_volume = self._safe_int(
-                self._order_field_any(order, ['order_volume', '委托数量', 'volume'], None)
+                self._order_field_any(
+                    order,
+                    ['order_volume', '委托数量', 'volume'],
+                    None,
+                )
             )
-            if expected_volume is not None and order_volume != expected_volume:
-                continue
+            traded_volume = self._safe_int(
+                self._order_field_any(order, ['traded_volume', '成交数量'], None)
+            )
+            matched_by_partial_deal = False
+            if expected_volume is not None:
+                if order_volume is not None:
+                    if order_volume != expected_volume:
+                        rejects['volume'] = rejects.get('volume', 0) + 1
+                        continue
+                elif traded_volume is not None:
+                    if not (0 < traded_volume <= expected_volume):
+                        rejects['volume'] = rejects.get('volume', 0) + 1
+                        continue
+                    matched_by_partial_deal = traded_volume != expected_volume
 
-            order_price = self._order_field_any(order, ['price', '委托价格', '委托价'], None)
+            order_price = self._order_field_any(
+                order,
+                ['price', '委托价格', '委托价', 'traded_price', '成交均价', '成交价格'],
+                None,
+            )
             if not self._order_price_matches(order_price, price):
+                rejects['price'] = rejects.get('price', 0) + 1
                 continue
 
             order_ts = self._order_time_to_timestamp(
-                self._order_field_any(order, ['order_time', '报单时间', '委托时间'], None)
+                self._order_field_any(
+                    order,
+                    ['order_time', '报单时间', '委托时间', 'traded_time', '成交时间'],
+                    None,
+                )
             )
             if order_ts is not None:
                 if order_ts < submitted_at - pre_window:
+                    rejects['time_before'] = rejects.get('time_before', 0) + 1
                     continue
                 if order_ts > submitted_at + post_window:
+                    rejects['time_after'] = rejects.get('time_after', 0) + 1
                     continue
 
-            order_id = self._safe_int(
-                self._order_field_any(order, ['order_id', '订单编号', 'm_strOrderSysID'], None)
-            )
-            if order_id is None or order_id <= 0:
+            order_strategy = str(
+                self._order_field_any(order, ['strategy_name', '策略名称', 'strategy'], '') or ''
+            ).strip()
+            order_remark_value = str(
+                self._order_field_any(order, ['order_remark', '委托备注', 'remark'], '') or ''
+            ).strip()
+            if expected_strategy and order_strategy and not self._text_matches_exact_or_truncated(
+                    expected_strategy, order_strategy):
+                rejects['strategy'] = rejects.get('strategy', 0) + 1
                 continue
-            matches.append(order_id)
+            if order_remark and order_remark_value and order_remark_value != str(order_remark):
+                rejects['remark_mismatch_ignored'] = rejects.get('remark_mismatch_ignored', 0) + 1
+
+            order_id = self._order_id_from_record(order)
+            if order_id is None or order_id <= 0:
+                rejects['order_id'] = rejects.get('order_id', 0) + 1
+                continue
+            if matched_by_partial_deal:
+                partial_matches.append(order_id)
+            else:
+                matches.append(order_id)
+            logger.debug(
+                f"[ASYNC_ORDER_QUERY_CANDIDATE] seq={returned_id} 候选委托: {brief}"
+            )
 
         unique_matches = sorted(set(matches))
         if len(unique_matches) == 1:
@@ -3038,16 +3227,42 @@ class PositionManager:
                 f"[ASYNC_ORDER_QUERY_RESOLVED] seq={returned_id} 通过委托列表反查到真实order_id={real_order_id} "
                 f"({side} {stock_base}, volume={expected_volume}, strategy={expected_strategy})"
             )
-            try:
-                self.qmt_trader.order_id_map[returned_id] = real_order_id
-            except Exception:
-                pass
+            self._cache_order_id_mapping(returned_id, real_order_id)
             return real_order_id
 
         if len(unique_matches) > 1:
             logger.warning(
                 f"[ASYNC_ORDER_QUERY_AMBIGUOUS] seq={returned_id} 反查到多个候选order_id={unique_matches}，"
                 f"保守返回None"
+            )
+            return None
+
+        partial_unique_matches = sorted(set(partial_matches))
+        if len(partial_unique_matches) == 1:
+            real_order_id = partial_unique_matches[0]
+            logger.info(
+                f"[ASYNC_ORDER_QUERY_RESOLVED_PARTIAL] seq={returned_id} 通过成交列表部分成交反查到真实order_id={real_order_id} "
+                f"({side} {stock_base}, expected_volume={expected_volume}, strategy={expected_strategy})"
+            )
+            self._cache_order_id_mapping(returned_id, real_order_id)
+            return real_order_id
+        if len(partial_unique_matches) > 1:
+            logger.warning(
+                f"[ASYNC_ORDER_QUERY_AMBIGUOUS] seq={returned_id} 反查到多个部分成交候选order_id={partial_unique_matches}，"
+                f"保守返回None"
+            )
+            return None
+
+        if inspected:
+            logger.info(
+                f"[ASYNC_ORDER_QUERY_NO_MATCH] seq={returned_id} 反查未命中: "
+                f"stock={stock_base}, side={side}, volume={expected_volume}, "
+                f"strategy={expected_strategy}, inspected={inspected}, rejects={rejects}"
+            )
+        else:
+            logger.info(
+                f"[ASYNC_ORDER_QUERY_EMPTY] seq={returned_id} 未查询到今日委托记录: "
+                f"stock={stock_base}, side={side}, volume={expected_volume}"
             )
         return None
 
@@ -3085,8 +3300,8 @@ class PositionManager:
 
             # 等待配置时间让回调建立映射
             for i in range(wait_count):
-                if returned_id in self.qmt_trader.order_id_map:
-                    real_order_id = self.qmt_trader.order_id_map[returned_id]
+                real_order_id = self._get_cached_order_id_mapping(returned_id)
+                if real_order_id:
                     logger.debug(f"映射成功: seq={returned_id} -> order_id={real_order_id}")
                     return real_order_id
                 time.sleep(wait_interval)

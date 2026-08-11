@@ -22,13 +22,53 @@ def conv_time(ct):
     time_stamp = '%s.%03d' % (data_head, data_secs)
     return time_stamp
 class MyXtQuantTraderCallback(XtQuantTraderCallback):
-    def __init__(self, order_id_map):
+    def __init__(self, order_id_map, order_id_map_lock=None, order_id_map_meta=None):
         super().__init__()
         self.order_id_map = order_id_map
+        self.order_id_map_lock = order_id_map_lock or threading.RLock()
+        self.order_id_map_meta = order_id_map_meta if order_id_map_meta is not None else {}
         self.order_callbacks = []
+        self.async_order_response_callbacks = []
+        self.cancel_response_callbacks = []
         self.trade_callbacks = []       # 成交回报外部回调列表
         self.disconnect_callbacks = []  # 断连事件外部回调列表（Fail-Safe 用）
         self.detached = False           # 失效标记：重连后旧 callback 置为 True
+
+    def _store_order_id_mapping(self, seq, order_id):
+        now = time.time()
+        keys = []
+        if seq is not None:
+            keys.append(seq)
+            keys.append(str(seq))
+        with self.order_id_map_lock:
+            for key in keys:
+                self.order_id_map[key] = order_id
+                self.order_id_map_meta[key] = now
+            self._prune_order_id_mapping_locked(now)
+
+    def _prune_order_id_mapping_locked(self, now=None):
+        now = now or time.time()
+        ttl = float(getattr(config, 'QMT_ORDER_ID_MAP_TTL_SECONDS', 86400))
+        max_entries = int(getattr(config, 'QMT_ORDER_ID_MAP_MAX_ENTRIES', 4096))
+
+        if ttl > 0:
+            expired_keys = [
+                key for key, ts in list(self.order_id_map_meta.items())
+                if now - float(ts or 0) > ttl
+            ]
+            for key in expired_keys:
+                self.order_id_map.pop(key, None)
+                self.order_id_map_meta.pop(key, None)
+
+        if max_entries > 0 and len(self.order_id_map) > max_entries:
+            overflow = len(self.order_id_map) - max_entries
+            ordered_keys = sorted(
+                list(self.order_id_map.keys()),
+                key=lambda key: self.order_id_map_meta.get(key, 0)
+            )
+            for key in ordered_keys[:overflow]:
+                self.order_id_map.pop(key, None)
+                self.order_id_map_meta.pop(key, None)
 
     def detach(self):
         """
@@ -47,6 +87,8 @@ class MyXtQuantTraderCallback(XtQuantTraderCallback):
         self.detached = True
         self.order_callbacks = []
         self.disconnect_callbacks = []
+        self.async_order_response_callbacks = []
+        self.cancel_response_callbacks = []
 
     def on_disconnected(self):
         """
@@ -126,7 +168,30 @@ class MyXtQuantTraderCallback(XtQuantTraderCallback):
         :return:
         """
         logger.info(f"异步下单回报: 账户={response.account_id}, 订单号={response.order_id}, 请求序号={response.seq}")
-        self.order_id_map[response.seq] = response.order_id
+        self._store_order_id_mapping(response.seq, response.order_id)
+        for cb in self.async_order_response_callbacks:
+            try:
+                cb(response)
+            except Exception as e:
+                logger.error(f"on_order_stock_async_response 外部回调异常: {e}")
+
+    def on_cancel_order_stock_async_response(self, response):
+        """
+        异步撤单回报推送
+        :param response: XtCancelOrderResponse 对象
+        :return:
+        """
+        logger.info(
+            f"异步撤单回报: 账户={getattr(response, 'account_id', '')}, "
+            f"订单号={getattr(response, 'order_id', '')}, "
+            f"请求序号={getattr(response, 'seq', '')}, "
+            f"结果={getattr(response, 'cancel_result', '')}"
+        )
+        for cb in self.cancel_response_callbacks:
+            try:
+                cb(response)
+            except Exception as e:
+                logger.error(f"on_cancel_order_stock_async_response 外部回调异常: {e}")
 
 class easy_qmt_trader:
     def __init__(self,path= r'D:/国金QMT交易端模拟/userdata_mini',
@@ -146,11 +211,65 @@ class easy_qmt_trader:
         else:
             self.slippage=0
         self.order_id_map = {}  # 新增：用于存储下单请求序号和qmt订单编号的映射关系
+        self.order_id_map_lock = threading.RLock()
+        self.order_id_map_meta = {}
         self.xtdata = None  # 初始化xtdata属性
         self.xtdata_connected = False  # 初始化连接状态
         self._callback = None  # 保存callback对象，供外部注册trade_callbacks
         self._connecting = False  # 连接进行中标记，避免误判错误
         logger.info('操作提示: 请登录QMT,选择行情加交易选项,选择极简模式')
+
+    def _order_id_seq_candidates(self, seq):
+        candidates = []
+        for value in (seq, str(seq) if seq is not None else None):
+            if value is not None and value not in candidates:
+                candidates.append(value)
+        try:
+            int_seq = int(seq)
+            if int_seq not in candidates:
+                candidates.append(int_seq)
+        except (TypeError, ValueError):
+            pass
+        return candidates
+
+    def set_order_id_mapping(self, seq, order_id):
+        now = time.time()
+        with self.order_id_map_lock:
+            for key in self._order_id_seq_candidates(seq):
+                self.order_id_map[key] = order_id
+                self.order_id_map_meta[key] = now
+            self.cleanup_order_id_map(now=now)
+
+    def get_order_id_by_seq(self, seq):
+        with self.order_id_map_lock:
+            for key in self._order_id_seq_candidates(seq):
+                if key in self.order_id_map:
+                    return self.order_id_map[key]
+        return None
+
+    def cleanup_order_id_map(self, now=None):
+        now = now or time.time()
+        ttl = float(getattr(config, 'QMT_ORDER_ID_MAP_TTL_SECONDS', 86400))
+        max_entries = int(getattr(config, 'QMT_ORDER_ID_MAP_MAX_ENTRIES', 4096))
+        with self.order_id_map_lock:
+            if ttl > 0:
+                expired_keys = [
+                    key for key, ts in list(self.order_id_map_meta.items())
+                    if now - float(ts or 0) > ttl
+                ]
+                for key in expired_keys:
+                    self.order_id_map.pop(key, None)
+                    self.order_id_map_meta.pop(key, None)
+
+            if max_entries > 0 and len(self.order_id_map) > max_entries:
+                overflow = len(self.order_id_map) - max_entries
+                ordered_keys = sorted(
+                    list(self.order_id_map.keys()),
+                    key=lambda key: self.order_id_map_meta.get(key, 0)
+                )
+                for key in ordered_keys[:overflow]:
+                    self.order_id_map.pop(key, None)
+                    self.order_id_map_meta.pop(key, None)
 
     def _stop_trader_with_timeout(self, trader, label='XtQuantTrader'):
         """带超时停止交易接口，避免底层 stop() 卡死拖垮重连线程。"""
@@ -209,11 +328,52 @@ class easy_qmt_trader:
         else:
             logger.warning("register_disconnect_callback: callback尚未初始化，请在connect()后调用")
 
+    def register_async_order_response_callback(self, cb):
+        """注册异步下单响应外部回调，供诊断 seq -> order_id 行为使用。"""
+        if self._callback is not None:
+            callbacks = getattr(self._callback, 'async_order_response_callbacks', None)
+            if callbacks is None:
+                self._callback.async_order_response_callbacks = []
+                callbacks = self._callback.async_order_response_callbacks
+            self._append_unique_callback(callbacks, cb, "async_order_response_callback")
+        else:
+            logger.warning("register_async_order_response_callback: callback尚未初始化，请在connect()后调用")
+
+    def register_cancel_response_callback(self, cb):
+        """注册异步撤单响应外部回调，供诊断撤单生命周期使用。"""
+        if self._callback is not None:
+            callbacks = getattr(self._callback, 'cancel_response_callbacks', None)
+            if callbacks is None:
+                self._callback.cancel_response_callbacks = []
+                callbacks = self._callback.cancel_response_callbacks
+            self._append_unique_callback(callbacks, cb, "cancel_response_callback")
+        else:
+            logger.warning("register_cancel_response_callback: callback尚未初始化，请在connect()后调用")
+
     def _append_unique_callback(self, callback_list, cb, name):
         if cb in callback_list:
             logger.debug(f"{name} 已注册，跳过重复注册")
             return
         callback_list.append(cb)
+
+    def _enable_relaxed_response_order(self, xt_trader):
+        """
+        开启 xtquant 异步响应独立调度，降低 seq -> order_id 回调被普通推送阻塞的概率。
+
+        部分旧版 xtquant 没有该接口，因此这里做能力探测，失败时仅记录日志并继续使用原行为。
+        """
+        setter = getattr(xt_trader, 'set_relaxed_response_order_enabled', None)
+        if not callable(setter):
+            logger.debug('当前 xtquant 版本不支持 set_relaxed_response_order_enabled，沿用默认回调调度')
+            return False
+
+        try:
+            setter(True)
+            logger.info('已开启 xtquant 异步响应独立调度，提升 seq 到 order_id 映射回调及时性')
+            return True
+        except Exception as e:
+            logger.warning(f'开启 xtquant 异步响应独立调度失败，沿用默认回调调度: {e}')
+            return False
 
     def ensure_trade_push_ready(self):
         """
@@ -231,13 +391,18 @@ class easy_qmt_trader:
         callback = getattr(self, '_callback', None)
         if callback is None or getattr(callback, 'detached', False):
             old_trade_callbacks = list(getattr(callback, 'trade_callbacks', [])) if callback is not None else []
-            callback = MyXtQuantTraderCallback(self.order_id_map)
+            callback = MyXtQuantTraderCallback(
+                self.order_id_map,
+                self.order_id_map_lock,
+                self.order_id_map_meta
+            )
             for cb in old_trade_callbacks:
                 self._append_unique_callback(callback.trade_callbacks, cb, "trade_callback")
             self._callback = callback
             logger.warning("交易主推callback缺失或已失效，已创建新的callback")
 
         try:
+            self._enable_relaxed_response_order(xt_trader)
             xt_trader.register_callback(callback)
             subscribe_result = xt_trader.subscribe(acc)
             if subscribe_result == 0:
@@ -416,12 +581,17 @@ class easy_qmt_trader:
         # session_id为会话编号，策略使用方对于不同的Python策略需要使用不同的会话编号
         session_id = self.session_id
         xt_trader = XtQuantTrader(path, session_id)
+        self._enable_relaxed_response_order(xt_trader)
         # 创建资金账号为1000000365的证券账号对象
         account=self.account
         account_type=self.account_type
         acc = StockAccount(account_id=account,account_type=account_type)
         # 创建交易回调类对象，并声明接收回调
-        callback = MyXtQuantTraderCallback(self.order_id_map)
+        callback = MyXtQuantTraderCallback(
+            self.order_id_map,
+            self.order_id_map_lock,
+            self.order_id_map_meta
+        )
         xt_trader.register_callback(callback)
         # 保存callback对象，供外部注册trade_callbacks使用
         self._callback = callback

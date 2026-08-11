@@ -160,6 +160,8 @@ ASYNC_ORDER_QUERY_FALLBACK_INTERVAL_SECONDS = 0.5  # 主动反查委托列表的
 ASYNC_ORDER_QUERY_MATCH_PRE_WINDOW_SECONDS = 5.0  # 允许匹配下单前若干秒内的委托，兼容本机/QMT时间微小偏差
 ASYNC_ORDER_QUERY_MATCH_POST_WINDOW_SECONDS = 30.0  # 允许匹配下单后若干秒内的委托，避免误配历史委托
 ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS = 300  # 正 seq 未确认时，同股同方向暂停再次提交的时间
+QMT_ORDER_ID_MAP_TTL_SECONDS = 86400  # seq->order_id 映射保留时长，防止长时间运行后旧seq污染匹配
+QMT_ORDER_ID_MAP_MAX_ENTRIES = 4096  # seq->order_id 映射最大键数量（int/str双键计入），防止内存无限增长
 QMT_CONNECT_TIMEOUT = 30            # QMT交易接口连接超时(秒)，避免connect卡死
 QMT_STOP_TIMEOUT = 5.0              # QMT交易接口停止超时(秒)，避免旧连接清理卡死
 
