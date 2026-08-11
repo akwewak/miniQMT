@@ -23,7 +23,7 @@ miniQMT 总控制台后端（被 miniqmt.bat 调用）。
 
 进程跟踪:
   main.py 启动时自己把 PID 写到 data_<account_id>/pid.txt；
-  本脚本通过该文件定位进程，可发 Ctrl+C 走优雅关闭，超时则 taskkill。
+  本脚本通过该文件定位进程，写 stop_signal 走优雅关闭，超时则 taskkill。
 """
 
 from __future__ import annotations
@@ -126,6 +126,67 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+def _process_command_line(pid: int | str) -> str:
+    pid_text = str(pid).strip()
+    if not pid_text.isdigit():
+        return ""
+
+    try:
+        r = subprocess.run(
+            ["wmic", "process", "where", f"ProcessId={pid_text}", "get", "CommandLine", "/value"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("CommandLine="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+
+    if sys.platform == "win32":
+        try:
+            ps = (
+                f"$p = Get-CimInstance Win32_Process -Filter \"ProcessId = {pid_text}\"; "
+                "if ($p) { $p.CommandLine }"
+            )
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True, text=True, timeout=5,
+            )
+            return r.stdout.strip()
+        except Exception:
+            pass
+    return ""
+
+
+def _port_listener_pids(port: int) -> list[int]:
+    try:
+        r = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, timeout=5
+        )
+    except Exception:
+        return []
+
+    pids: list[int] = []
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        local_address = parts[1]
+        state = parts[-2].upper()
+        raw_pid = parts[-1]
+        if (
+            state != "LISTENING"
+            or not local_address.endswith(f":{port}")
+            or not raw_pid.isdigit()
+        ):
+            continue
+        pid = int(raw_pid)
+        if pid not in pids:
+            pids.append(pid)
+    return pids
+
+
 def filter_accounts(accounts: list[dict], selection: str | None) -> list[dict]:
     if not selection:
         return accounts
@@ -176,6 +237,44 @@ def _is_port_in_use(port: int) -> bool:
         return False
     finally:
         s.close()
+
+
+def _is_miniqmt_main_process(pid: int | str) -> bool:
+    cmdline = _process_command_line(pid).replace("\\", "/").lower()
+    if not cmdline:
+        return False
+    main_path = str(MAIN_PY).replace("\\", "/").lower()
+    project_root = str(PROJECT_ROOT).replace("\\", "/").lower()
+    return main_path in cmdline or (project_root in cmdline and "main.py" in cmdline)
+
+
+def _account_pid_from_port(acc_id: str, all_ids=None) -> int | None:
+    port = _account_flask_port(acc_id, all_ids)
+    pids: list[int] = []
+    for pid in _port_listener_pids(port):
+        if pid_alive(pid) and _is_miniqmt_main_process(pid) and pid not in pids:
+            pids.append(pid)
+    if len(pids) == 1:
+        return pids[0]
+    return None
+
+
+def _resolve_account_process(acc_id: str, all_ids=None, cleanup_stale: bool = False) -> tuple[int | None, str]:
+    pid = read_pid(acc_id)
+    if pid is not None:
+        if pid_alive(pid):
+            return pid, "pid"
+        if cleanup_stale:
+            pid_file_for(acc_id).unlink(missing_ok=True)
+        port_pid = _account_pid_from_port(acc_id, all_ids)
+        if port_pid is not None:
+            return port_pid, f"port:{_account_flask_port(acc_id, all_ids)}"
+        return pid, "stale"
+
+    port_pid = _account_pid_from_port(acc_id, all_ids)
+    if port_pid is not None:
+        return port_pid, f"port:{_account_flask_port(acc_id, all_ids)}"
+    return None, "missing"
 
 
 def cmd_start(args, web2: bool = False) -> int:
@@ -240,7 +339,7 @@ def cmd_start(args, web2: bool = False) -> int:
         creationflags = 0x00000010  # CREATE_NEW_CONSOLE
         try:
             proc = subprocess.Popen(
-                [python_exe, str(MAIN_PY)],
+                [python_exe, str(MAIN_PY), "--account-id", acc_id],
                 cwd=str(PROJECT_ROOT),
                 env=env,
                 creationflags=creationflags,
@@ -266,98 +365,83 @@ def cmd_start(args, web2: bool = False) -> int:
 
 
 def _request_graceful_stop(acc_id: str, pid: int) -> bool:
-    """请求账号进程优雅退出。写停止信号文件 + 尝试 Ctrl+C。
+    """请求账号进程优雅退出：写停止信号文件。
 
     Windows 下 CREATE_NEW_CONSOLE 创建的进程有独立控制台，
-    GenerateConsoleCtrlEvent 无法可靠送达。因此主路径改为：
-    1) 写 data_<id>/stop_signal 文件 → main.py 主循环 1 秒内检测到并退出
-    2) 额外尝试 Ctrl+C 作为补充（对非 CREATE_NEW_CONSOLE 场景仍有效）
+    GenerateConsoleCtrlEvent 可能误打到当前 miniqmt.bat 控制台并触发
+    "Terminate batch job" 提示。因此这里只使用文件信号：
+    写 data_<id>/stop_signal 文件 → main.py 主循环 1 秒内检测到并退出。
 
     Returns:
-        True 表示至少写入了信号文件（可靠路径）
+        True 表示已写入信号文件。
     """
     # 主路径：写信号文件
     signal_file = PROJECT_ROOT / f"data_{acc_id}" / "stop_signal"
     try:
+        signal_file.parent.mkdir(exist_ok=True)
         signal_file.write_text(str(pid), encoding="ascii")
     except OSError:
         return False
-
-    # 补充路径：尝试 Ctrl+C（对同控制台进程有效）
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            k = ctypes.windll.kernel32
-            k.FreeConsole()
-            if k.AttachConsole(pid):
-                k.SetConsoleCtrlHandler(None, True)
-                k.GenerateConsoleCtrlEvent(0, 0)
-                k.FreeConsole()
-                k.SetConsoleCtrlHandler(None, False)
-        except OSError:
-            pass
 
     return True
 
 
 def cmd_stop(args) -> int:
-    accounts = filter_accounts(load_accounts(), args.accounts)
+    all_accounts = load_accounts()
+    accounts = filter_accounts(all_accounts, args.accounts)
+    all_ids = [a["account_id"] for a in all_accounts]
 
     # ── 阶段 1：收集存活进程 ──
-    targets: list[tuple[str, int]] = []       # (account_id, pid)
+    targets: list[tuple[str, int, str]] = []  # (account_id, pid, source)
     for acc in accounts:
         acc_id = acc["account_id"]
-        pid = read_pid(acc_id)
+        pid, source = _resolve_account_process(acc_id, all_ids, cleanup_stale=True)
         if pid is None:
-            print(f"[{acc_id}] 无 pid.txt，跳过（可能未启动）")
+            print(f"[{acc_id}] 无 pid.txt，且未发现账号 Web 端口进程，跳过（可能未启动）")
             continue
-        if not pid_alive(pid):
-            print(f"[{acc_id}] PID={pid} 已不存在，清理 pid.txt")
-            pid_file_for(acc_id).unlink(missing_ok=True)
+        if source == "stale":
+            print(f"[{acc_id}] PID={pid} 已不存在，已清理 pid.txt")
             continue
-        targets.append((acc_id, pid))
+        if source.startswith("port:"):
+            port = source.split(":", 1)[1]
+            print(f"[{acc_id}] 无有效 pid.txt，通过 Web 端口 {port} 找到 PID={pid}")
+        targets.append((acc_id, pid, source))
 
     if not targets:
         print("没有需要停止的账号进程。")
         return 0
 
-    # ── 阶段 2：向所有进程发 Ctrl+C（批量，不等待） ──
-    # 必须先全部发完再等待退出。原因是：
-    #   1) 顺序阻塞版"发 Ctrl+C → 等 30s → 发下一个"会让后面的账号
-    #      在前一个退出前完全没被通知，用户看到"只停了一个"。
-    #   2) Windows 的 GenerateConsoleCtrlEvent 发给整个控制台进程组；
-    #      CREATE_NEW_CONSOLE 创建的每个进程有独立控制台，必须逐个
-    #      AttachConsole → 发送。先发的那个退出后，FreeConsole +
-    #      恢复 handler 的时序可能影响后续 AttachConsole 成功率。
-    #   3) 批量发送更高效：所有进程同时开始优雅关闭。
-    ctrl_c_sent: list[tuple[str, int]] = []   # 成功发送 Ctrl+C 的
-    for acc_id, pid in targets:
-        print(f"[{acc_id}] 准备停止 PID={pid}")
+    # ── 阶段 2：向所有进程写停止信号（批量，不等待） ──
+    # 必须先全部发完再等待退出，避免前一个账号等待超时时后面的账号还未被通知。
+    stop_signal_sent: list[tuple[str, int]] = []
+    for acc_id, pid, source in targets:
+        source_note = "（端口兜底）" if source.startswith("port:") else ""
+        print(f"[{acc_id}] 准备停止 PID={pid}{source_note}")
         if not args.force:
             if _request_graceful_stop(acc_id, pid):
                 print(f"  ✓ 已发送停止信号")
-                ctrl_c_sent.append((acc_id, pid))
+                stop_signal_sent.append((acc_id, pid))
             else:
                 print(f"  ⚠ 停止信号发送失败，稍后强制结束")
         else:
-            print(f"  跳过 Ctrl+C（--force 模式）")
+            print(f"  跳过停止信号（--force 模式）")
 
-    # ── 阶段 3：等待所有 Ctrl+C 进程退出 ──
+    # ── 阶段 3：等待已收到停止信号的进程退出 ──
     deadline = time.time() + args.timeout
     exited: set[int] = set()
-    while time.time() < deadline and len(exited) < len(ctrl_c_sent):
-        for acc_id, pid in ctrl_c_sent:
+    while time.time() < deadline and len(exited) < len(stop_signal_sent):
+        for acc_id, pid in stop_signal_sent:
             if pid in exited:
                 continue
             if not pid_alive(pid):
                 exited.add(pid)
                 print(f"  ✓ [{acc_id}] PID={pid} 已退出")
-        if len(exited) < len(ctrl_c_sent):
+        if len(exited) < len(stop_signal_sent):
             time.sleep(1)
 
     # ── 阶段 4：对未退出的进程强制结束 ──
     stopped = 0
-    for acc_id, pid in targets:
+    for acc_id, pid, _source in targets:
         if pid_alive(pid):
             print(f"  → [{acc_id}] PID={pid} 强制结束（taskkill /T /F）")
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -2183,13 +2267,16 @@ def cmd_status(_args) -> int:
     print(f"{'账号 ID':<14} {'PID':<8} {'状态':<10} {'Web':<8} {'QMT 路径'}")
     print("-" * 78)
     base_port = _flask_base_port()
+    all_ids = [a["account_id"] for a in accounts]
     for i, acc in enumerate(accounts):
         acc_id = acc["account_id"]
-        pid = read_pid(acc_id)
+        pid, source = _resolve_account_process(acc_id, all_ids, cleanup_stale=False)
         if pid is None:
             status, pid_str = "未运行", "-"
-        elif pid_alive(pid):
+        elif source == "pid":
             status, pid_str = "运行中", str(pid)
+        elif source.startswith("port:"):
+            status, pid_str = "运行中(端口)", str(pid)
         else:
             status, pid_str = "PID失效", str(pid)
         print(f"{acc_id:<14} {pid_str:<8} {status:<10} :{base_port+i:<6} {acc.get('qmt_path','')}")

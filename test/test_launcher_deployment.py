@@ -8,6 +8,7 @@ scripts/_launcher.py 部署相关函数的单元测试。
     重复 ID/qmt_path 不存在）以及全 OK 的情况
 """
 
+import argparse
 import io
 import json
 import os
@@ -355,6 +356,103 @@ class TestPortInUse(unittest.TestCase):
         self.assertFalse(_launcher._is_port_in_use(port))
 
 
+class TestAccountProcessResolution(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="launcher_stop_"))
+        self.cfg_path = self.tmpdir / "account_config.json"
+        self.env_path = self.tmpdir / ".env"
+        self.env_path.write_text("", encoding="utf-8")
+        self.cfg_path.write_text(json.dumps({
+            "accounts": [
+                {"account_id": "ACC1", "qmt_path": "C:/qmt1"},
+                {"account_id": "ACC2", "qmt_path": "C:/qmt2"},
+            ],
+        }), encoding="utf-8")
+        self._orig_cfg = _launcher.CONFIG_PATH
+        self._orig_env = _launcher.ENV_PATH
+        _launcher.CONFIG_PATH = self.cfg_path
+        _launcher.ENV_PATH = self.env_path
+
+    def tearDown(self):
+        _launcher.CONFIG_PATH = self._orig_cfg
+        _launcher.ENV_PATH = self._orig_env
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_account_pid_from_port_accepts_current_project_main_process(self):
+        cmdline = f'"{sys.executable}" "{_launcher.MAIN_PY}" --account-id ACC1'
+
+        with patch.object(_launcher, "_port_listener_pids",
+                          return_value=[4321]), \
+             patch.object(_launcher, "pid_alive", return_value=True), \
+             patch.object(_launcher, "_process_command_line", return_value=cmdline):
+            pid = _launcher._account_pid_from_port("ACC1", ["ACC1", "ACC2"])
+
+        self.assertEqual(pid, 4321)
+
+    def test_account_pid_from_port_ignores_foreign_listener(self):
+        with patch.object(_launcher, "_port_listener_pids",
+                          return_value=[4321]), \
+             patch.object(_launcher, "pid_alive", return_value=True), \
+             patch.object(_launcher, "_process_command_line",
+                          return_value='"C:/other/app.exe" --port 5000'):
+            pid = _launcher._account_pid_from_port("ACC1", ["ACC1", "ACC2"])
+
+        self.assertIsNone(pid)
+
+    def test_cmd_stop_uses_port_fallback_when_pid_file_missing(self):
+        pid_path = self.tmpdir / "missing_pid.txt"
+
+        with patch.object(_launcher, "pid_file_for", return_value=pid_path), \
+             patch.object(_launcher, "_account_pid_from_port", return_value=4321), \
+             patch.object(_launcher, "pid_alive", return_value=True), \
+             patch.object(_launcher, "_request_graceful_stop", return_value=True) as graceful, \
+             patch.object(_launcher.subprocess, "run") as run, \
+             patch.object(_launcher.time, "sleep"), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            rc = _launcher.cmd_stop(
+                argparse.Namespace(accounts="ACC1", force=False, timeout=0)
+            )
+
+        self.assertEqual(rc, 0)
+        graceful.assert_called_once_with("ACC1", 4321)
+        run.assert_called_once_with(
+            ["taskkill", "/PID", "4321", "/T", "/F"],
+            capture_output=True,
+        )
+        output = stdout.getvalue()
+        self.assertIn("通过 Web 端口", output)
+        self.assertIn("PID=4321", output)
+
+    def test_graceful_stop_writes_signal_without_ctrl_c(self):
+        original_import = __import__
+
+        def fail_on_ctypes(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "ctypes":
+                raise AssertionError("停止账号不应再发送 Ctrl+C")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with patch.object(_launcher, "PROJECT_ROOT", self.tmpdir), \
+             patch.object(_launcher.sys, "platform", "win32"), \
+             patch("builtins.__import__", side_effect=fail_on_ctypes):
+            ok = _launcher._request_graceful_stop("ACC1", 4321)
+
+        signal_file = self.tmpdir / "data_ACC1" / "stop_signal"
+        self.assertTrue(ok)
+        self.assertEqual(signal_file.read_text(encoding="ascii"), "4321")
+
+    def test_cmd_status_reports_port_fallback_pid(self):
+        with patch.object(_launcher, "_account_pid_from_port",
+                          side_effect=lambda acc_id, _ids: 4321 if acc_id == "ACC1" else None), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            rc = _launcher.cmd_status(None)
+
+        self.assertEqual(rc, 0)
+        output = stdout.getvalue()
+        self.assertIn("ACC1", output)
+        self.assertIn("4321", output)
+        self.assertIn("运行中(端口)", output)
+
+
 class TestXtQuantManagerStart(unittest.TestCase):
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp(prefix="launcher_xqm_"))
@@ -599,6 +697,7 @@ class TestWeb2FlaskAutoStart(unittest.TestCase):
             {"account_id": "ACC2", "qmt_path": "C:/qmt2"},
         ]
         self.captured = []
+        self.captured_cmds = []
         self.tmpdir = Path(tempfile.mkdtemp(prefix="launcher_web2_flask_"))
         self.env_path = self.tmpdir / ".env"
         self.env_path.write_text("", encoding="utf-8")
@@ -609,6 +708,7 @@ class TestWeb2FlaskAutoStart(unittest.TestCase):
             pid = 4242
 
         def _fake_popen(cmd, **kw):
+            self.captured_cmds.append(cmd)
             self.captured.append(kw.get("env", {}))
             return _Proc()
 
@@ -674,6 +774,12 @@ class TestWeb2FlaskAutoStart(unittest.TestCase):
         envs = self._run(web2=True, port_in_use=False)
         self.assertEqual(envs[0]["QMT_ACCOUNT_ID"], "ACC1")
         self.assertEqual(envs[1]["QMT_ACCOUNT_ID"], "ACC2")
+
+    def test_start_passes_account_id_argument(self):
+        self._run(web2=False, port_in_use=False)
+
+        self.assertEqual(self.captured_cmds[0][-2:], ["--account-id", "ACC1"])
+        self.assertEqual(self.captured_cmds[1][-2:], ["--account-id", "ACC2"])
 
     def test_configured_flask_base_port_is_used_and_passed_to_child(self):
         self.env_path.write_text("WEB_SERVER_PORT=5100\n", encoding="utf-8")
