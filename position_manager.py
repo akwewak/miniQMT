@@ -944,6 +944,15 @@ class PositionManager:
                     update_count = 0
                     insert_count = 0
 
+                    def _valid_base_cost(value):
+                        try:
+                            if value is None or pd.isna(value):
+                                return None
+                            value = float(value)
+                            return value if value > 0 else None
+                        except (ValueError, TypeError):
+                            return None
+
                     for _, row in memory_positions.iterrows():
                         stock_code = row['stock_code']
                         stock_name = row['stock_name']
@@ -955,6 +964,7 @@ class PositionManager:
                         highest_price = row['highest_price']
                         stop_loss_price = row['stop_loss_price']
                         base_cost_price = row['base_cost_price']
+                        memory_base_cost_price = _valid_base_cost(base_cost_price) or _valid_base_cost(cost_price)
                         profit_breakout_triggered = row['profit_breakout_triggered']
                         breakout_highest_price = row['breakout_highest_price']
 
@@ -970,8 +980,11 @@ class PositionManager:
 
                         if db_row:
                             db_stock_name, db_volume, db_available, db_cost_price, db_base_cost_price, db_open_date, db_profit_triggered, db_highest_price, db_stop_loss_price, db_profit_breakout_triggered, db_breakout_highest_price = db_row
+                            db_base_cost_price_valid = _valid_base_cost(db_base_cost_price)
+                            base_cost_price_to_write = db_base_cost_price_valid if db_base_cost_price_valid is not None else memory_base_cost_price
+                            base_cost_price_needs_init = db_base_cost_price_valid is None and memory_base_cost_price is not None
                             # 比较字段是否不同
-                            if (db_stock_name != stock_name) or (db_volume != volume) or (db_available != 0) or (db_cost_price != cost_price) or (db_base_cost_price != base_cost_price) or (db_open_date != open_date) or (db_profit_triggered != profit_triggered) or (db_highest_price != highest_price) or (db_stop_loss_price != stop_loss_price) or (db_profit_breakout_triggered != profit_breakout_triggered) or (db_breakout_highest_price != breakout_highest_price):
+                            if (db_stock_name != stock_name) or (db_volume != volume) or (db_available != 0) or (db_cost_price != cost_price) or base_cost_price_needs_init or (db_open_date != open_date) or (db_profit_triggered != profit_triggered) or (db_highest_price != highest_price) or (db_stop_loss_price != stop_loss_price) or (db_profit_breakout_triggered != profit_breakout_triggered) or (db_breakout_highest_price != breakout_highest_price):
                                 # 如果内存数据库中的 open_date 与 SQLite 数据库中的不一致，则使用 SQLite 数据库中的值
                                 if db_open_date != open_date:
                                     open_date = db_open_date
@@ -990,7 +1003,7 @@ class PositionManager:
                                         open_date=?, profit_triggered=?, highest_price=?, stop_loss_price=?,
                                         profit_breakout_triggered=?, breakout_highest_price=?, last_update=?
                                     WHERE stock_code=?
-                                """, (stock_name, volume, cost_price, base_cost_price, open_date, profit_triggered,
+                                """, (stock_name, volume, cost_price, base_cost_price_to_write, open_date, profit_triggered,
                                       highest_price, stop_loss_price, profit_breakout_triggered,
                                       breakout_highest_price, now, stock_code))
                                 update_count += 1
@@ -1003,7 +1016,7 @@ class PositionManager:
                             cursor.execute("""
                                 INSERT INTO positions (stock_code, stock_name, volume, available, cost_price, base_cost_price, open_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, last_update)
                                 VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (stock_code, stock_name, volume, cost_price, base_cost_price, current_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now))
+                            """, (stock_code, stock_name, volume, cost_price, memory_base_cost_price, current_date, profit_triggered, highest_price, stop_loss_price, profit_breakout_triggered, breakout_highest_price, now))
 
                             insert_count += 1
                             # 插入新记录后，立即从数据库读取 open_date，以确保内存数据库与数据库一致
@@ -1606,11 +1619,15 @@ class PositionManager:
                 final_cost_price = round(final_cost_price, 2)
 
             # 同时确保base_cost_price始终保留
-            if base_cost_price is not None and base_cost_price > 0:
-                p_base_cost_price = round(float(base_cost_price), 2)
-            else:
-                # 如果base_cost_price无效,尝试使用final_cost_price
-                p_base_cost_price = final_cost_price if final_cost_price > 0 else None
+            incoming_base_cost_price = None
+            try:
+                if base_cost_price is not None and float(base_cost_price) > 0:
+                    incoming_base_cost_price = round(float(base_cost_price), 2)
+            except (ValueError, TypeError):
+                incoming_base_cost_price = None
+            p_base_cost_price = incoming_base_cost_price if incoming_base_cost_price is not None else (
+                final_cost_price if final_cost_price > 0 else None
+            )
 
             final_current_price = float(current_price) if current_price is not None else final_cost_price
             final_highest_price = float(current_price) if current_price is not None else final_cost_price
@@ -1655,7 +1672,7 @@ class PositionManager:
 
                 # P0修复: 不修改全局row_factory，使用cursor.description手动构建字典
                 dict_cursor = self.memory_conn.cursor()
-                dict_cursor.execute("SELECT open_date, profit_triggered, highest_price, cost_price, stop_loss_price, stock_name FROM positions WHERE stock_code=?", (stock_code,))
+                dict_cursor.execute("SELECT open_date, profit_triggered, highest_price, cost_price, stop_loss_price, stock_name, base_cost_price FROM positions WHERE stock_code=?", (stock_code,))
                 row = dict_cursor.fetchone()
 
                 # 手动构建字典以避免修改全局row_factory
@@ -1693,6 +1710,15 @@ class PositionManager:
 
                     # 获取数据库中的旧成本价
                     old_db_cost_price = float(result_row['cost_price']) if result_row['cost_price'] is not None else None
+                    try:
+                        old_db_base_cost_price = float(result_row['base_cost_price']) if result_row.get('base_cost_price') is not None else None
+                    except (ValueError, TypeError):
+                        old_db_base_cost_price = None
+
+                    if old_db_base_cost_price is not None and old_db_base_cost_price > 0:
+                        final_base_cost_price = round(old_db_base_cost_price, 2)
+                    else:
+                        final_base_cost_price = p_base_cost_price
 
                     # 如果最高价发生可见变化，强制重新计算止损价格
                     if _price_changed_at_display_precision(old_db_highest_price, final_highest_price):
@@ -1726,7 +1752,7 @@ class PositionManager:
                         SET volume=?, cost_price=?, base_cost_price=?, current_price=?, market_value=?, available=?,
                             profit_ratio=?, last_update=?, highest_price=?, stop_loss_price=?, profit_triggered=?, stock_name=?
                         WHERE stock_code=?
-                    """, (int(p_volume), final_cost_price, p_base_cost_price, final_current_price, p_market_value, int(p_available),
+                    """, (int(p_volume), final_cost_price, final_base_cost_price, final_current_price, p_market_value, int(p_available),
                         p_profit_ratio, now, final_highest_price, final_stop_loss_price, final_profit_triggered, final_stock_name, stock_code))
 
                     # 【关键修改】使用字典访问记录变化

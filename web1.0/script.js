@@ -1139,7 +1139,7 @@
     // 判断持仓数据是否需要更新
     function shouldUpdateRow(oldData, newData) {
         // 检查关键字段是否有变化
-        const keysToCheck = ['current_price', 'market_value', 'profit_ratio', 'available', 'volume', 'change_percentage', 'stop_profit_enabled'];
+        const keysToCheck = ['current_price', 'market_value', 'profit_ratio', 'available', 'volume', 'change_percentage', 'base_cost_price', 'stop_profit_enabled'];
         return keysToCheck.some(key => {
             // 对于数值，考虑舍入误差
             if (typeof oldData[key] === 'number' && typeof newData[key] === 'number') {
@@ -1147,6 +1147,11 @@
             }
             return oldData[key] !== newData[key];
         });
+    }
+
+    function formatBaseCostPrice(stock) {
+        const value = Number(stock && stock.base_cost_price);
+        return Number.isFinite(value) && value > 0 ? value.toFixed(2) : '--';
     }
 
     // 更新现有持仓行（仅更新持仓数据，不更新checkbox状态）
@@ -1197,7 +1202,7 @@
         cells[11].textContent = parseFloat(stock.highest_price || 0).toFixed(2);
         cells[12].textContent = parseFloat(stock.stop_loss_price || 0).toFixed(2);
         cells[13].textContent = (stock.open_date || '').split(' ')[0];
-        cells[14].textContent = parseFloat(stock.base_cost_price || stock.cost_price || 0).toFixed(2);
+        cells[14].textContent = formatBaseCostPrice(stock);
 
         // 更新动态止盈止损开关（仅同步 checked，保留 createStockRow 绑定的 change 监听）
         const spInput = cells[15] && cells[15].querySelector('.stop-profit-toggle');
@@ -1262,7 +1267,7 @@
             <td class="border p-2">${parseFloat(stock.highest_price || 0).toFixed(2)}</td>
             <td class="border p-2">${parseFloat(stock.stop_loss_price || 0).toFixed(2)}</td>
             <td class="border p-2 whitespace-nowrap">${openDate}</td>
-            <td class="border p-2">${parseFloat(stock.base_cost_price || stock.cost_price || 0).toFixed(2)}</td>
+            <td class="border p-2">${formatBaseCostPrice(stock)}</td>
             <td class="border p-2 text-center">
                 <label class="sp-switch" title="动态止盈止损">
                     <input type="checkbox" class="stop-profit-toggle" ${isStopProfitEnabled(stock) ? 'checked' : ''}>

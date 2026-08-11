@@ -272,6 +272,44 @@ class TestSyncMemoryToDbPaths(unittest.TestCase):
     # ------------------------------------------------------------------
     # A3: 模拟模式下直接跳过
     # ------------------------------------------------------------------
+    def test_A2b_update_path_preserves_sqlite_base_cost_price(self):
+        """UPDATE 路径不应让内存侧成本覆盖 SQLite 已有 base_cost_price"""
+        initial_sqlite_conn = sqlite3.connect(self.TEST_DB)
+        initial_sqlite_conn.execute(_CREATE_POSITIONS_SQL)
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        initial_sqlite_conn.execute("""
+            INSERT INTO positions
+                (stock_code, stock_name, volume, available, cost_price, base_cost_price,
+                 open_date, profit_triggered, highest_price, stop_loss_price,
+                 profit_breakout_triggered, breakout_highest_price, last_update)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ("000006.SZ", "000006.SZ", 1000, 0, 10.0, 10.0,
+              now, False, 10.5, 9.3, False, 10.0, now))
+        initial_sqlite_conn.commit()
+        initial_sqlite_conn.close()
+
+        _insert_memory_position(self.memory_conn, "000006.SZ", volume=1500, available=1500,
+                                cost_price=10.67, base_cost_price=10.67,
+                                profit_triggered=False, highest_price=11.0, stop_loss_price=9.3)
+
+        with patch.object(config, 'ENABLE_SIMULATION_MODE', False), \
+             patch('config.is_trade_time', return_value=True):
+            pm = self._build_real_pm_stub()
+            pm._sync_memory_to_db()
+
+        conn = sqlite3.connect(self.TEST_DB)
+        row = conn.execute(
+            "SELECT cost_price, base_cost_price, volume FROM positions WHERE stock_code=?",
+            ("000006.SZ",)
+        ).fetchone()
+        conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertAlmostEqual(float(row[0]), 10.67, places=2)
+        self.assertAlmostEqual(float(row[1]), 10.0, places=2,
+                               msg="SQLite 已有有效 base_cost_price 时不得被覆盖")
+        self.assertEqual(int(row[2]), 1500)
+
     def test_A3_simulation_mode_skips_sync(self):
         """模拟模式下 _sync_memory_to_db 不写 SQLite"""
         _insert_memory_position(self.memory_conn, "000003.SZ", volume=1000, available=1000)

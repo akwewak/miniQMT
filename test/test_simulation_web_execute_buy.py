@@ -253,6 +253,19 @@ class TestWebExecuteBuySimulation(unittest.TestCase):
                          "模拟模式应绕过交易时间检查")
         self.assertIsNotNone(self._position('000001.SZ'))
 
+    def test_L2_07b_zero_ask_price_falls_back_to_latest_quote(self):
+        """L2-07b xtdata 卖盘价为 0 时应降级使用最新行情"""
+        with patch('xtquant.xtdata.get_full_tick', return_value={
+            '000001.SZ': {'askPrice': [0, 0, 0]}
+        }):
+            resp = self._buy(['000001.SZ'])
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['success_count'], 1)
+        pos = self._position('000001.SZ')
+        self.assertIsNotNone(pos, "卖盘价无效时仍应使用最新行情完成模拟建仓")
+        self.assertAlmostEqual(float(pos['cost_price']), 10.0, places=2)
+
     def test_L2_08_zero_quantity_rejected(self):
         """L2-08 quantity<=0 返回 400（回归）"""
         resp = self._buy(['000001.SZ'], quantity=0)

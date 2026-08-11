@@ -1420,6 +1420,19 @@ class TradingExecutor:
                     logger.warning("[E_ALLOW_BUY_001] 系统当前不允许买入操作 (ENABLE_ALLOW_BUY=False)，请检查配置管理器或手动开启买入开关")
                     return None
 
+                def _positive_price(value):
+                    try:
+                        price_value = float(value)
+                    except (TypeError, ValueError):
+                        return None
+                    return price_value if price_value > 0 else None
+
+                if price is not None:
+                    normalized_price = _positive_price(price)
+                    if normalized_price is None:
+                        logger.warning(f"传入买入价格无效: {price}，改为自动获取卖盘/最新价")
+                    price = normalized_price
+
                 # 如果未提供价格，获取卖三价
                 if price is None:
                     try:
@@ -1428,28 +1441,36 @@ class TradingExecutor:
                         if ticks and formatted_stock_code in ticks:
                             tick = ticks[formatted_stock_code]
                             if hasattr(tick, 'askPrice') and len(tick.askPrice) >= 3:
-                                price = tick.askPrice[2]
-                                logger.info(f"获取到 {formatted_stock_code} 卖三价: {price:.2f}")
-                            elif hasattr(tick, 'askPrice') and len(tick.askPrice) >= 1:
-                                price = tick.askPrice[0]
-                                logger.info(f"获取到 {formatted_stock_code} 卖一价: {price:.2f}")
+                                price = _positive_price(tick.askPrice[2])
+                                if price is not None:
+                                    logger.info(f"获取到 {formatted_stock_code} 卖三价: {price:.2f}")
+                            if price is None and hasattr(tick, 'askPrice') and len(tick.askPrice) >= 1:
+                                price = _positive_price(tick.askPrice[0])
+                                if price is not None:
+                                    logger.info(f"获取到 {formatted_stock_code} 卖一价: {price:.2f}")
                             elif isinstance(tick, dict) and 'askPrice' in tick:
                                 ask_prices = tick['askPrice']
                                 if len(ask_prices) >= 3:
-                                    price = ask_prices[2]
-                                    logger.info(f"获取到 {formatted_stock_code} 卖三价: {price:.2f}")
-                                elif len(ask_prices) >= 1:
-                                    price = ask_prices[0]
-                                    logger.info(f"获取到 {formatted_stock_code} 卖一价: {price:.2f}")
+                                    price = _positive_price(ask_prices[2])
+                                    if price is not None:
+                                        logger.info(f"获取到 {formatted_stock_code} 卖三价: {price:.2f}")
+                                if price is None and len(ask_prices) >= 1:
+                                    price = _positive_price(ask_prices[0])
+                                    if price is not None:
+                                        logger.info(f"获取到 {formatted_stock_code} 卖一价: {price:.2f}")
                     except Exception as e:
                         logger.warning(f"获取 {formatted_stock_code} 价格时出错: {str(e)}")
-                        
+
                     # 如果仍然没有获取到价格，尝试使用最新行情
                     if price is None:
                         latest_quote = self.data_manager.get_latest_data(stock_code)
                         if latest_quote:
-                            price = latest_quote.get('lastPrice') or 0
-                            logger.info(f"使用 {formatted_stock_code} 最新价: {price:.2f}")
+                            price = (
+                                _positive_price(latest_quote.get('lastPrice')) or
+                                _positive_price(latest_quote.get('close'))
+                            )
+                            if price is not None:
+                                logger.info(f"使用 {formatted_stock_code} 最新价: {price:.2f}")
                 
                 # 确保价格有效
                 if price is None or price <= 0:

@@ -728,7 +728,9 @@ class DataManager:
             cursor.execute("PRAGMA table_info(positions)")
             existing_cols = {row[1] for row in cursor.fetchall()}
 
+            added_cols = set()
             migrations = [
+                ('base_cost_price',          'REAL'),
                 ('profit_breakout_triggered', 'BOOLEAN DEFAULT FALSE'),
                 ('breakout_highest_price',    'REAL'),
                 ('stop_profit_enabled',       'INTEGER DEFAULT 1'),
@@ -736,7 +738,15 @@ class DataManager:
             for col, typedef in migrations:
                 if col not in existing_cols:
                     cursor.execute(f"ALTER TABLE positions ADD COLUMN {col} {typedef}")
+                    added_cols.add(col)
                     logger.info(f"DB迁移: positions 表已补齐字段 {col}")
+
+            if 'base_cost_price' in existing_cols or 'base_cost_price' in added_cols:
+                cursor.execute("""
+                    UPDATE positions
+                    SET base_cost_price=cost_price
+                    WHERE base_cost_price IS NULL AND cost_price IS NOT NULL AND cost_price > 0
+                """)
 
             self.conn.commit()
         except Exception as e:

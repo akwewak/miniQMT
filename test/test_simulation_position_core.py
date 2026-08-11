@@ -179,6 +179,16 @@ class TestSimulationBuy(SimulationCoreTestBase):
         self.assertAlmostEqual(self._num(after['base_cost_price']), 10.0, places=2,
                                msg="base_cost_price 应保持初始建仓成本，不随加仓变化")
 
+    def test_L1_04b_update_position_keeps_existing_base_cost(self):
+        """L1-04b update_position 后续更新不得覆盖已有 base_cost_price"""
+        self.pm.update_position('000001.SZ', 1000, 10.0, 10.0, stock_name='测试股票')
+        self.pm.update_position('000001.SZ', 1500, 10.67, 11.0, stock_name='测试股票')
+
+        pos = self._memory_position('000001.SZ')
+        self.assertAlmostEqual(self._num(pos['cost_price']), 10.67, places=2)
+        self.assertAlmostEqual(self._num(pos['base_cost_price']), 10.0, places=2,
+                               msg="已有持仓的 base_cost_price 应保持首次建仓成本")
+
     def test_L1_05_highest_price_takes_max(self):
         """L1-05 加仓价低于历史高点时 highest_price 不倒退"""
         self.pm.simulate_buy_position('000001.SZ', 1000, 10.0)
