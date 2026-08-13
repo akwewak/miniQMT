@@ -99,6 +99,7 @@ nav:
     - 自动买入: miniqmt/autobuy.md
     - 大QMT文件 IPC: miniqmt/qmt-ipc-fallback.md
     - 大QMT RPC Redis 部署: miniqmt/qmt-rpc-redis-setup.md
+    - QMT order_id 匹配: miniqmt/qmt-order-id-matching.md
     - Web 前端（web1.0 / web2.0）: miniqmt/web-frontend.md
     - Web API: miniqmt/web-api.md
     - 无人值守运行: miniqmt/unattended.md

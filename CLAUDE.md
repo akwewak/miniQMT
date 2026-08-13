@@ -782,7 +782,7 @@ thread_monitor.get_status()
 | `p1_fixes` | high | 重连缓存刷新/QMT自恢复探测/信号保活与时效兜底/超时泄漏可观测 |
 | `fast` | critical | 快速验证子集（当前配置 40 个模块、959 个用例） |
 
-**测试统计（当前配置）**: 33组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次（2026-08-10）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 33组、123个模块、2453个用例，100% 通过，耗时 840.2 秒；具体以本地运行报告为准。
+**测试统计（当前配置）**: 33组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次（2026-08-13）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 33组、123个模块、2479个用例，100% 通过，耗时 1076.3 秒；具体以本地运行报告为准。
 
 ### 编写新测试的规范
 
@@ -810,6 +810,7 @@ class TestMyFeature(TestBase):
 - [Web 前端](docs/site/miniqmt/web-frontend.md) - web1.0 / web2.0 双模式
 - [自动买入](docs/site/miniqmt/autobuy.md) - 候选池筛选、指数门禁、防重买入
 - [网格交易](docs/site/miniqmt/grid-trading.md) - 网格实盘闭环与真实盈亏账本（含固定金额/固定股数交易份额模式，按 MACD DEA 趋势推荐默认）
+- [QMT order_id 匹配](docs/site/miniqmt/qmt-order-id-matching.md) - 异步下单 `seq -> order_id` 的实盘行为结论、匹配优先级与 unknown 委托防重复下单
 
 ### 配置文件
 

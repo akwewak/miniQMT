@@ -11,7 +11,7 @@
 | `volume` | QMT 实盘 | 10 秒 | 持仓数量 |
 | `available` | QMT 实盘 | 10 秒 | 可用数量 |
 | `cost_price` | QMT 实盘 | 10 秒 | 平均持仓成本 |
-| `base_cost_price` | 持久化 | 首次建仓 | 初次建仓成本（补仓摊薄后保持不变） |
+| `base_cost_price` | 持久化 | 首次建仓 | 初次建仓成本（补仓摊薄后保持不变）。SQLite 中已有的有效值（> 0）优先，不被内存快照覆盖；旧库迁移时自动用 `cost_price` 回填 |
 | `current_price` | data_manager | 实时 | 当前价格 |
 | `market_value` | 计算 | 实时 | 市值 |
 | `profit_ratio` | 计算 | 实时 | 盈亏比例 |
@@ -29,6 +29,7 @@
 - **`profit_triggered`**：影响后续动态止盈逻辑，首次止盈前不启用动态止盈
 - **`highest_price`**：用于计算动态止盈位，持续更新
 - **`stop_loss_price`**：低于此价格触发全部卖出
+- **`base_cost_price`**：只在 SQLite 中的值缺失或无效（`NULL` / `<= 0`）时才写入，写入源依次为内存快照的 `base_cost_price`、`cost_price`。定时同步与 `update_position()` 都遵守该规则，因此补仓摊薄或 QMT 持仓刷新不会抹掉初次建仓成本
 
 ---
 

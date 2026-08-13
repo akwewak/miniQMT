@@ -134,6 +134,25 @@ flowchart TD
 | `QMT_CONNECT_TIMEOUT` | `30` | 连接 QMT 交易接口超时（秒），超时后中止本次连接并清理实例 |
 | `QMT_STOP_TIMEOUT` | `5.0` | 停止 XtQuantTrader 实例超时（秒）。`stop()` 在 daemon 线程中执行，超时即放弃等待继续重连，不阻塞恢复流程 |
 
+### 异步委托 order_id 匹配参数  [v3.8.8]
+
+`USE_SYNC_ORDER_API=False`（默认）时 `order_stock_async()` 只返回请求序号 `seq`，真实委托号 `order_id` 要等 QMT 异步回调才建立映射。下列参数控制映射等待、反查窗口与未确认委托的保护冷却，完整口径见 [QMT order_id 匹配](qmt-order-id-matching.md)。
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `ASYNC_ORDER_ID_WAIT_TIMEOUT_SECONDS` | `2.0` | 下单后等待 callback 回推 `seq -> order_id` 的最长时间 |
+| `ASYNC_ORDER_ID_WAIT_INTERVAL_SECONDS` | `0.1` | 检查映射的轮询间隔 |
+| `ASYNC_ORDER_QUERY_FALLBACK_TIMEOUT_SECONDS` | `30.0` | callback 未到时，主动查当日委托/成交反查 `order_id` 的最长时间 |
+| `ASYNC_ORDER_QUERY_FALLBACK_INTERVAL_SECONDS` | `0.5` | 主动反查的轮询间隔 |
+| `ASYNC_ORDER_QUERY_MATCH_PRE_WINDOW_SECONDS` | `5.0` | 允许匹配下单前若干秒的委托，兼容本机与 QMT 的时间偏差 |
+| `ASYNC_ORDER_QUERY_MATCH_POST_WINDOW_SECONDS` | `30.0` | 允许匹配下单后若干秒的委托，避免误配历史委托 |
+| `ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS` | `300` | 拿到正 `seq` 但未确认 `order_id` 时，同股同方向暂停再次提交的时间 |
+| `QMT_ORDER_ID_MAP_TTL_SECONDS` | `86400` | `seq -> order_id` 映射保留时长，防止长时间运行后旧 seq 污染匹配 |
+| `QMT_ORDER_ID_MAP_MAX_ENTRIES` | `4096` | 映射最大键数量（`int`/`str` 双键分别计入），防止内存无限增长 |
+
+!!! warning "unknown 委托不重试"
+    正 `seq` 但未确认 `order_id` 的委托，一律视为「券商侧可能已接收」，进入 unknown 冷却而非重试下单——这是防止同股同方向重复卖出的关键约束。迟到的 callback 补上映射后会自动解除冷却并补齐订单缓存。
+
 ### XtQuantManager 网关参数
 
 | 参数 | 默认值 | 说明 |
@@ -188,6 +207,9 @@ flowchart TD
 | `MAX_POSITION_VALUE` | `70000` | 单只股票最大持仓市值（元） |
 | `MAX_TOTAL_POSITION_RATIO` | `0.95` | 总持仓占比上限（95%） |
 | `SIMULATION_BALANCE` | `1000000` | 模拟模式初始资金（元） |
+
+!!! tip "买入价格的降级链  [v3.8.8]"
+    `buy_stock()` 未传价格、或传入 `0` / 负数 / 非数值时，均按「卖三价 → 卖一价 → 最新价 `lastPrice` → 收盘价 `close`」逐级取第一个大于 0 的价格。此前只要卖三价存在就直接采用，`askPrice[2]` 为 `0`（涨停封板、盘前集合竞价等无卖盘场景）时会带着 0 价继续走到下单校验并失败。卖出侧的同类降级见[卖出委托超时与重挂参数](#卖出委托超时与重挂参数)。
 
 ---
 

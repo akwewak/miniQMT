@@ -6,6 +6,42 @@
 
 ## [Unreleased]
 
+## [3.8.8] - 2026-08-13
+
+> 本版本聚焦 **实盘委托号可靠性与基础数据完整性**：加固异步下单 `seq -> order_id` 的匹配链路（防止止盈止损卖出后拿不到委托号而重复发单），修复基准成本被 QMT 持仓刷新抹掉、无卖盘时买入拿到 0 价，以及总控制台停止菜单停不掉进程的问题。同时完成一轮文档库清理。
+
+### Fixed — QMT 异步委托 order_id 匹配加固
+> 2026-08-11 09:30 前后，自动止盈止损开启后暴露的核心风险：卖出委托已提交到 QMT，但主程序未能可靠把 `seq` 匹配为真实 `order_id`。若把「已提交但未确认」当作失败继续重试，就会造成同股同方向重复卖出委托——这是可直接造成资金损失的缺陷。完整实盘验证结论与匹配口径见 [`docs/site/miniqmt/qmt-order-id-matching.md`](docs/site/miniqmt/qmt-order-id-matching.md)。
+
+- **`_get_real_order_id()` 建立明确的解析优先级**：先等 `on_order_stock_async_response()` 回调给出的 `seq -> order_id` 映射（最快最准），callback 超时后再按股票 / 方向 / 数量 / 策略 / 时间窗口反查当日委托与成交；唯一命中才回填映射，多候选或查询失败一律保守返回 `None`。
+- **unknown 委托不再重试**：拿到正 `seq` 但未确认 `order_id` 时，该委托视为「券商侧可能已接收」，按同股同方向进入 `ASYNC_ORDER_UNKNOWN_COOLDOWN_SECONDS`（默认 300 秒）冷却而非重新下单。迟到的 callback 补上映射后自动解除 unknown，并补齐最小 `order_cache`；若有策略信号上下文一并补入 `pending_orders`，让成交/撤单回调继续闭环。
+- **字段匹配口径按实盘行为收紧**：股票代码统一按 6 位裸代码匹配（兼容带/不带市场后缀）；方向兼容 `23/24`、`23.0/24.0` 与中文买卖方向；数量优先匹配委托数量，仅在成交列表缺委托数量时才用成交数量做部分成交兜底；报单时间兼容 Unix 秒、`HHMMSS`、`YYYYMMDDHHMMSS` 与字符串时间。
+- **两个字段明确排除出硬过滤**：QMT 可能截断或改写 `order_remark`，因此它只记录不一致原因、不参与过滤；`price_type=5` 等非固定价委托在 QMT 委托列表中的价格会落成实际委托价，故只有 `price_type=11` 固定价委托才用价格辅助过滤。`strategy_name` 精确匹配优先，QMT 截断长策略名时允许长前缀匹配，多候选仍保守失败。
+- **`order_id_map` 增加 TTL 与容量上限**：新增 `QMT_ORDER_ID_MAP_TTL_SECONDS`（默认 86400）与 `QMT_ORDER_ID_MAP_MAX_ENTRIES`（默认 4096，`int`/`str` 双键分别计入）。此前该映射只增不减，长时间运行后既有内存增长风险，也可能让隔日旧 `seq` 污染匹配。
+
+### Fixed — 基准成本与买入价格
+- **`base_cost_price` 被 QMT 持仓刷新抹掉**：定时同步与 `update_position()` 此前都用内存快照的 `base_cost_price` 无条件覆写 SQLite。而内存快照来自 QMT 持仓（只有摊薄后的 `cost_price`），于是「初次建仓成本」在下一次同步后就变成了平均成本，补仓摊薄前的基准永久丢失。现改为：SQLite 中已有有效值（`> 0`）时一律保留，只有缺失或无效才写入，写入源依次为内存 `base_cost_price`、`cost_price`。同步时的字段比较也相应改用「是否需要初始化」而非直接比较，避免每轮都判定为有差异而空转 UPDATE。
+- **旧库缺列且无回填**：`base_cost_price` 此前不在 `data_manager` 的迁移列表中，旧库升级后该列一直为 `NULL`，前端「基准」列长期显示成本价。现补入迁移列表，并在建列后用 `cost_price` 一次性回填历史持仓（仅回填 `NULL` 且 `cost_price > 0` 的行）。
+- **无卖盘时买入拿到 0 价**：`buy_stock()` 未传价格时只要 `askPrice[2]` 存在就直接采用，涨停封板、盘前集合竞价等无卖盘场景下该值为 `0`，会带着 0 价一路走到下单校验才失败。现统一按「卖三价 → 卖一价 → 最新价 `lastPrice` → 收盘价 `close`」逐级取第一个大于 0 的值（新增 `close` 兜底）；显式传入的 `0` / 负数 / 非数值价格也不再直接送出，而是记一条 warning 后走同一条降级链。
+- **web1.0 基准成本列显示**：无有效 `base_cost_price` 时显示 `--`，不再回退到 `cost_price` 冒充基准成本（否则用户无法区分「就是建仓价」和「根本没记录」）。同时把 `base_cost_price` 加入 `shouldUpdateRow()` 的比较字段——持仓行走增量更新，该字段不在比较列表里时，基准成本从无效变为有效（首次建仓、旧库迁移回填后）整行会因「无变化」被跳过，页面一直停在 `--`。
+
+### Fixed — 总控制台停止菜单
+- **Ctrl+C 送不到目标，反而中断总控制台自己**：`[a]`/`[b]` 优雅停止此前在写信号文件之外还会尝试 `GenerateConsoleCtrlEvent`。账号进程由 `CREATE_NEW_CONSOLE` 启动、拥有独立控制台，该调用送不达目标，却可能误打到当前 `miniqmt.bat` 控制台并弹出 "Terminate batch job (Y/N)?"。现只保留文件信号：写 `data_<id>/stop_signal` → `main.py` 主循环 1 秒内检测并优雅退出，超时才 `taskkill`。
+- **账号数据目录不存在时信号写入失败**：写 `stop_signal` 前未建父目录，首次启动尚未落盘的账号会因 `FileNotFoundError` 被判定「停止信号发送失败」而直接走强杀。现自动补建目录。
+- **`pid.txt` 失效后完全找不到进程**：`pid.txt` 缺失或指向已死进程时，此前只能报「跳过（可能未启动）」，而进程其实还在跑。新增端口兜底：按账号 Flask 端口 `netstat` 反查 LISTENING 进程，并用命令行校验确属本项目的 `main.py`，唯一命中才采用（多个命中保守放弃，避免误杀）。`[6] 查看运行状态` 同步支持，端口兜底命中显示「运行中(端口)」。
+- **启动时显式传入 `--account-id`**：进程命令行自带账号标识，端口兜底与状态查看得以准确归属到账号。
+- 停止流程改为「先给所有目标写完信号，再统一等待退出」，避免前一个账号等待超时期间后面的账号完全没被通知。
+
+### Removed
+- **移除实盘下单调试探针 API 与脚本**：早期实盘验证 order_id 匹配时临时加的 Web 窄接口（含 guarded live sell smoke 端点）与 `scripts/probe_order_id_matching.py` 全部删除。它们固定绑定真实账号、股票和数量，且具备实盘下单能力——即使有 Token 和确认串，也不适合作为长期 Web API 保留。后续实盘诊断应使用主程序日志、QMT 委托/成交查询与最小化本地脚本，且不得把真实账号或可下单调试入口提交到仓库。
+
+### Tests
+- `test/test_trader_callback.py`：新增 QMT order_id 匹配加固回归——callback 映射优先级、callback 超时后的委托/成交反查、多候选保守失败、`order_remark` 被截断/改写时不影响匹配、非固定价委托不用价格过滤、迟到 callback 解除 unknown 冷却并补齐 `order_cache`、`order_id_map` 的 TTL 与容量上限。
+- `test/test_dual_layer_storage.py`：新增基准成本保留回归——SQLite 已有有效 `base_cost_price` 时不被内存快照（QMT 摊薄成本）覆盖，缺失时按 `base_cost_price` → `cost_price` 顺序初始化。`test_simulation_position_core.py` / `test_simulation_web_execute_buy.py` 同步补充模拟链路上的基准成本断言。
+- `test/test_launcher_deployment.py`：新增停止流程回归——`stop_signal` 目录自动补建、端口兜底解析（唯一命中才采用、多命中保守放弃、命令行校验非本项目进程不采用）、`pid.txt` 失效与缺失两种路径的状态判定。
+- `test/test_web_api_complete.py`：移除已删除调试探针端点的相关用例。
+- 发布验证：使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test/run_integration_regression_tests.py --all-with-fast` 完整回归，**33 组、123 模块、2479 用例，2479 通过，0 失败，0 错误，0 跳过，成功率 100%**，耗时 1076.3 秒。
+
 ### Docs
 > 文档库清理：消除双份维护与无人引用的历史产物，收敛到单一信息源。
 
@@ -14,6 +50,14 @@
 - **删除 `docs/xtquant_manager.md`，统一到文档站**：该 1204 行单文档与 `docs/site/xqm/`（22 文件）章节一一对应，后者是 MkDocs 正式发布内容并有 CI 部署，前者靠 `.gitignore` 白名单例外存续。`README.md` / `QUICK_START.md`（2 处）/ `ARCHITECTURE.md` 的 4 处引用改指 <https://weihong-su.github.io/miniQMT/xqm/>，并移除 `.gitignore` 中的 `!docs/xtquant_manager.md` 例外。
 - 清理 `test/` 下约 9.5MB 的陈旧运行产物（`integration_regression_full_run.log` 等 8 个日志、7 个 `*_report.json`）；`integration_test_report.md` / `.json` / `integration_test_config.json` 予以保留。
 - **删除两份已被正式文档取代的历史文稿**：`test/RELEASE_TEST_REPORT.md`（2026-02-15 的一次性发布报告，数据已过时——263 用例 vs 当前 2453，且全仓无引用、与 `.gitignore` 的 `/*_TEST_REPORT.md` 规则语义冲突）与 `docs/plans/2026-01-24-grid-trading-design.md`（1022 行设计稿，已由 `docs/site/miniqmt/grid-trading.md` 正式化）。
+
+本版本新增/修订的文档：
+
+- 新增 `docs/site/miniqmt/qmt-order-id-matching.md`：记录 QMT 异步下单的实盘验证结论、主程序匹配优先级、字段匹配口径与 unknown 保护，并明确「不得把真实账号或可下单调试入口提交到仓库」的安全要求。已挂入 `docs/site/miniqmt/index.md` 导航。
+- `docs/site/miniqmt/configuration.md`：新增「异步委托 order_id 匹配参数」一节（9 个 `ASYNC_ORDER_*` / `QMT_ORDER_ID_MAP_*` 配置此前完全未被这份「配置全景图」覆盖）；交易参数补充买入价格降级链说明。
+- `docs/site/miniqmt/web-frontend.md`：持仓「基准」列补充 `--` 显示口径与增量刷新比较字段；新增「停止流程」一节说明文件信号、端口兜底与状态显示。
+- `docs/site/miniqmt/database.md`：`base_cost_price` 补充「已有有效值优先、旧库自动回填」的写入规则。
+- `docs/site/miniqmt/web-api.md`：移除调试探针端点的说明条目。
 
 ## [3.8.7] - 2026-08-10
 
@@ -492,7 +536,8 @@
 - 模拟交易模式（无需 QMT 即可验证策略）
 - 回归测试框架基础设施
 
-[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.7...HEAD
+[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.8...HEAD
+[3.8.8]: https://github.com/weihong-su/miniQMT/compare/v3.8.7...v3.8.8
 [3.8.7]: https://github.com/weihong-su/miniQMT/compare/v3.8.6...v3.8.7
 [3.8.6]: https://github.com/weihong-su/miniQMT/compare/v3.8.5...v3.8.6
 [3.8.5]: https://github.com/weihong-su/miniQMT/compare/v3.8.4...v3.8.5
