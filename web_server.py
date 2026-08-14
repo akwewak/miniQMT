@@ -6,6 +6,7 @@ Web服务模块，提供RESTful API接口与前端交互
 import os
 import re
 import time
+import hmac
 from functools import wraps
 import json
 import threading
@@ -92,20 +93,34 @@ _LAN_ORIGIN_PATTERN = re.compile(
 CORS(app, origins=_LAN_ORIGIN_PATTERN)
 
 
+def _validate_api_token():
+    """验证 Web API Token；公网模式下未配置 Token 也拒绝访问。"""
+    token = getattr(config, "WEB_API_TOKEN", "") or ""
+    if not token:
+        if getattr(config, "WEB_PUBLIC_MODE", False):
+            return False, "API token required in public mode"
+        return True, ""
+
+    provided = request.headers.get("X-API-Token", "")
+    if not provided:
+        return False, "Unauthorized"
+    if not hmac.compare_digest(str(provided), str(token)):
+        return False, "Unauthorized"
+    return True, ""
+
+
+def _unauthorized_api_response(error):
+    logger.warning(f"[安全] 未授权访问被拒绝: {request.method} {request.path} 来自 {request.remote_addr}")
+    return jsonify({"success": False, "status": "error", "error": error}), 401
+
+
 def require_token(f):
-    """Token 认证装饰器，保护敏感 API 端点。
-    通过环境变量 QMT_API_TOKEN 启用：未设置或为空时跳过验证（适合纯内网部署）。
-    验证方式：请求头 X-API-Token 或 URL 参数 token。
-    """
+    """Token 认证装饰器；实际校验统一委托给 _validate_api_token。"""
     @wraps(f)
     def decorated(*args, **kwargs):
-        token = config.WEB_API_TOKEN
-        if not token:
-            return f(*args, **kwargs)
-        provided = request.headers.get("X-API-Token") or request.args.get("token")
-        if provided != token:
-            logger.warning(f"[安全] 未授权访问被拒绝: {request.method} {request.path} 来自 {request.remote_addr}")
-            return jsonify({"success": False, "error": "Unauthorized"}), 401
+        ok, error = _validate_api_token()
+        if not ok:
+            return _unauthorized_api_response(error)
         return f(*args, **kwargs)
     return decorated
 
@@ -116,6 +131,20 @@ def log_request_start():
     if config.ENABLE_WEB_ACCESS_LOG:
         from flask import g
         g.request_start_time = time.time()
+
+
+@app.before_request
+def enforce_api_token():
+    """统一保护 /api/*，避免只读接口和 SSE 漏掉认证。"""
+    if request.method == "OPTIONS":
+        return None
+    if not request.path.startswith("/api/"):
+        return None
+
+    ok, error = _validate_api_token()
+    if ok:
+        return None
+    return _unauthorized_api_response(error)
 
 @app.after_request
 def log_request_end(response):

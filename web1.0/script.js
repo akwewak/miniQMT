@@ -680,27 +680,36 @@
         }
     }
 
+    function getApiTokenHeader() {
+        const token = elements.apiToken ? elements.apiToken.value.trim() : '';
+        return token ? { 'X-API-Token': token } : {};
+    }
+
+    async function apiFetch(url, options = {}) {
+        const headers = {
+            'Accept': 'application/json',
+            ...getApiTokenHeader(),
+            ...(options.headers || {}),
+        };
+        if (options.body && !headers['Content-Type']) {
+            headers['Content-Type'] = 'application/json';
+        }
+
+        return fetch(url, {
+            ...options,
+            headers,
+        });
+    }
+
     // API请求函数 - 添加节流
     async function apiRequest(url, options = {}) {
         // 提取URL中的关键部分用于日志
         const urlParts = url.split('/');
         const endpoint = urlParts[urlParts.length - 1].split('?')[0]; // 获取API路径的最后一部分
 
-        // 注入 Token 认证头（仅 POST 请求，且 Token 已配置时）
-        const token = elements.apiToken ? elements.apiToken.value.trim() : '';
-        const tokenHeader = (token && options.method === 'POST') ? { 'X-API-Token': token } : {};
-
         console.log(`API Request: ${options.method || 'GET'} ${endpoint}`, options.body ? JSON.parse(options.body) : '');
         try {
-            const response = await fetch(url, {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    ...tokenHeader,
-                    ...options.headers,
-                },
-                ...options,
-            });
+            const response = await apiFetch(url, options);
 
             if (!response.ok) {
                 let errorMsg = `HTTP error! Status: ${response.status}`;
@@ -1787,7 +1796,7 @@
     const throttledCheckApiConnection = throttle(async function() {
         try {
             console.log("Checking API connection at:", API_ENDPOINTS.checkConnection);
-            const response = await fetch(API_ENDPOINTS.checkConnection);
+            const response = await apiFetch(API_ENDPOINTS.checkConnection);
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
@@ -2182,7 +2191,46 @@
         }, delayMs);
     }
 
-    // --- SSE连接 - 修改后确保不混淆两种状态 ---
+    function parseSSEData(eventText) {
+        const dataLines = eventText
+            .split(/\r?\n/)
+            .filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).trimStart());
+        return dataLines.length ? dataLines.join('\n') : null;
+    }
+
+    function handleSSEPayload(payload) {
+        try {
+            sseHealthy = true;
+
+            const data = JSON.parse(payload);
+            console.log('SSE update received:', data);
+
+            // 更新账户信息
+            if (data.account_info) {
+                updateQuickAccountInfo(data.account_info);
+            }
+
+            // 更新监控状态
+            if (data.monitoring) {
+                updateMonitoringInfo(data.monitoring);
+            }
+
+            // 处理持仓数据变化通知
+            if (data.positions_update && data.positions_update.changed) {
+                console.log(`Received positions update notification: v${data.positions_update.version}`);
+                setTimeout(() => {
+                    if (!requestLocks.holdings) {
+                        fetchHoldings();
+                    }
+                }, 100);
+            }
+        } catch (e) {
+            console.error('SSE data parse error:', e);
+        }
+    }
+
+    // --- SSE连接：使用 fetch 流读取，确保公网模式也能携带 X-API-Token ---
     function initSSE() {
         if (sseConnection) {
             sseConnection.close();
@@ -2198,51 +2246,12 @@
         sseHealthy = false;
 
         const sseURL = `${API_BASE_URL}/api/sse`;
-        sseConnection = new EventSource(sseURL);
+        const abortController = new AbortController();
+        sseConnection = {
+            close: () => abortController.abort()
+        };
 
-        // SSE心跳检测：记录最后一次收到消息的时间
         let lastSSEMessageTime = Date.now();
-
-        sseConnection.onmessage = function(event) {
-            try {
-                // 更新心跳时间
-                lastSSEMessageTime = Date.now();
-                sseHealthy = true;
-
-                const data = JSON.parse(event.data);
-                console.log('SSE update received:', data);
-
-                // 更新账户信息
-                if (data.account_info) {
-                    updateQuickAccountInfo(data.account_info);
-                }
-
-                // 更新监控状态
-                if (data.monitoring) {
-                    updateMonitoringInfo(data.monitoring);
-                }
-
-                // 处理持仓数据变化通知
-                if (data.positions_update && data.positions_update.changed) {
-                    console.log(`Received positions update notification: v${data.positions_update.version}`);
-                    // 立即获取最新持仓数据
-                    setTimeout(() => {
-                        if (!requestLocks.holdings) {
-                            fetchHoldings();
-                        }
-                    }, 100); // 短暂延迟避免冲突
-                }
-
-            } catch (e) {
-                console.error('SSE data parse error:', e);
-            }
-        };
-
-        sseConnection.onerror = function(error) {
-            console.error('SSE connection error:', error);
-            sseHealthy = false;
-            scheduleSSEReconnect(5000);
-        };
 
         // SSE心跳检测：每10秒检查SSE是否存活
         sseHeartbeatTimer = setInterval(() => {
@@ -2256,6 +2265,60 @@
                 scheduleSSEReconnect(1000);
             }
         }, SSE_HEARTBEAT_CHECK_INTERVAL);
+
+        (async () => {
+            try {
+                const response = await apiFetch(sseURL, {
+                    method: 'GET',
+                    headers: { 'Accept': 'text/event-stream' },
+                    signal: abortController.signal,
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                if (!response.body) {
+                    throw new Error('当前浏览器不支持流式 SSE 响应');
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+
+                    lastSSEMessageTime = Date.now();
+                    buffer += decoder.decode(value, { stream: true });
+                    const events = buffer.split(/\r?\n\r?\n/);
+                    buffer = events.pop() || '';
+
+                    events.forEach(eventText => {
+                        const payload = parseSSEData(eventText);
+                        if (payload) {
+                            lastSSEMessageTime = Date.now();
+                            handleSSEPayload(payload);
+                        }
+                    });
+                }
+
+                buffer += decoder.decode();
+                const payload = parseSSEData(buffer);
+                if (payload) {
+                    handleSSEPayload(payload);
+                }
+                if (!abortController.signal.aborted) {
+                    throw new Error('SSE stream ended');
+                }
+            } catch (error) {
+                if (abortController.signal.aborted) {
+                    return;
+                }
+                console.error('SSE connection error:', error);
+                sseHealthy = false;
+                scheduleSSEReconnect(5000);
+            }
+        })();
     }
 
     // --- 事件监听器 ---
@@ -2392,7 +2455,7 @@
     }
 
     async function setGridSessionEnabled(sessionId, enabled) {
-        const response = await fetch(`${API_BASE_URL}/api/grid/session/${sessionId}/enabled`, {
+        const response = await apiFetch(`${API_BASE_URL}/api/grid/session/${sessionId}/enabled`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -2415,7 +2478,7 @@
     }
 
     async function setStopProfitEnabled(stockCode, enabled) {
-        const response = await fetch(`${API_BASE_URL}/api/holdings/stop_profit`, {
+        const response = await apiFetch(`${API_BASE_URL}/api/holdings/stop_profit`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -2491,7 +2554,7 @@
             }
 
             // ⭐ 使用新的 /api/grid/session/<stock_code> API 直接获取该股票的会话状态
-            const sessionResponse = await fetch(`${API_BASE_URL}/api/grid/session/${normalizedCode}`);
+            const sessionResponse = await apiFetch(`${API_BASE_URL}/api/grid/session/${normalizedCode}`);
             if (!sessionResponse.ok) {
                 throw new Error('获取网格会话状态失败');
             }
@@ -2665,7 +2728,7 @@
                 // 新会话：固定股数默认按 持仓总数×每档比例 兜底；按 MACD DEA 趋势给默认模式推荐
                 if (fixedVolumeInput) fixedVolumeInput.value = defaultFixedVolume;
                 try {
-                    const adviceResp = await fetch(`${API_BASE_URL}/api/macd/advice?code=${normalizedCode}`);
+                    const adviceResp = await apiFetch(`${API_BASE_URL}/api/macd/advice?code=${normalizedCode}`);
                     const advice = await adviceResp.json();
                     if (advice && advice.status === 'success' && advice.dea != null && advice.dea_prev != null) {
                         const deaUp = Number(advice.dea) >= Number(advice.dea_prev);
@@ -2832,7 +2895,7 @@
     // ============ 加载风险模板 ============
     async function loadRiskTemplates() {
         try {
-            const response = await fetch('/api/grid/risk-templates');
+            const response = await apiFetch('/api/grid/risk-templates');
             const data = await response.json();
 
             if (data.success) {
@@ -2951,7 +3014,7 @@
 
             console.log(`✅ 启动网格交易 - 股票: ${normalizedCode}, 中心价格: ¥${centerPrice.toFixed(2)}`);
 
-            const response = await fetch(`${API_BASE_URL}/api/grid/start`, {
+            const response = await apiFetch(`${API_BASE_URL}/api/grid/start`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -3038,7 +3101,7 @@
 
     async function fetchGridDetailData(stockCode) {
         const normalizedCode = normalizeStockCode(stockCode);
-        const sessionsResponse = await fetch(`${API_BASE_URL}/api/grid/sessions`);
+        const sessionsResponse = await apiFetch(`${API_BASE_URL}/api/grid/sessions`);
         if (!sessionsResponse.ok) {
             throw new Error('获取网格会话列表失败');
         }
@@ -3053,7 +3116,7 @@
         }
 
         const sessionId = session.session_id || session.id;
-        const tradesResponse = await fetch(`${API_BASE_URL}/api/grid/trades/${sessionId}?limit=20&offset=0`);
+        const tradesResponse = await apiFetch(`${API_BASE_URL}/api/grid/trades/${sessionId}?limit=20&offset=0`);
         if (!tradesResponse.ok) {
             throw new Error('获取网格交易记录失败');
         }
@@ -3198,7 +3261,7 @@
         const normalizedCode = normalizeStockCode(stockCode);
         try {
             // 调用停止API
-            const response = await fetch(`${API_BASE_URL}/api/grid/stop/${sessionId}`, {
+            const response = await apiFetch(`${API_BASE_URL}/api/grid/stop/${sessionId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -3242,7 +3305,7 @@
         }
         try {
             // 先获取该股票的会话ID
-            const sessionsResponse = await fetch(`${API_BASE_URL}/api/grid/sessions`);
+            const sessionsResponse = await apiFetch(`${API_BASE_URL}/api/grid/sessions`);
             if (!sessionsResponse.ok) {
                 throw new Error('获取网格会话列表失败');
             }
@@ -3288,7 +3351,7 @@
             }
 
             // ✅ 使用批量接口获取会话列表
-            const sessionsResponse = await fetch(`${API_BASE_URL}/api/grid/sessions`);
+            const sessionsResponse = await apiFetch(`${API_BASE_URL}/api/grid/sessions`);
             if (!sessionsResponse.ok) {
                 console.warn('[Grid] 获取网格会话列表失败');
                 return;
@@ -3368,7 +3431,7 @@
         const normalizedCode = normalizeStockCode(stockCode);
         if (!normalizedCode) return;
         try {
-            const response = await fetch(`${API_BASE_URL}/api/grid/checkbox-state/${normalizedCode}`);
+            const response = await apiFetch(`${API_BASE_URL}/api/grid/checkbox-state/${normalizedCode}`);
             if (!response.ok) {
                 console.warn(`获取${normalizedCode}的checkbox状态失败`);
                 return;
@@ -3467,7 +3530,7 @@
         } else {
             // 请求新数据
             try {
-                const response = await fetch(`${API_BASE_URL}/api/grid/session/${normalizedCode}`);
+                const response = await apiFetch(`${API_BASE_URL}/api/grid/session/${normalizedCode}`);
                 const data = await response.json();
 
                 if (!data.success || !data.has_session) {
@@ -3809,7 +3872,7 @@
         // 从持仓数据构建名称映射
         let nameMap = {};
         try {
-            const resp = await fetch('/api/positions-all');
+            const resp = await apiFetch('/api/positions-all');
             const data = await resp.json();
             if (data && data.status === 'success' && Array.isArray(data.data)) {
                 data.data.forEach(p => {

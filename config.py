@@ -573,6 +573,7 @@ WEB_SERVER_BASE_PORT = _env_int("WEB_SERVER_PORT", 5000, 1, 65535)
 WEB_SERVER_PORT = WEB_SERVER_BASE_PORT
 WEB_SERVER_DEBUG = False
 WEB_API_TOKEN = os.environ.get("QMT_API_TOKEN", "")  # 设置后启用 Token 验证，空字符串=不验证（仅限内网部署）
+WEB_PUBLIC_MODE = _env_bool("WEB_PUBLIC_MODE", False)  # 公网映射/反代模式：Token 为空时也拒绝 /api/*（fail-closed）
 WEB_TRADE_RECORDS_DISPLAY_DAYS = 60  # 下单日志仅展示最近N天（约2个月）的交易记录，避免清单过长
 
 # ======================= 日志清理配置 =======================

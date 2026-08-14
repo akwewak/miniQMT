@@ -16,6 +16,7 @@ class TestConfigEnvOverrides(unittest.TestCase):
             "XQM_PORT",
             "XTQUANT_MANAGER_URL",
             "WEB_SERVER_PORT",
+            "WEB_PUBLIC_MODE",
             "MINIQMT_DISABLE_DOTENV",
         ]
         self._orig_env = {key: os.environ.get(key) for key in self._env_keys}
@@ -89,6 +90,15 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
         self.assertEqual(config.WEB_SERVER_BASE_PORT, 5000)
         self.assertEqual(config.WEB_SERVER_PORT, 5000)
+
+    def test_web_public_mode_reads_env(self):
+        os.environ["WEB_PUBLIC_MODE"] = "true"
+        config = self._reload_config()
+        self.assertTrue(config.WEB_PUBLIC_MODE)
+
+        os.environ["WEB_PUBLIC_MODE"] = "0"
+        config = self._reload_config()
+        self.assertFalse(config.WEB_PUBLIC_MODE)
 
 
 class TestDotenvFallback(unittest.TestCase):

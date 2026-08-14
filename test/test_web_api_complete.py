@@ -247,6 +247,10 @@ class WebAPITestBase(unittest.TestCase):
         config.ENABLE_AUTO_TRADING = False
         config.ENABLE_SIMULATION_MODE = True
 
+    def setUp(self):
+        config.WEB_API_TOKEN = ''
+        config.WEB_PUBLIC_MODE = False
+
     def _get(self, url, params=None):
         """发送 GET 请求"""
         t0 = time.time()
@@ -1752,6 +1756,76 @@ class TestAuthentication(WebAPITestBase):
         self.assertEqual(resp.status_code, 200)
         config.WEB_API_TOKEN = old_token
 
+    def test_05_token_enabled_get_rejected(self):
+        """设置 Token 后无 Token 的 GET /api/* 请求应返回 401"""
+        old_token = getattr(config, 'WEB_API_TOKEN', '')
+        config.WEB_API_TOKEN = 'secret_test_token'
+        try:
+            resp, ms = self._get('/api/status')
+            REPORT.record(
+                '/api/status (missing token)', 'GET',
+                'Token启用后GET接口无Token请求被拒绝',
+                status='PASS' if resp.status_code == 401 else 'FAIL',
+                status_code=resp.status_code,
+                duration_ms=ms,
+            )
+            self.assertEqual(resp.status_code, 401)
+        finally:
+            config.WEB_API_TOKEN = old_token
+
+    def test_06_public_mode_without_token_rejected(self):
+        """公网模式下未配置 Token 时 /api/* 应 fail-closed"""
+        old_token = getattr(config, 'WEB_API_TOKEN', '')
+        old_public_mode = getattr(config, 'WEB_PUBLIC_MODE', False)
+        config.WEB_API_TOKEN = ''
+        config.WEB_PUBLIC_MODE = True
+        try:
+            resp, ms = self._get('/api/status')
+            REPORT.record(
+                '/api/status (public mode no token)', 'GET',
+                '公网模式未配置Token时拒绝API访问',
+                status='PASS' if resp.status_code == 401 else 'FAIL',
+                status_code=resp.status_code,
+                duration_ms=ms,
+            )
+            self.assertEqual(resp.status_code, 401)
+        finally:
+            config.WEB_API_TOKEN = old_token
+            config.WEB_PUBLIC_MODE = old_public_mode
+
+    def test_07_sse_requires_token_and_accepts_header(self):
+        """SSE 在 Token 启用后要求 X-API-Token 请求头"""
+        old_token = getattr(config, 'WEB_API_TOKEN', '')
+        config.WEB_API_TOKEN = 'secret_test_token'
+        try:
+            missing_resp = self.client.get('/api/sse')
+            REPORT.record(
+                '/api/sse (missing token)', 'GET',
+                'SSE无Token请求被拒绝',
+                status='PASS' if missing_resp.status_code == 401 else 'FAIL',
+                status_code=missing_resp.status_code,
+            )
+            self.assertEqual(missing_resp.status_code, 401)
+
+            stream_resp = self.client.get(
+                '/api/sse',
+                headers={'X-API-Token': 'secret_test_token'},
+                buffered=False,
+            )
+            try:
+                REPORT.record(
+                    '/api/sse (with token header)', 'GET',
+                    'SSE通过X-API-Token请求头认证',
+                    status='PASS' if stream_resp.status_code == 200 else 'FAIL',
+                    status_code=stream_resp.status_code,
+                )
+                self.assertEqual(stream_resp.status_code, 200)
+                self.assertEqual(stream_resp.mimetype, 'text/event-stream')
+            finally:
+                stream_resp.close()
+        finally:
+            config.WEB_API_TOKEN = old_token
+
     def test_04_token_enabled_query_param(self):
         """设置 Token 后通过 URL 参数 token 认证"""
         old_token = getattr(config, 'WEB_API_TOKEN', '')
@@ -1762,11 +1836,11 @@ class TestAuthentication(WebAPITestBase):
         REPORT.record(
             '/api/monitor/stop?token={token}', 'POST',
             '通过URL参数token认证',
-            status='PASS' if resp.status_code == 200 else 'FAIL',
+            status='PASS' if resp.status_code == 401 else 'FAIL',
             status_code=resp.status_code,
             duration_ms=ms,
         )
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 401)
         config.WEB_API_TOKEN = old_token
 
 # =====================================================================
