@@ -28,6 +28,7 @@ import json
 import unittest
 import sqlite3
 import time
+import importlib.util
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -46,6 +47,13 @@ _MOCKED_MODULE_NAMES = [
     'xtquant', 'xtquant.xtdata', 'xtquant.xttrader', 'xtquant.xttype',
     'easy_qmt_trader',
 ]
+_IMPORT_SIDE_EFFECT_MODULES = [
+    'data_manager', 'indicator_calculator', 'position_manager',
+    'trading_executor', 'strategy', 'config_manager', 'web_server',
+]
+_orig_import_side_effect_modules = {
+    k: sys.modules[k] for k in _IMPORT_SIDE_EFFECT_MODULES if k in sys.modules
+}
 # 保存已导入的模块原始引用，tearDownModule 时恢复，防止污染其他测试
 _orig_sys_modules = {k: sys.modules[k] for k in _MOCKED_MODULE_NAMES if k in sys.modules}
 for mod_name in _MOCKED_MODULE_NAMES:
@@ -142,7 +150,31 @@ mock_grid_val.validate_grid_template.return_value = (True, {})
 
 # Methods mock
 mock_methods = MagicMock()
-mock_methods.add_xt_suffix.side_effect = lambda code: code + '.SZ' if not '.' in code else code
+def _mock_add_xt_suffix(code):
+    if code is None:
+        return code
+    code = str(code).strip().upper()
+    if code.startswith(('SH.', 'SZ.', 'BJ.')):
+        market, raw_code = code.split('.', 1)
+        return f'{raw_code}.{market}' if len(raw_code) == 6 and raw_code.isdigit() else code
+    if code.endswith(('.SH', '.SZ', '.BJ')):
+        return code
+    if '.' in code:
+        return code
+    if len(code) != 6 or not code.isdigit():
+        return code
+    if code.startswith((
+        '000', '001', '002', '003', '200', '300', '301',
+        '111', '123', '127', '128', '131', '15',
+        '16', '18', '12'
+    )):
+        return f'{code}.SZ'
+    if code.startswith('920'):
+        return f'{code}.BJ'
+    if code.startswith(('5', '6', '9', '110', '113', '118', '132', '204')):
+        return f'{code}.SH'
+    return code
+mock_methods.add_xt_suffix.side_effect = _mock_add_xt_suffix
 
 # =====================================================================
 # 第二步：注入 Mock 模块到 sys.modules
@@ -176,10 +208,42 @@ _te_mod.get_trading_executor = lambda: mock_executor
 _st_mod.get_trading_strategy = lambda: mock_strategy
 _conf_man_mod.get_config_manager = lambda: mock_cm
 
+
+_PRIVATE_WEB_SERVER_MODULE = '_test_web_api_complete_web_server'
+
+
+def _restore_test_import_state():
+    all_mocked_names = _MOCKED_MODULE_NAMES + ['utils', 'Methods', 'grid_validation']
+    for mod_name in all_mocked_names:
+        if mod_name in _orig_sys_modules:
+            sys.modules[mod_name] = _orig_sys_modules[mod_name]
+        else:
+            sys.modules.pop(mod_name, None)
+
+    _dm_mod.get_data_manager = _orig_get_dm
+    _ic_mod.get_indicator_calculator = _orig_get_ic
+    _pm_mod.get_position_manager = _orig_get_pm
+    _te_mod.get_trading_executor = _orig_get_te
+    _st_mod.get_trading_strategy = _orig_get_st
+    _conf_man_mod.get_config_manager = _orig_get_cm
+
+    for mod_name in _IMPORT_SIDE_EFFECT_MODULES:
+        if mod_name in _orig_import_side_effect_modules:
+            sys.modules[mod_name] = _orig_import_side_effect_modules[mod_name]
+        else:
+            sys.modules.pop(mod_name, None)
+    sys.modules.pop(_PRIVATE_WEB_SERVER_MODULE, None)
+
 # =====================================================================
 # 第三步：导入 web_server，完成 Mock 设置
 # =====================================================================
-import web_server
+_web_server_spec = importlib.util.spec_from_file_location(
+    _PRIVATE_WEB_SERVER_MODULE,
+    os.path.join(PROJECT_ROOT, 'web_server.py')
+)
+web_server = importlib.util.module_from_spec(_web_server_spec)
+sys.modules[_PRIVATE_WEB_SERVER_MODULE] = web_server
+_web_server_spec.loader.exec_module(web_server)
 
 # 注入 mock 实例到 web_server 模块全局变量
 web_server.set_position_manager(mock_pm)
@@ -188,6 +252,11 @@ web_server.trading_executor = mock_executor
 web_server.trading_strategy = mock_strategy
 web_server.config_manager = mock_cm
 web_server.indicator_calculator = mock_indicator
+web_server.Methods = mock_methods
+web_server.utils = mock_utils
+web_server.validate_grid_config = mock_grid_val.validate_grid_config
+web_server.validate_grid_template = mock_grid_val.validate_grid_template
+_restore_test_import_state()
 
 
 # =====================================================================
@@ -1448,6 +1517,43 @@ class TestGridTrading(WebAPITestBase):
         )
         mock_pm.grid_manager = None
 
+    def test_14a_normalize_stock_code_supports_sh_etf(self):
+        """Web网格入口应按沪深常见证券代码段补全后缀。"""
+        cases = {
+            '510050': '510050.SH',
+            '588000': '588000.SH',
+            '600000': '600000.SH',
+            '900901': '900901.SH',
+            '110001': '110001.SH',
+            '113001': '113001.SH',
+            '118001': '118001.SH',
+            '132001': '132001.SH',
+            '204001': '204001.SH',
+            '000001': '000001.SZ',
+            '002594': '002594.SZ',
+            '300750': '300750.SZ',
+            '200001': '200001.SZ',
+            '150001': '150001.SZ',
+            '159915': '159915.SZ',
+            '158001': '158001.SZ',
+            '160105': '160105.SZ',
+            '184801': '184801.SZ',
+            '111001': '111001.SZ',
+            '123456': '123456.SZ',
+            '127001': '127001.SZ',
+            '128001': '128001.SZ',
+            '131810': '131810.SZ',
+            '920118': '920118.BJ',
+        }
+        for raw_code, expected in cases.items():
+            with self.subTest(raw_code=raw_code):
+                self.assertEqual(web_server.normalize_stock_code(raw_code), expected)
+        self.assertEqual(web_server.normalize_stock_code('510050.sh'), '510050.SH')
+        self.assertEqual(web_server.normalize_stock_code(' 510050 '), '510050.SH')
+        self.assertEqual(web_server.normalize_stock_code('sh.510050'), '510050.SH')
+        self.assertEqual(web_server.normalize_stock_code('bj.920118'), '920118.BJ')
+        self.assertEqual(web_server.normalize_stock_code('000920'), '000920.SZ')
+
     def test_15_start_grid_no_grid_manager(self):
         """POST /api/grid/start 未启用网格交易应返回 400"""
         mock_pm.grid_manager = None
@@ -1492,6 +1598,100 @@ class TestGridTrading(WebAPITestBase):
         self.assertIn(resp.status_code, [200, 400, 500])
         REPORT.results[-1]['status'] = 'PASS' if resp.status_code == 200 else 'PARTIAL'
         mock_pm.grid_manager = None
+
+    def test_16a_start_grid_normalizes_510050_before_validation(self):
+        """POST /api/grid/start 传入510050时，校验前应规范化为510050.SH。"""
+        mock_gm = _make_grid_manager_mock()
+        mock_session = _make_grid_session_mock(session_id=50, stock_code='510050.SH')
+        mock_gm.start_grid_session.return_value = mock_session
+        mock_gm.sessions = {}
+        mock_pm.grid_manager = mock_gm
+        mock_pm.db_manager.get_grid_template.return_value = None
+
+        original_side_effect = web_server.validate_grid_config.side_effect
+        original_return_value = web_server.validate_grid_config.return_value
+
+        def strict_validate(user_config):
+            self.assertEqual(user_config['stock_code'], '510050.SH')
+            return True, user_config
+
+        try:
+            web_server.validate_grid_config.side_effect = strict_validate
+            resp, ms = self._post(
+                '/api/grid/start',
+                json_data={
+                    'stock_code': '510050',
+                    'risk_level': 'moderate',
+                    'max_investment': 10000,
+                    'price_interval': 0.05,
+                    'position_ratio': 0.25,
+                    'callback_ratio': 0.005,
+                },
+            )
+            data = self._parse(resp)
+            self._record(
+                '/api/grid/start (510050)', 'POST',
+                '启动510050网格交易时自动补沪市后缀',
+                resp, ms,
+            )
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(data.get('success'))
+            mock_gm.start_grid_session.assert_called_once()
+            self.assertEqual(mock_gm.start_grid_session.call_args[0][0], '510050.SH')
+            self.assertEqual(data['config']['stock_code'], '510050.SH')
+        finally:
+            web_server.validate_grid_config.side_effect = original_side_effect
+            web_server.validate_grid_config.return_value = original_return_value
+            mock_pm.grid_manager = None
+            mock_pm.db_manager.get_grid_template.return_value = None
+
+    def test_16b_start_grid_normalizes_920118_before_validation(self):
+        """POST /api/grid/start 传入920118时，校验前应规范化为920118.BJ。"""
+        mock_gm = _make_grid_manager_mock()
+        mock_session = _make_grid_session_mock(session_id=51, stock_code='920118.BJ')
+        mock_gm.start_grid_session.return_value = mock_session
+        mock_gm.sessions = {}
+        mock_pm.grid_manager = mock_gm
+        mock_pm.db_manager.get_grid_template.return_value = None
+
+        original_side_effect = web_server.validate_grid_config.side_effect
+        original_return_value = web_server.validate_grid_config.return_value
+
+        def strict_validate(user_config):
+            self.assertEqual(user_config['stock_code'], '920118.BJ')
+            return True, user_config
+
+        try:
+            web_server.validate_grid_config.side_effect = strict_validate
+            resp, ms = self._post(
+                '/api/grid/start',
+                json_data={
+                    'stock_code': '920118',
+                    'risk_level': 'moderate',
+                    'max_investment': 10000,
+                    'price_interval': 0.05,
+                    'position_ratio': 0.25,
+                    'callback_ratio': 0.005,
+                },
+            )
+            data = self._parse(resp)
+            self._record(
+                '/api/grid/start (920118)', 'POST',
+                '启动920118网格交易时自动补北交所后缀',
+                resp, ms,
+            )
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(data.get('success'))
+            mock_gm.start_grid_session.assert_called_once()
+            self.assertEqual(mock_gm.start_grid_session.call_args[0][0], '920118.BJ')
+            self.assertEqual(data['config']['stock_code'], '920118.BJ')
+        finally:
+            web_server.validate_grid_config.side_effect = original_side_effect
+            web_server.validate_grid_config.return_value = original_return_value
+            mock_pm.grid_manager = None
+            mock_pm.db_manager.get_grid_template.return_value = None
 
     def test_17_stop_grid_by_session_id(self):
         """POST /api/grid/stop/<session_id> 停止网格会话"""
@@ -2029,20 +2229,9 @@ def print_report():
 
 
 def tearDownModule():
-    """恢复模块级 Mock 补丁，确保测试隔离（防止污染后续测试模块的 sys.modules）"""
-    all_mocked_names = _MOCKED_MODULE_NAMES + ['utils', 'Methods', 'grid_validation']
-    for mod_name in all_mocked_names:
-        if mod_name in _orig_sys_modules:
-            sys.modules[mod_name] = _orig_sys_modules[mod_name]
-        else:
-            sys.modules.pop(mod_name, None)
-    # 恢复模块函数级补丁
-    _dm_mod.get_data_manager = _orig_get_dm
-    _ic_mod.get_indicator_calculator = _orig_get_ic
-    _pm_mod.get_position_manager = _orig_get_pm
-    _te_mod.get_trading_executor = _orig_get_te
-    _st_mod.get_trading_strategy = _orig_get_st
-    _conf_man_mod.get_config_manager = _orig_get_cm
+    # 导入阶段已恢复 sys.modules；unittest 会先导入后续模块再执行本模块 tearDown。
+    # 此处不能二次清理，否则会破坏后续模块的 patch 目标。
+    pass
 
 
 # =====================================================================

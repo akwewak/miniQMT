@@ -204,6 +204,41 @@ class TestTraderCallback(TestBase):
         executor.position_manager.track_order = MagicMock()
         return executor
 
+    def test_order_format_bj_bare_code_bypasses_qmt_adjust_stock(self):
+        """裸 920 段下单应本地识别为 .BJ，不再交给 qmt_trader 默认补 .SZ。"""
+        executor = self._make_orderable_executor()
+        qmt_trader = executor.position_manager.qmt_trader
+
+        old_sim = config.ENABLE_SIMULATION_MODE
+        old_allow_buy = getattr(config, "ENABLE_ALLOW_BUY", True)
+        try:
+            config.ENABLE_SIMULATION_MODE = False
+            config.ENABLE_ALLOW_BUY = True
+            with patch("config.is_trade_time", return_value=True):
+                order_id = executor.buy_stock(
+                    "920118",
+                    volume=100,
+                    price=10.5,
+                    strategy="add_position",
+                )
+        finally:
+            config.ENABLE_SIMULATION_MODE = old_sim
+            config.ENABLE_ALLOW_BUY = old_allow_buy
+
+        self.assertEqual(order_id, 940572800)
+        qmt_trader.adjust_stock.assert_not_called()
+        qmt_trader.buy.assert_called_once()
+        self.assertEqual(qmt_trader.buy.call_args.kwargs["security"], "920118.BJ")
+
+    def test_easy_qmt_adjust_stock_supports_bj_without_second_guessing(self):
+        """直连交易适配层应保留 .BJ，避免把北交所代码二次补成 .SZ。"""
+        trader = easy_qmt_trader.__new__(easy_qmt_trader)
+        self.assertEqual(trader.adjust_stock("920118"), "920118.BJ")
+        self.assertEqual(trader.adjust_stock("920118.BJ"), "920118.BJ")
+        self.assertEqual(trader.adjust_stock("bj.920118"), "920118.BJ")
+        self.assertEqual(trader.adjust_stock("830799.BJ"), "830799.BJ")
+        self.assertEqual(trader.adjust_stock("000920"), "000920.SZ")
+
     # ===================================================================
     # Group A: Callback 链路完整性
     # ===================================================================

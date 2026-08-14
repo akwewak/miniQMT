@@ -60,9 +60,9 @@ class TestHistoryDataSourceRouting(TestBase):
         self.mock_xt = MagicMock()
         self.dm.xt = self.mock_xt
 
-    def _download(self):
+    def _download(self, stock_code='003025.SZ'):
         return self.dm.download_history_data(
-            '003025.SZ', period='1d', start_date='20260323', end_date='20260621')
+            stock_code, period='1d', start_date='20260323', end_date='20260621')
 
     # ── 标准模式：必须走 Mootdx，绝不碰 xtdata 历史接口 ──────────────────
 
@@ -89,6 +89,34 @@ class TestHistoryDataSourceRouting(TestBase):
              patch('Methods.getStockData', return_value=None) as mock_mootdx:
             self._download()
         mock_mootdx.assert_called_once()
+
+    def test_standard_mode_bj_uses_tushare_when_enabled(self):
+        """北交所标准模式优先 Tushare，不触碰 xtdata 或 Mootdx。"""
+        fake_df = pd.DataFrame({'date': ['2026-06-20'], 'close': [10.0], 'stock_code': ['920118.BJ']})
+        self.dm._download_history_tushare = MagicMock(return_value=fake_df)
+        with patch.object(config, 'ENABLE_XTQUANT_MANAGER', False), \
+             patch.object(config, 'ENABLE_TUSHARE_DATA_SOURCE', True), \
+             patch('Methods.getStockData') as mock_mootdx:
+            result = self._download('920118')
+        self.dm._download_history_tushare.assert_called_once_with(
+            '920118.BJ',
+            start_date='20260323',
+            end_date='20260621',
+        )
+        self.mock_xt.get_market_data_ex.assert_not_called()
+        mock_mootdx.assert_not_called()
+        self.assertIs(result, fake_df)
+
+    def test_standard_mode_bj_skips_mootdx_when_tushare_disabled(self):
+        """北交所禁用 Tushare 时不应把 .BJ 代码降级给 Mootdx。"""
+        with patch.object(config, 'ENABLE_XTQUANT_MANAGER', False), \
+             patch.object(config, 'ENABLE_TUSHARE_DATA_SOURCE', False), \
+             patch('Methods.getStockData') as mock_mootdx:
+            result = self._download('920118')
+        self.mock_xt.get_market_data_ex.assert_not_called()
+        self.mock_xt.download_history_data.assert_not_called()
+        mock_mootdx.assert_not_called()
+        self.assertIsNone(result)
 
     def test_standard_mode_holds_even_when_xt_available(self):
         """即便 self.xt 可用，标准模式也不得优先 xtdata（防止回退到无条件 if self.xt:）"""
@@ -121,6 +149,18 @@ class TestHistoryDataSourceRouting(TestBase):
             self._download()
         self.dm.download_history_xtdata.assert_called_once()
         mock_mootdx.assert_called_once()
+
+    def test_gateway_mode_bj_uses_xtdata_history(self):
+        """北交所网关模式仍优先走 xtdata，且传入标准 .BJ 代码。"""
+        fake_df = pd.DataFrame({'date': ['2026-06-20'], 'close': [10.0], 'stock_code': ['920118.BJ']})
+        self.dm.download_history_xtdata = MagicMock(return_value=fake_df)
+        with patch.object(config, 'ENABLE_XTQUANT_MANAGER', True), \
+             patch('Methods.getStockData') as mock_mootdx:
+            result = self._download('920118')
+        self.dm.download_history_xtdata.assert_called_once()
+        self.assertEqual(self.dm.download_history_xtdata.call_args[0][0], '920118.BJ')
+        mock_mootdx.assert_not_called()
+        self.assertIs(result, fake_df)
 
 
 if __name__ == '__main__':

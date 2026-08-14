@@ -243,7 +243,7 @@ realtime_data = {
 
 
 def _find_active_grid_session(grid_manager, stock_code):
-    """按股票代码查找活跃网格会话，兼容 003025 与 003025.SZ 两种格式。"""
+    """按股票代码查找活跃网格会话，兼容 003025 与 003025.SZ/SH/BJ 格式。"""
     if not grid_manager or not stock_code:
         return None
 
@@ -255,7 +255,7 @@ def _find_active_grid_session(grid_manager, stock_code):
         except Exception:
             pass
     if '.' not in stock_code:
-        keys.extend([f"{stock_code}.SH", f"{stock_code}.SZ"])
+        keys.extend([Methods.add_xt_suffix(stock_code), f"{stock_code}.SH", f"{stock_code}.SZ", f"{stock_code}.BJ"])
     else:
         keys.append(stock_code.split('.')[0])
 
@@ -1560,7 +1560,7 @@ def execute_buy():
         
         for stock in stocks:
             # 移除已有的后缀（如果有）
-            if stock.endswith(('.SH', '.SZ', '.sh', '.sz')):
+            if stock.endswith(('.SH', '.SZ', '.BJ', '.sh', '.sz', '.bj')):
                 stock_code = stock.split('.')[0]
             else:
                 stock_code = stock
@@ -1937,28 +1937,19 @@ def normalize_stock_code(stock_code: str) -> str:
     标准化股票代码，自动补充市场后缀
 
     Args:
-        stock_code: 股票代码，可能缺少.SH或.SZ后缀
+        stock_code: 股票代码，可能缺少.SH/.SZ/.BJ后缀
 
     Returns:
-        标准化后的股票代码 (格式: XXXXXX.SH 或 XXXXXX.SZ)
+        标准化后的股票代码 (格式: XXXXXX.SH、XXXXXX.SZ 或 XXXXXX.BJ)
     """
     if not stock_code:
         return stock_code
 
-    # 如果已经有后缀，直接返回
-    if '.' in stock_code:
+    stock_code = str(stock_code).strip().upper()
+    if not stock_code:
         return stock_code
 
-    # 自动判断市场（基于A股规则）
-    # 上海交易所: 60xxxx(主板), 688xxx(科创板), 689xxx(科创板), 900xxx(B股)
-    # 深圳交易所: 00xxxx(主板), 30xxxx(创业板), 200xxx(B股)
-    if stock_code.startswith(('6', '900')):
-        return stock_code + '.SH'
-    elif stock_code.startswith(('0', '3', '200')):
-        return stock_code + '.SZ'
-    else:
-        # 默认返回原值（让后续验证处理）
-        return stock_code
+    return Methods.add_xt_suffix(stock_code)
 
 
 @app.route('/api/grid/start', methods=['POST'])

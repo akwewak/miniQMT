@@ -34,6 +34,8 @@ class TestTushareCodeConversion(unittest.TestCase):
         """已有 .SH/.SZ 后缀 → 直接透传"""
         self.assertEqual(_to_tushare_code('000001.SZ'), '000001.SZ')
         self.assertEqual(_to_tushare_code('600036.SH'), '600036.SH')
+        self.assertEqual(_to_tushare_code('920118.BJ'), '920118.BJ')
+        self.assertEqual(_to_tushare_code('830799.BJ'), '830799.BJ')
 
     def test_sh_prefix_converted(self):
         """sh.600036 → 600036.SH"""
@@ -45,6 +47,11 @@ class TestTushareCodeConversion(unittest.TestCase):
         self.assertEqual(_to_tushare_code('sz.000001'), '000001.SZ')
         self.assertEqual(_to_tushare_code('SZ.000001'), '000001.SZ')
 
+    def test_bj_prefix_converted(self):
+        """bj.920118 → 920118.BJ"""
+        self.assertEqual(_to_tushare_code('bj.920118'), '920118.BJ')
+        self.assertEqual(_to_tushare_code('BJ.920118'), '920118.BJ')
+
     def test_bare_code_sh(self):
         """裸代码 6xxx/5xxx/9xxx → xxxxxx.SH"""
         self.assertEqual(_to_tushare_code('600036'), '600036.SH')
@@ -54,8 +61,14 @@ class TestTushareCodeConversion(unittest.TestCase):
     def test_bare_code_sz(self):
         """裸代码 0xxx/3xxx → xxxxxx.SZ"""
         self.assertEqual(_to_tushare_code('000001'), '000001.SZ')
+        self.assertEqual(_to_tushare_code('000920'), '000920.SZ')
         self.assertEqual(_to_tushare_code('300750'), '300750.SZ')
         self.assertEqual(_to_tushare_code('159381'), '159381.SZ')
+
+    def test_bare_code_bj(self):
+        """一期仅裸 920 段自动识别为北交所。"""
+        self.assertEqual(_to_tushare_code('920118'), '920118.BJ')
+        self.assertEqual(_to_tushare_code('830799'), '830799')
 
     def test_lowercase_normalized(self):
         """小写代码转大写"""

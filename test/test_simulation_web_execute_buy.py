@@ -115,9 +115,17 @@ class TestWebExecuteBuySimulation(unittest.TestCase):
              patch('strategy.get_position_manager', return_value=self.pm), \
              patch('strategy.get_trading_executor', return_value=self.executor):
             self.strategy = TradingStrategy()
+        self.strategy.position_manager = self.pm
+        self.strategy.trading_executor = self.executor
+        self.executor.position_manager = self.pm
+        self.executor.data_manager = mock_dm
 
         # 注入到 web_server（trading_strategy 是模块级全局，execute_buy 直接引用）
+        self._orig_ws_data_manager = web_server.data_manager
+        self._orig_ws_executor = web_server.trading_executor
         self._orig_ws_strategy = web_server.trading_strategy
+        web_server.data_manager = mock_dm
+        web_server.trading_executor = self.executor
         web_server.trading_strategy = self.strategy
         web_server.set_position_manager(self.pm)
 
@@ -125,6 +133,8 @@ class TestWebExecuteBuySimulation(unittest.TestCase):
         self.client = web_server.app.test_client()
 
     def tearDown(self):
+        web_server.data_manager = self._orig_ws_data_manager
+        web_server.trading_executor = self._orig_ws_executor
         web_server.trading_strategy = self._orig_ws_strategy
         web_server.set_position_manager(None)
         try:
@@ -194,6 +204,15 @@ class TestWebExecuteBuySimulation(unittest.TestCase):
         self.assertIn('000001.SZ', codes,
                       f"模拟模式应补全市场后缀，实际落地: {codes}")
 
+    def test_L2_02b_bj_code_suffix_added_in_simulation(self):
+        """裸 920 段北交所代码在 Web 模拟买入链路中应落为 .BJ 持仓。"""
+        resp = self._buy(['920118'])
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['success_count'], 1)
+
+        codes = self._memory_codes()
+        self.assertIn('920118.BJ', codes)
+        self.assertNotIn('920118.SZ', codes)
     def test_L2_03_random_pool_samples_quantity(self):
         """L2-03 random_pool 策略按 quantity 抽样"""
         pool = ['000001.SZ', '000002.SZ', '600036.SH', '600000.SH', '000333.SZ']

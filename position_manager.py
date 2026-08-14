@@ -2540,6 +2540,7 @@ class PositionManager:
                             reason = 'stop_loss_0'
 
                         return 'stop_loss', {
+                            'stock_code': stock_code,
                             'current_price': current_price,
                             'stop_loss_price': stop_loss_price,
                             'cost_price': cost_price,

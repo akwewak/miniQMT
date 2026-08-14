@@ -729,6 +729,11 @@ class QmtRpcTraderTest(unittest.TestCase):
         self.assertEqual(t.adjust_stock("600000"), "600000.SH")
         self.assertEqual(t.adjust_stock("000001"), "000001.SZ")
         self.assertEqual(t.adjust_stock("600000.SH"), "600000.SH")
+        self.assertEqual(t.adjust_stock("920118"), "920118.BJ")
+        self.assertEqual(t.adjust_stock("bj.920118"), "920118.BJ")
+        self.assertEqual(t.adjust_stock("830799.BJ"), "830799.BJ")
+        self.assertEqual(t.adjust_stock("000920"), "000920.SZ")
+        self.assertEqual(t.adjust_stock("830799"), "830799")
 
     def test_select_data_type_delegates_to_base(self):
         t = self._make()

@@ -62,6 +62,8 @@ class TestHistoryDateNormalization(unittest.TestCase):
     def test_adjusts_baostock_style_code_to_xt_code(self):
         self.assertEqual(self.dm._adjust_stock("sh.000001"), "000001.SH")
         self.assertEqual(self.dm._adjust_stock("sz.399001"), "399001.SZ")
+        self.assertEqual(self.dm._adjust_stock("bj.920118"), "920118.BJ")
+        self.assertEqual(self.dm._adjust_stock("920118"), "920118.BJ")
 
     def test_filters_history_by_requested_date_range(self):
         df = pd.DataFrame({
@@ -168,7 +170,7 @@ class TestHistoryDateNormalization(unittest.TestCase):
             result = self.dm.download_history_data("002440")
 
         self.dm._download_history_tushare.assert_called_once_with(
-            "002440",
+            "002440.SZ",
             start_date=None,
             end_date="20260722",
         )
@@ -184,8 +186,7 @@ class TestHistoryDateNormalization(unittest.TestCase):
         self.dm._db_lock = MagicMock()
         self.dm.download_history_data = MagicMock()
 
-        with patch("data_manager.datetime") as mock_datetime:
-            mock_datetime.now.return_value = datetime(2026, 6, 17, 16, 0, 0)
+        with patch.object(self.dm, "_get_completed_history_end_date", return_value="20260617"):
             self.dm.update_stock_data("003025")
 
         self.dm.download_history_data.assert_not_called()
@@ -200,9 +201,7 @@ class TestHistoryDateNormalization(unittest.TestCase):
         self.dm.download_history_data = MagicMock(return_value=None)
 
         with patch("config.HISTORY_UPDATE_THROTTLE_SECONDS", 300), \
-             patch("data_manager.datetime") as mock_datetime:
-            mock_datetime.now.return_value = datetime(2026, 6, 17, 16, 0, 0)
-            mock_datetime.strptime.side_effect = __import__("datetime").datetime.strptime
+             patch.object(self.dm, "_get_completed_history_end_date", return_value="20260617"):
             self.dm.update_stock_data("003025")
             self.dm.update_stock_data("003025")
 

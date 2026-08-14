@@ -18,8 +18,8 @@ class GridConfigSchema(Schema):
     stock_code = fields.Str(
         required=True,
         validate=validate.Regexp(
-            r'^\d{6}\.(SZ|SH)$',
-            error='股票代码格式错误，应为6位数字+.SZ或.SH'
+            r'^\d{6}\.(SZ|SH|BJ)$',
+            error='股票代码格式错误，应为6位数字+.SZ、.SH或.BJ'
         )
     )
 

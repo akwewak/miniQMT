@@ -32,18 +32,55 @@ def add_bs_prefix(code):
     else:
         return code
     
-# 对code列进行处理, 在调用xtquant接口前添加后缀    
+# 对code列进行处理, 在调用xtquant接口前添加后缀
 def add_xt_suffix(stock='600031.SH'):
     '''
     调整代码
     '''
-    if stock[-2:]=='SH' or stock[-2:]=='SZ' or stock[-2:]=='sh' or stock[-2:]=='sz':
-        stock=stock.upper()
-    else:
-        if stock[:1] == '5' or stock[:3] in ['600','601','603','688','113','110','118'] or stock[:2] in ['11']:
-            stock=stock+'.SH'
-        else:
-            stock=stock+'.SZ'
+    if stock is None:
+        return stock
+
+    stock = str(stock).strip().upper()
+    if not stock:
+        return stock
+
+    if stock.startswith(('SH.', 'SZ.', 'BJ.')):
+        market, code = stock.split('.', 1)
+        return f'{code}.{market}' if len(code) == 6 and code.isdigit() else stock
+
+    if stock.endswith(('.SH', '.SZ', '.BJ')):
+        return stock
+
+    if '.' in stock:
+        return stock
+
+    code = stock
+    if len(code) != 6 or not code.isdigit():
+        return stock
+
+    if code.startswith('920'):
+        return f'{code}.BJ'
+
+    # 深市需先判断，避免 111xxx 可转债被 11xxx 沪市规则误吸收。
+    if code.startswith((
+        '000', '001', '002', '003',  # 深市主板
+        '200',                      # 深市B股
+        '300', '301',               # 创业板
+        '111', '123', '127', '128', # 深市可转债
+        '131',                      # 深市债券回购
+        '15',                       # 深市ETF/分级基金等场内基金
+        '16', '18',                 # 深市LOF/封基等基金
+        '12'                        # 深市债券
+    )):
+        return f'{code}.SZ'
+
+    if code.startswith((
+        '5', '6', '9',              # 沪市基金/ETF/股票/B股
+        '110', '113', '118', '132', # 沪市可转债/可交换债
+        '204'                       # 沪市债券回购
+    )):
+        return f'{code}.SH'
+
     return stock
 
 # 对code列进行分类, 调用xtquant接口

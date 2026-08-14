@@ -718,13 +718,28 @@ class QmtIpcTrader:
 
     def adjust_stock(self, stock='600031.SH'):
         """调整股票代码为带交易所后缀格式。"""
-        stock = str(stock).strip()
-        if stock[-2:].upper() in ('SH', 'SZ'):
-            return stock.upper()
-        if stock[:3] in ['600', '601', '603', '688', '510', '511', '512', '513',
-                         '515', '113', '110', '118', '501'] or stock[:2] in ['11']:
-            return stock + '.SH'
-        return stock + '.SZ'
+        if stock is None:
+            return stock
+        code = str(stock).strip().upper()
+        if not code:
+            return code
+        if code.startswith(('SH.', 'SZ.', 'BJ.')):
+            market, pure = code.split('.', 1)
+            return f'{pure}.{market}' if len(pure) == 6 and pure.isdigit() else code
+        if code.endswith(('.SH', '.SZ', '.BJ')):
+            return code
+        if '.' in code:
+            return code
+        if code.startswith('920'):
+            return code + '.BJ'
+        if code[:3] in ['000', '001', '002', '003', '200', '300', '301',
+                        '111', '123', '127', '128', '131'] or code[:2] in ['12', '15', '16', '18']:
+            return code + '.SZ'
+        if code[:3] in ['600', '601', '603', '605', '688', '689', '900',
+                        '510', '511', '512', '513', '514', '515', '516', '517', '518', '588',
+                        '110', '113', '118', '132', '204'] or code[:1] in ['5', '6', '9']:
+            return code + '.SH'
+        return code
 
     def select_data_type(self, stock='600031'):
         """判断标的类型：bond/fund/stock。"""

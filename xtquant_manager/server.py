@@ -850,6 +850,8 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
         已带后缀则原样返回。"""
         if not code or "." in code:
             return code
+        if code.startswith("920"):
+            return f"{code}.BJ"
         if code.startswith(("5", "6", "9")):
             return f"{code}.SH"
         if code.startswith(("0", "2", "3", "15", "16", "18")):

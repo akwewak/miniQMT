@@ -11,6 +11,7 @@ from xtquant import xtdata as xt
 from xtquant import xttrader as xtt
 
 import config
+import Methods
 from logger import get_logger
 from data_manager import get_data_manager
 from position_manager import get_position_manager
@@ -1348,7 +1349,27 @@ class TradingExecutor:
         """生成模拟交易订单ID"""
         self.sim_order_counter += 1
         return f"SIM{datetime.now().strftime('%Y%m%d%H%M%S')}{self.sim_order_counter:04d}"
-    
+
+    def _format_stock_code_for_order(self, stock_code, is_simulation):
+        """统一下单代码格式，优先使用本地交易所规则识别北交所 920 段。"""
+        raw_code = str(stock_code).strip()
+        formatted_code = Methods.add_xt_suffix(raw_code)
+
+        if '.' in formatted_code:
+            if formatted_code != raw_code:
+                logger.info(f"股票代码格式化: {raw_code} -> {formatted_code}")
+            return formatted_code
+
+        if (
+            not is_simulation and
+            hasattr(self.position_manager, 'qmt_trader') and
+            self.position_manager.qmt_trader is not None
+        ):
+            formatted_code = self.position_manager.qmt_trader.adjust_stock(stock=raw_code)
+            logger.info(f"股票代码格式化: {raw_code} -> {formatted_code}")
+
+        return formatted_code
+
     def buy_stock(self, stock_code, volume=None, price=None, amount=None, price_type=5,
                   callback=None, strategy='default', signal_type=None, signal_info=None):
         """
@@ -1384,20 +1405,7 @@ class TradingExecutor:
                         logger.error("qmt_trader未初始化，无法下单")
                         return None
 
-                # 确保股票代码格式正确（添加市场后缀）
-                formatted_stock_code = stock_code
-                if '.' not in stock_code:
-                    if not is_simulation and hasattr(self.position_manager, 'qmt_trader') and self.position_manager.qmt_trader is not None:
-                        formatted_stock_code = self.position_manager.qmt_trader.adjust_stock(stock=stock_code)
-                        logger.info(f"股票代码格式化: {stock_code} -> {formatted_stock_code}")
-                    else:
-                        # 模拟模式下的简单格式化：假设SZ股票
-                        formatted_stock_code = f"{stock_code}.SZ"
-                        logger.info(f"模拟模式股票代码格式化: {stock_code} -> {formatted_stock_code}")
-                    
-                # 检查是否为模拟交易模式
-                is_simulation = hasattr(config, 'ENABLE_SIMULATION_MODE') and config.ENABLE_SIMULATION_MODE
-                logger.info(f"是否为模拟交易模式: {is_simulation}")
+                formatted_stock_code = self._format_stock_code_for_order(stock_code, is_simulation)
 
                 # 检查是否在交易时间
                 is_trade_time = config.is_trade_time()
@@ -1496,7 +1504,7 @@ class TradingExecutor:
                 if is_simulation:
                     # 调用 position_manager 的模拟买入方法
                     success = self.position_manager.simulate_buy_position(
-                        stock_code=stock_code,
+                        stock_code=formatted_stock_code,
                         buy_volume=volume,
                         buy_price=price,
                         strategy=strategy if strategy != 'default' else 'simu'
@@ -1504,10 +1512,10 @@ class TradingExecutor:
                     
                     if success:
                         sim_order_id = self._generate_sim_order_id()
-                        logger.info(f"[模拟] 买入 {stock_code} 成功，委托号: {sim_order_id}, 价格: {price:.2f}, 数量: {volume}")
+                        logger.info(f"[模拟] 买入 {formatted_stock_code} 成功，委托号: {sim_order_id}, 价格: {price:.2f}, 数量: {volume}")
                         return sim_order_id
                     else:
-                        logger.error(f"[模拟] 买入 {stock_code} 失败")
+                        logger.error(f"[模拟] 买入 {formatted_stock_code} 失败")
                         return None
                 
                 # 实盘交易模式处理
@@ -1602,7 +1610,7 @@ class TradingExecutor:
                             else:
                                 trade_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                                 trade_saved= self._save_trade_record(
-                                    stock_code=stock_code,
+                                    stock_code=formatted_stock_code,
                                     trade_time=trade_time,
                                     trade_type='BUY',
                                     price=price,
@@ -1615,7 +1623,7 @@ class TradingExecutor:
                             if trade_saved:
                                 # 缓存订单信息，供回调使用
                                 self.order_cache[str(order_id)] = {
-                                    'stock_code': stock_code,
+                                    'stock_code': formatted_stock_code,
                                     'strategy': strategy,
                                     'trade_type': 'BUY',
                                     'price': price,
@@ -1633,7 +1641,7 @@ class TradingExecutor:
                                         tracking_info.setdefault('volume', volume)
                                         tracking_info.setdefault('current_price', price)
                                         self.position_manager.track_order(
-                                            stock_code=stock_code,
+                                            stock_code=formatted_stock_code,
                                             order_id=str(order_id),
                                             signal_type=signal_type,
                                             signal_info=tracking_info
@@ -1710,20 +1718,7 @@ class TradingExecutor:
                         logger.error("qmt_trader未初始化，无法下单")
                         return None
 
-                # 股票代码格式化
-                formatted_stock_code = stock_code
-                if '.' not in stock_code:
-                    if not is_simulation and hasattr(self.position_manager, 'qmt_trader') and self.position_manager.qmt_trader is not None:
-                        formatted_stock_code = self.position_manager.qmt_trader.adjust_stock(stock=stock_code)
-                        logger.info(f"股票代码格式化: {stock_code} -> {formatted_stock_code}")
-                    else:
-                        # 模拟模式下的简单格式化：假设SZ股票
-                        formatted_stock_code = f"{stock_code}.SZ"
-                        logger.info(f"模拟模式股票代码格式化: {stock_code} -> {formatted_stock_code}")
-                    
-                # 检查是否为模拟交易模式
-                is_simulation = hasattr(config, 'ENABLE_SIMULATION_MODE') and config.ENABLE_SIMULATION_MODE
-                logger.info(f"是否为模拟交易模式: {is_simulation}")
+                formatted_stock_code = self._format_stock_code_for_order(stock_code, is_simulation)
                 
                 # 检查是否在交易时间
                 is_trade_time = config.is_trade_time()
@@ -1790,7 +1785,9 @@ class TradingExecutor:
                 
                 # 如果指定了比例而不是数量，计算数量
                 if volume is None and ratio is not None:
-                    position = self.position_manager.get_position(stock_code)
+                    position = self.position_manager.get_position(formatted_stock_code)
+                    if not position and formatted_stock_code != stock_code:
+                        position = self.position_manager.get_position(stock_code)
                     if not position:
                         logger.error(f"未持有 {stock_code}，无法卖出")
                         return None
@@ -1819,7 +1816,7 @@ class TradingExecutor:
                     
                     # 记录模拟交易
                     trade_saved = self._save_trade_record(
-                        stock_code=stock_code,
+                        stock_code=formatted_stock_code,
                         trade_time=trade_time,
                         trade_type='SELL',
                         price=price,
@@ -1829,9 +1826,9 @@ class TradingExecutor:
                         commission=price * volume * 0.0013,  # 模拟手续费(含印花税)
                         strategy=strategy if strategy != 'default' else 'simu'  # 如果没有指定策略，则使用'simu'
                     )
-                    
+
                     # 更新持仓
-                    self._update_position_after_trade(stock_code, 'SELL', price, volume)
+                    self._update_position_after_trade(formatted_stock_code, 'SELL', price, volume)
                     
                     # 更新模拟账户资金
                     revenue = price * volume * 0.9987  # 扣除手续费
@@ -1839,7 +1836,7 @@ class TradingExecutor:
                     config.SIMULATION_BALANCE = self.simulation_balance
                     logger.info(f"模拟账户资金更新: +{revenue:.2f}, 余额: {self.simulation_balance:.2f}")
                     
-                    logger.info(f"[模拟] 卖出 {stock_code} 成功，委托号: {sim_order_id}, 价格: {price:.2f}, 数量: {volume}")
+                    logger.info(f"[模拟] 卖出 {formatted_stock_code} 成功，委托号: {sim_order_id}, 价格: {price:.2f}, 数量: {volume}")
                     return sim_order_id
                 
                 # 实盘交易模式处理
@@ -1936,7 +1933,7 @@ class TradingExecutor:
                             else:
                                 trade_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                                 trade_saved = self._save_trade_record(
-                                    stock_code=stock_code,
+                                    stock_code=formatted_stock_code,
                                     trade_time=trade_time,
                                     trade_type='SELL',
                                     price=price,
@@ -1950,7 +1947,7 @@ class TradingExecutor:
                             if trade_saved:
                                 # 参考buy_stock：缓存订单信息
                                 self.order_cache[str(order_id)] = {
-                                    'stock_code': stock_code,
+                                    'stock_code': formatted_stock_code,
                                     'strategy': strategy,
                                     'trade_type': 'SELL',
                                     'price': price,
@@ -1969,7 +1966,7 @@ class TradingExecutor:
                                         tracking_info.setdefault('volume', volume)
                                         tracking_info.setdefault('current_price', price)
                                         self.position_manager.track_order(
-                                            stock_code=stock_code,
+                                            stock_code=formatted_stock_code,
                                             order_id=str(order_id),
                                             signal_type=signal_type,
                                             signal_info=tracking_info

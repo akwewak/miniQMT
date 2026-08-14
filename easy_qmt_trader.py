@@ -9,6 +9,7 @@ import json
 import math
 import threading
 import config
+import Methods
 from logger import get_logger
 
 logger = get_logger("easy_qmt_trader")
@@ -482,15 +483,7 @@ class easy_qmt_trader:
         '''
         调整代码
         '''
-        if stock[-2:]=='SH' or stock[-2:]=='SZ' or stock[-2:]=='sh' or stock[-2:]=='sz':
-            stock=stock.upper()
-        else:
-            if stock[:3] in ['600','601','603','688','510','511',
-                             '512','513','515','113','110','118','501'] or stock[:2] in ['11']:
-                stock=stock+'.SH'
-            else:
-                stock=stock+'.SZ'
-        return stock
+        return Methods.add_xt_suffix(stock)
     def check_stock_is_av_buy(self,stock='128036',price='156.700',amount=10,hold_limit=100000):
         '''
         检查是否可以买入

@@ -975,6 +975,8 @@ class DataManager:
             return f"{stock.split('.', 1)[1].upper()}.SH"
         if lower_stock.startswith('sz.'):
             return f"{stock.split('.', 1)[1].upper()}.SZ"
+        if lower_stock.startswith('bj.'):
+            return f"{stock.split('.', 1)[1].upper()}.BJ"
         return Methods.add_xt_suffix(stock)
 
     def _normalize_date_arg(self, value):
@@ -1198,6 +1200,8 @@ class DataManager:
         返回:
         pandas.DataFrame: 历史数据，若失败则返回None
         """
+        stock_code = self._adjust_stock(stock_code)
+
         # ── 历史数据源策略：网关模式优先 xtdata，标准模式跳过 xtdata ──
         effective_period = period or 'day'
         _daily_periods = ('day', '1d', 'week', '1w', 'mon', '1mon')
@@ -1247,6 +1251,10 @@ class DataManager:
             if ts_df is not None and not ts_df.empty:
                 return ts_df
             logger.debug(f"Tushare 未返回 {stock_code} 有效历史数据，fallback 到 Mootdx")
+
+        if stock_code.endswith('.BJ'):
+            logger.debug(f"北交所 {stock_code} 暂不走 Mootdx 历史数据兜底")
+            return None
 
         try:
             import Methods  # Import the Methods module
@@ -1650,23 +1658,15 @@ class DataManager:
         """
         将 miniQMT 内部代码统一为 Tushare ts_code 格式。
 
-        miniQMT 使用 000001.SZ / 600036.SH 等格式，
+        miniQMT 使用 000001.SZ / 600036.SH / 920118.BJ 等格式，
         Tushare 使用完全相同的 ts_code 格式，直接透传即可。
 
-        处理裸代码（如 '002771'）或带 sh./sz. 前缀的情况。
+        处理裸代码（如 '002771'）或带 sh./sz./bj. 前缀的情况。
         """
-        code = str(stock_code).strip().upper()
-        # 已有 .SH/.SZ 后缀 → 直接返回（Tushare 标准格式）
-        if code.endswith(('.SH', '.SZ')):
-            return code
-        # sh.600036 / sz.002771 格式 → 转为 600036.SH / 002771.SZ
-        if code.startswith('SH.') or code.startswith('SZ.'):
+        code = Methods.add_xt_suffix(stock_code)
+        if isinstance(code, str) and code.startswith(('SH.', 'SZ.', 'BJ.')):
             return code[3:] + '.' + code[:2]
-        # 裸代码：根据前缀判断交易所
-        if code.startswith(('6', '5', '9')):
-            return code + '.SH'
-        else:
-            return code + '.SZ'
+        return code
 
     @staticmethod
     def _is_tushare_fund_code(stock_code):
@@ -2216,6 +2216,11 @@ class DataManager:
 
             # 继续尝试从Mootdx获取数据
             # Adjust stock code if necessary
+            if adjusted_code.endswith('.BJ'):
+                logger.debug(f"北交所 {adjusted_code} 暂不走 Mootdx 实时行情兜底")
+                return None
+
+            stock_code = adjusted_code
             if stock_code.endswith((".SH", ".SZ")):
                 stock_code = stock_code[:-3]  # Remove suffix
 

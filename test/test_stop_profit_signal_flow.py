@@ -119,6 +119,36 @@ class TestStopProfitSignalFlow(TestBase):
         self.assertEqual(signal_type, "stop_loss")
         self.assertEqual(info.get("reason"), "stop_loss_0")
 
+    def test_bj_stop_loss_signal_can_be_enqueued(self):
+        """北交所 .BJ 持仓应支持动态止盈止损检测与入队。"""
+        cost_price = 10.0
+        current_price = cost_price * (1 + config.STOP_LOSS_RATIO)
+        stock_code = self._insert_position(
+            stock_code="920118.BJ",
+            cost_price=cost_price,
+            current_price=current_price,
+            stop_loss_price=current_price,
+            profit_triggered=0,
+        )
+
+        old_dynamic = config.ENABLE_DYNAMIC_STOP_PROFIT
+        old_auto = config.ENABLE_AUTO_TRADING
+        try:
+            config.ENABLE_DYNAMIC_STOP_PROFIT = True
+            config.ENABLE_AUTO_TRADING = True
+            with patch.object(self.pm, "_has_tracked_pending_order", return_value=False):
+                signal_type, info = self.pm.check_trading_signals(stock_code, current_price=current_price)
+                queued_type = self.pm._detect_and_enqueue_dynamic_signal(stock_code, current_price)
+
+            self.assertEqual(signal_type, "stop_loss")
+            self.assertEqual(queued_type, "stop_loss")
+            self.assertIn("920118.BJ", self.pm.latest_signals)
+            self.assertEqual(self.pm.latest_signals["920118.BJ"]["type"], "stop_loss")
+            self.assertEqual(info.get("stock_code"), "920118.BJ")
+        finally:
+            config.ENABLE_DYNAMIC_STOP_PROFIT = old_dynamic
+            config.ENABLE_AUTO_TRADING = old_auto
+
     def test_stop_loss_reject_small_loss(self):
         # current_price <= stop_loss_price 但亏损比例不足
         cost_price = 10.0

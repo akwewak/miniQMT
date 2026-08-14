@@ -84,6 +84,14 @@ class TestEnsureSubscribed(TestBase):
         self.dm.ensure_subscribed('300712.SZ')
         self.assertEqual(self.mock_xt.subscribe_quote.call_count, 1)
 
+    def test_subscribe_bj_without_suffix_auto_normalized(self):
+        """裸 920 段北交所代码应订阅为 .BJ。"""
+        self.dm.ensure_subscribed('920118')
+        self.mock_xt.subscribe_quote.assert_called_once_with(
+            '920118.BJ', period='tick', start_time='', end_time='', count=0, callback=self.dm._on_xtdata_tick
+        )
+        self.assertIn('920118.BJ', self.dm.subscribed_stocks)
+
     def test_xt_none_safe(self):
         """xt 为 None 时 ensure_subscribed 应静默返回，不抛异常"""
         self.dm.xt = None
@@ -156,6 +164,18 @@ class TestGetLatestDataFallback(TestBase):
         self.assertEqual(result.get('_purpose'), 'realtime')
         self.assertIn('xtdata', snapshot['sources'])
         self.assertEqual(snapshot['sources']['xtdata']['success_count'], 1)
+
+    def test_get_latest_xtdata_bj_without_suffix_auto_normalized(self):
+        """裸 920 段北交所代码应以 .BJ 调用 xtdata。"""
+        self.mock_xt.get_full_tick.return_value = {
+            '920118.BJ': {'lastPrice': 10.5, 'lastClose': 10.0}
+        }
+
+        result = self.dm.get_latest_xtdata('920118')
+
+        self.mock_xt.get_full_tick.assert_called_once_with(['920118.BJ'])
+        self.assertEqual(result.get('_source'), 'xtdata')
+        self.assertEqual(result.get('lastPrice'), 10.5)
 
     def test_get_latest_xtdata_records_empty_quote_failure(self):
         """xtdata 空 tick 应记录失败样本"""
@@ -245,6 +265,19 @@ class TestGetLatestDataFallback(TestBase):
         self.assertEqual(result.get('_source'), 'Mootdx')
         self.assertIn('Mootdx', snapshot['sources'])
         self.assertEqual(snapshot['sources']['Mootdx']['success_count'], 1)
+
+    def test_get_latest_data_bj_skips_mootdx_fallback(self):
+        """北交所行情 xtdata 失败后不应降级到 Mootdx。"""
+        self.dm.xt = MagicMock()
+        self.dm.get_latest_xtdata = MagicMock(return_value={})
+
+        with patch('config.is_trade_time', return_value=False), \
+             patch('Methods.getStockData') as mock_mootdx:
+            result = self.dm.get_latest_data('920118.BJ')
+
+        self.dm.get_latest_xtdata.assert_called_once_with('920118.BJ')
+        mock_mootdx.assert_not_called()
+        self.assertIsNone(result)
 
     def test_get_latest_data_records_mootdx_empty_failure(self):
         """Mootdx 返回空数据时记录失败原因"""

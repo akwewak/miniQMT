@@ -11,6 +11,8 @@ import unittest
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+from unittest.mock import MagicMock
+
 from fastapi.testclient import TestClient
 
 from xtquant_manager.manager import XtQuantManager
@@ -186,6 +188,19 @@ class TestOrderEndpoints(TestServerBase):
         data = r.json()
         self.assertTrue(data["success"])
         self.assertEqual(len(data["data"]["positions"]), 1)
+
+    def test_flask_positions_maps_bj_bare_code_for_tick(self):
+        self.mock_trader.add_mock_position("920118.BJ", 100, 10.0, current_price=10.5)
+        self.manager.get_full_tick = MagicMock(return_value={
+            "920118.BJ": {"lastPrice": 10.5, "lastClose": 10.0}
+        })
+
+        r = self.client.get("/api/positions")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["status"], "success")
+        self.manager.get_full_tick.assert_called_once_with("55009640", ["920118.BJ"])
 
     def test_get_asset(self):
         r = self.client.get("/api/v1/accounts/55009640/asset")

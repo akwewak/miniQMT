@@ -480,6 +480,11 @@ class TestHelpers(_IpcTestBase):
         self.assertEqual(self.trader.adjust_stock("000001"), "000001.SZ")
         self.assertEqual(self.trader.adjust_stock("600519"), "600519.SH")
         self.assertEqual(self.trader.adjust_stock("000001.SZ"), "000001.SZ")
+        self.assertEqual(self.trader.adjust_stock("920118"), "920118.BJ")
+        self.assertEqual(self.trader.adjust_stock("bj.920118"), "920118.BJ")
+        self.assertEqual(self.trader.adjust_stock("830799.BJ"), "830799.BJ")
+        self.assertEqual(self.trader.adjust_stock("000920"), "000920.SZ")
+        self.assertEqual(self.trader.adjust_stock("830799"), "830799")
 
     def test_select_data_type(self):
         self.assertEqual(self.trader.select_data_type("600519"), "stock")

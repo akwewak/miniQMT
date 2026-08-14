@@ -51,6 +51,7 @@ class TestGridValidationParams(unittest.TestCase):
         is_valid, errors = validate_grid_config(config)
         self.assertFalse(is_valid)
         self.assertIn('stock_code', errors)
+        self.assertIn('.BJ', str(errors['stock_code']))
 
         # 错误格式2: 错误后缀
         config['stock_code'] = '000001.SS'
@@ -59,6 +60,19 @@ class TestGridValidationParams(unittest.TestCase):
 
         # 正确格式
         config['stock_code'] = '600000.SH'
+        is_valid, _ = validate_grid_config(config)
+        self.assertTrue(is_valid)
+
+        # 沪市ETF/基金带市场后缀时应通过校验
+        config['stock_code'] = '510050.SH'
+        is_valid, _ = validate_grid_config(config)
+        self.assertTrue(is_valid)
+
+        config['stock_code'] = '920118.BJ'
+        is_valid, _ = validate_grid_config(config)
+        self.assertTrue(is_valid)
+
+        config['stock_code'] = '830799.BJ'
         is_valid, _ = validate_grid_config(config)
         self.assertTrue(is_valid)
 

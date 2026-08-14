@@ -236,6 +236,30 @@ class TestGridPriceLimitGuard(_GridGuardTestBase):
         self.assertFalse(ok)
         self.executor.sell_stock.assert_not_called()
 
+    def test_bj_limit_up_blocks_buy_with_xtdata_limits(self):
+        """北交所涨停防护使用 xtdata 明细价，不硬编码涨跌幅。"""
+        self.position_manager.data_manager.xt.get_instrument_detail.return_value = {
+            'UpStopPrice': 13.0, 'DownStopPrice': 7.0
+        }
+        self._set_latest_price(13.0)
+        session = self._make_session(stock_code='920118.BJ')
+        ok = self.manager.execute_grid_trade(self._buy_signal(session, trigger_price=13.0))
+        self.assertFalse(ok)
+        self.executor.buy_stock.assert_not_called()
+        self.position_manager.data_manager.xt.get_instrument_detail.assert_called_with('920118.BJ')
+
+    def test_bj_limit_down_blocks_sell_with_xtdata_limits(self):
+        """北交所跌停防护使用 xtdata 明细价，不硬编码涨跌幅。"""
+        self.position_manager.data_manager.xt.get_instrument_detail.return_value = {
+            'UpStopPrice': 13.0, 'DownStopPrice': 7.0
+        }
+        self._set_latest_price(7.0)
+        session = self._make_session(stock_code='920118.BJ')
+        ok = self.manager.execute_grid_trade(self._sell_signal(session, trigger_price=7.0))
+        self.assertFalse(ok)
+        self.executor.sell_stock.assert_not_called()
+        self.position_manager.data_manager.xt.get_instrument_detail.assert_called_with('920118.BJ')
+
     def test_limit_up_allows_sell(self):
         """涨停: 放行卖出(封板能卖高价)"""
         self._set_latest_price(11.0)
