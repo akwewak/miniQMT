@@ -76,6 +76,9 @@
 }
 ```
 
+!!! tip "Token 配置"
+    网关 Token 优先从环境变量读取：`XQM_API_TOKEN` > `QMT_API_TOKEN` > `xtquant_manager_config.json` 的 `api_token`。建议保持 JSON 中不写明文 Token，只在 `.env` 或系统环境变量中配置。
+
 ---
 
 ## 下一步

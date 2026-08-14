@@ -6,6 +6,7 @@ StandaloneConfig — 独立运行模式配置加载器
 优先级：显式路径 > 环境变量 XTQUANT_MANAGER_CONFIG > 当前目录 xtquant_manager_config.json > 默认值
 
 配置文件格式（xtquant_manager_config.json，仅保存网关运行参数）:
+api_token 可留空；Token 优先级：XQM_API_TOKEN > QMT_API_TOKEN > JSON api_token。
 {
   "host": "127.0.0.1",
   "port": 8888,
@@ -128,6 +129,15 @@ def _env_value(name: str, dotenv_anchor: Optional[str] = None) -> str:
     return _read_dotenv_value(name, dotenv_anchor)
 
 
+def _resolve_api_token(default: str, dotenv_anchor: Optional[str] = None) -> str:
+    """解析网关 API Token，优先使用环境变量，避免在 JSON 配置中保存明文。"""
+    for name in ("XQM_API_TOKEN", "QMT_API_TOKEN"):
+        value = _env_value(name, dotenv_anchor)
+        if value:
+            return value
+    return default
+
+
 def _env_int(name: str, default: int, min_value=None, max_value=None, dotenv_anchor: Optional[str] = None) -> int:
     value = _env_value(name, dotenv_anchor)
     if value is None or value == "":
@@ -214,6 +224,7 @@ def load_standalone_config(config_path: str = "") -> StandaloneConfig:
     if not path:
         defaults = StandaloneConfig()
         defaults.port = _env_int("XQM_PORT", defaults.port, 1, 65535, config_path)
+        defaults.api_token = _resolve_api_token(defaults.api_token, config_path)
         defaults.accounts = _load_accounts_from_account_config(config_path)
         return defaults
 
@@ -224,6 +235,7 @@ def load_standalone_config(config_path: str = "") -> StandaloneConfig:
         LOGGER.warning(f"加载配置文件失败，使用默认配置: {e}")
         defaults = StandaloneConfig()
         defaults.port = _env_int("XQM_PORT", defaults.port, 1, 65535, path)
+        defaults.api_token = _resolve_api_token(defaults.api_token, path)
         defaults.accounts = _load_accounts_from_account_config(path)
         return defaults
 
@@ -255,7 +267,7 @@ def _parse_config(data: Dict[str, Any], manager_config_path: Optional[str] = Non
     return StandaloneConfig(
         host=data.get("host", defaults.host),
         port=_env_int("XQM_PORT", data.get("port", defaults.port), 1, 65535, manager_config_path),
-        api_token=data.get("api_token", defaults.api_token),
+        api_token=_resolve_api_token(data.get("api_token", defaults.api_token), manager_config_path),
         allowed_ips=data.get("allowed_ips", defaults.allowed_ips),
         rate_limit=data.get("rate_limit", defaults.rate_limit),
         enable_hmac=data.get("enable_hmac", defaults.enable_hmac),

@@ -653,6 +653,33 @@ class TestXtQuantManagerStartupDiagnostics(unittest.TestCase):
         self.assertIn("pip install -r utils/requirements.txt", server._startup_error)
         self.assertFalse(server._running)
 
+    def test_standalone_config_api_token_prefers_env_over_json(self):
+        from xtquant_manager.standalone_config import load_standalone_config
+
+        tmpdir = Path(tempfile.mkdtemp(prefix="xqm_config_token_"))
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            cfg_path = tmpdir / "xtquant_manager_config.json"
+            cfg_path.write_text(json.dumps({"api_token": "json-token"}), encoding="utf-8")
+
+            with patch.dict(os.environ, {"XQM_API_TOKEN": "", "QMT_API_TOKEN": ""}):
+                cfg = load_standalone_config(str(cfg_path))
+            self.assertEqual(cfg.api_token, "json-token")
+
+            (tmpdir / ".env").write_text("QMT_API_TOKEN=qmt-token\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {"XQM_API_TOKEN": "", "QMT_API_TOKEN": ""}):
+                cfg = load_standalone_config(str(cfg_path))
+            self.assertEqual(cfg.api_token, "qmt-token")
+
+            with patch.dict(os.environ, {"XQM_API_TOKEN": "xqm-token", "QMT_API_TOKEN": "qmt-token"}):
+                cfg = load_standalone_config(str(cfg_path))
+            self.assertEqual(cfg.api_token, "xqm-token")
+        finally:
+            os.chdir(old_cwd)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     @patch("xtquant_manager.standalone.XtQuantServer")
     @patch("xtquant_manager.standalone.XtQuantManager")
     @patch("xtquant_manager.standalone.ServerWatchdog")
