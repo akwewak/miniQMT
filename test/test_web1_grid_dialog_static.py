@@ -71,6 +71,18 @@ class TestWeb1GridDialogStatic(unittest.TestCase):
         self.assertIn('globalAllowGridTrading: elements.globalAllowGridTrading.checked', script)
         self.assertIn('{ globalAllowGridTrading: gridTradingEnabled }', script)
 
+    def test_global_auto_operation_is_periodically_synced(self):
+        script = self._read_web1_file("script.js")
+
+        self.assertIn("function syncMonitoringState", script)
+        self.assertIn(
+            "const backendMonitoring = statusData.settings?.isMonitoring ?? statusData.isMonitoring ?? false",
+            script,
+        )
+        self.assertIn("syncMonitoringState(backendMonitoring, 'status')", script)
+        self.assertIn("syncMonitoringState(monitoringInfo.isMonitoring, 'sse')", script)
+        self.assertNotIn("window._initialMonitoringLoaded", script)
+
     def test_holdings_empty_row_removed_before_rendering_positions(self):
         script = self._read_web1_file("script.js")
 

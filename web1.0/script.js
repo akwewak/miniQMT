@@ -803,8 +803,8 @@
         elements.totalAssets.textContent = statusData.account?.totalAssets?.toFixed(2) ?? '--';
         elements.lastUpdateTimestamp.textContent = statusData.account?.timestamp ?? new Date().toLocaleString('zh-CN');
         
-        // 获取后端状态，但不自动更新前端状态
-        const backendMonitoring = statusData.isMonitoring ?? false;
+        // 获取后端状态，三个自动开关都按“用户意图优先，否则以后端为准”同步
+        const backendMonitoring = statusData.settings?.isMonitoring ?? statusData.isMonitoring ?? false;
         const backendAutoTrading = statusData.settings?.enableAutoTrading ?? false;
         const backendGridTrading = statusData.settings?.enableGridTrading ?? true;
     
@@ -827,39 +827,7 @@
             elements.globalAllowGridTrading.checked = isGridTradingEnabled;
         }
         
-        // 核心修改：用户明确的监控意图优先，用户操作后不再让后端状态覆盖前端状态
-        if (userMonitoringIntent !== null) {
-            // 用户通过按钮明确表达了监控意图
-            console.log(`使用用户意图设置监控状态: ${userMonitoringIntent}`);
-            isMonitoring = userMonitoringIntent;
-            
-            // 检查状态是否一致并同步到后端，但不让后端状态影响前端
-            if (isMonitoring !== backendMonitoring) {
-                console.warn(`监控状态不一致: 前端=${isMonitoring}, 后端=${backendMonitoring}, 尝试同步`);
-                // 发送额外同步请求，单向同步前端状态到后端
-                const endpoint = isMonitoring ? API_ENDPOINTS.startMonitor : API_ENDPOINTS.stopMonitor;
-                apiRequest(endpoint, { 
-                    method: 'POST', 
-                    body: JSON.stringify({ isMonitoring: isMonitoring }) 
-                }).catch(err => console.error("同步监控状态失败:", err));
-            }
-            
-            // 已使用用户意图，重置它
-            userMonitoringIntent = null;
-        }
-        // 重要修改：不再自动使用后端状态覆盖前端监控状态
-        // 只在初始加载时使用后端状态
-        else if (!window._initialMonitoringLoaded) {
-            isMonitoring = backendMonitoring;
-            window._initialMonitoringLoaded = true;
-            console.log(`初始化监控状态: ${isMonitoring}`);
-        }
-        if (elements.globalAutoOperation) {
-            elements.globalAutoOperation.checked = isMonitoring;
-        }
-    
-        // 根据最终确定的监控状态更新UI
-        updateMonitoringUI();
+        syncMonitoringState(backendMonitoring, 'status');
         
         // 更新系统设置
         if (statusData.settings) {
@@ -913,6 +881,20 @@
         }
     }
 
+    function syncMonitoringState(backendMonitoring, source) {
+        if (backendMonitoring === undefined || backendMonitoring === null) return;
+
+        if (userMonitoringIntent !== null) {
+            console.log(`使用用户意图设置自动操作总开关: ${userMonitoringIntent} (${source})`);
+            isMonitoring = userMonitoringIntent;
+            userMonitoringIntent = null;
+        } else {
+            isMonitoring = !!backendMonitoring;
+        }
+
+        updateMonitoringUI();
+    }
+
     // 轻量级账户信息更新，用于SSE
     function updateQuickAccountInfo(accountInfo) {
         if (accountInfo.available !== undefined) {
@@ -941,11 +923,14 @@
         }
     }
 
-    // 更新自动操作状态，用于 SSE；不让总开关和非网格策略自动状态相互干扰
+    // 更新自动操作状态，用于 SSE；总开关和两个分开关都以后端运行态定期同步
     function updateMonitoringInfo(monitoringInfo) {
         if (!monitoringInfo) return;
 
-        // 只更新非网格策略自动分开关状态，不影响全局自动操作总开关
+        if (monitoringInfo.isMonitoring !== undefined) {
+            syncMonitoringState(monitoringInfo.isMonitoring, 'sse');
+        }
+
         // 用户意图优先：SSE 推送也不能覆盖用户正在进行的切换操作
         if (monitoringInfo.autoTradingEnabled !== undefined) {
             if (userAutoTradingIntent !== null) {
