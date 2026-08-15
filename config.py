@@ -359,6 +359,8 @@ XTQUANT_MANAGER_RATE_LIMIT = 600
 ENABLE_QMT_IPC_FALLBACK = _env_bool("ENABLE_QMT_IPC_FALLBACK", False)
 # IPC 文件目录（策略端与QMT端必须指向同一路径；跨机器时用网络共享路径）
 QMT_IPC_ROOT = os.environ.get("QMT_IPC_ROOT", r"C:\QuantIPC")
+# IPC 可选共享密钥（为空时保持本地信任模型；非空时 executor 校验 pending 订单）
+QMT_IPC_SECRET = os.environ.get("QMT_IPC_SECRET", "")
 # 下单后等待成交回执的最大秒数
 QMT_IPC_ORDER_TIMEOUT = 30
 # 心跳文件最大允许间隔（秒），超过此值判定大QMT离线

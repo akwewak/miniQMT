@@ -138,7 +138,7 @@ class QmtRpcTrader:
         self._return_index = {}    # order_stock 返回串 -> int_id
         self._sysid_index = {}     # order_sys_id -> int_id
         self._seen_orders = set()  # 已触发 order_callback 的 (int_id, status)
-        self._seen_deals = set()   # 已触发 trade_callback 的 int_id
+        self._seen_deals = {}      # int_id -> 已推送过的累计成交量
 
         # 回调列表
         self._trade_callbacks = []
@@ -274,7 +274,12 @@ class QmtRpcTrader:
                 int_id = self._sysid_index.get(sysid)
             if int_id is None:
                 return  # 委托事件尚未到达，轮询会补齐
-            self._fire_trade(int_id, self._bq_trade_to_fake(trade, int_id))
+            fake_trade = self._bq_trade_to_fake(trade, int_id)
+            volume = int(getattr(fake_trade, 'traded_volume', 0) or 0)
+            with self._map_lock:
+                self._seen_deals[int_id] = int(self._seen_deals.get(int_id, 0) or 0) + max(volume, 0)
+                self._trim_tracking_locked()
+            self._fire_trade(int_id, fake_trade)
         except Exception as e:
             logger.warning(f'处理推送成交异常: {e}')
 
@@ -286,34 +291,50 @@ class QmtRpcTrader:
         o.order_id = int_id
         status = o.order_status
         key = (int_id, status)
+        traded_volume = int(getattr(o, 'traded_volume', 0) or 0)
+        delta_volume = 0
         with self._map_lock:
             new_order = key not in self._seen_orders
             if new_order:
                 self._seen_orders.add(key)
-            new_deal = status in (55, 56) and int_id not in self._seen_deals
-            if new_deal:
-                self._seen_deals.add(int_id)
+            previous_volume = int(self._seen_deals.get(int_id, 0) or 0)
+            if status in (55, 56) and traded_volume > previous_volume:
+                delta_volume = traded_volume - previous_volume
+                self._seen_deals[int_id] = traded_volume
+            self._trim_tracking_locked()
         if new_order:
             self._fire_order(int_id, o)
-        if new_deal:
-            self._fire_trade(int_id, o)
+        if delta_volume > 0:
+            self._fire_trade(int_id, o, traded_volume=delta_volume,
+                             traded_id_suffix=f'cum_{traded_volume}')
 
     def _reconcile(self, o):
         """把内部委托对象配对到 int_id，并回填 sysid 映射。返回 int_id 或 None。"""
         sysid = str(getattr(o, 'order_sysid', '') or '')
         remark = str(getattr(o, 'order_remark', '') or '')
+        remark_prefix = self._remark_prefix(remark)
         with self._map_lock:
             int_id = None
             if sysid and sysid in self._sysid_index:
                 int_id = self._sysid_index[sysid]
             elif remark and remark in self._return_index:
                 int_id = self._return_index[remark]
+            elif remark_prefix and remark_prefix in self._return_index:
+                int_id = self._return_index[remark_prefix]
+            elif remark_prefix:
+                try:
+                    candidate = int(remark_prefix)
+                except (TypeError, ValueError):
+                    candidate = None
+                if candidate in self._id_map:
+                    int_id = candidate
             elif sysid and sysid in self._return_index:
                 int_id = self._return_index[sysid]
             if int_id is not None and sysid:
                 self._sysid_index[sysid] = int_id
                 if int_id in self._id_map:
                     self._id_map[int_id]['order_sys_id'] = sysid
+                self._trim_tracking_locked()
             return int_id
 
     def _fire_order(self, int_id, o):
@@ -323,16 +344,20 @@ class QmtRpcTrader:
             except Exception as e:
                 logger.error(f'order_callback 异常: {e}')
 
-    def _fire_trade(self, int_id, o):
+    def _fire_trade(self, int_id, o, traded_volume=None, traded_id_suffix=None):
+        volume = getattr(o, 'traded_volume', 0) if traded_volume is None else traded_volume
+        base_trade_id = str(getattr(o, 'order_sysid', int_id))
+        if traded_id_suffix:
+            base_trade_id = f'{base_trade_id}_{traded_id_suffix}'
         trade = base.FakeXtObject(
             order_id=int_id,
             stock_code=getattr(o, 'stock_code', ''),
-            traded_volume=getattr(o, 'traded_volume', 0),
+            traded_volume=volume,
             traded_price=getattr(o, 'traded_price', 0),
-            traded_amount=getattr(o, 'traded_price', 0) * getattr(o, 'traded_volume', 0),
+            traded_amount=getattr(o, 'traded_price', 0) * volume,
             account_id=self.account,
             account_type=self.account_type,
-            traded_id=str(getattr(o, 'order_sysid', int_id)),
+            traded_id=base_trade_id,
             traded_time=int(time.time()),
             order_type=getattr(o, 'order_type', base.STOCK_BUY),
             order_status=getattr(o, 'order_status', 56),
@@ -346,6 +371,39 @@ class QmtRpcTrader:
     # ------------------------------------------------------------------
     # vendored CompatObject → 内部 _FakeXtObject
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _remark_prefix(remark):
+        text = str(remark or '')
+        return text.split('|', 1)[0] if text else ''
+
+    def _trim_tracking_locked(self):
+        """调用方必须持有 _map_lock。"""
+        if len(self._id_map) > 4096:
+            stale_ids = set(list(self._id_map)[:2048])
+            for k in stale_ids:
+                self._id_map.pop(k, None)
+                self.order_id_map.pop(k, None)
+                self._seen_deals.pop(k, None)
+            for mapping in (self._return_index, self._sysid_index):
+                for key, value in list(mapping.items()):
+                    if value in stale_ids:
+                        mapping.pop(key, None)
+            for key in list(self._seen_orders):
+                if key[0] in stale_ids:
+                    self._seen_orders.discard(key)
+        if len(self._return_index) > 4096:
+            for k in list(self._return_index)[:2048]:
+                self._return_index.pop(k, None)
+        if len(self._sysid_index) > 4096:
+            for k in list(self._sysid_index)[:2048]:
+                self._sysid_index.pop(k, None)
+        if len(self._seen_orders) > 4096:
+            for k in list(self._seen_orders)[:2048]:
+                self._seen_orders.discard(k)
+        if len(self._seen_deals) > 4096:
+            for k in list(self._seen_deals)[:2048]:
+                self._seen_deals.pop(k, None)
 
     def _bq_order_to_fake(self, order):
         return base.FakeXtObject(
@@ -403,9 +461,12 @@ class QmtRpcTrader:
                 price_type = FIX_PRICE
             order_type = base.STOCK_BUY if action == 'buy' else base.STOCK_SELL
             int_id = base.next_order_id()
+            wire_remark = str(int_id)
+            if order_remark:
+                wire_remark = f'{int_id}|{order_remark}'
             ret = self._bq.order_stock(
                 self._bq_acc, code, order_type, int(volume), price_type,
-                float(price or 0), strategy_name or '', str(int_id),
+                float(price or 0), strategy_name or '', wire_remark,
             )
             if ret in (None, -1, '-1'):
                 logger.warning(f'RPC下单被拒: {action} {code} {volume}股，返回={ret}')
@@ -415,12 +476,13 @@ class QmtRpcTrader:
                 self._id_map[int_id] = {
                     'user_order_id': ret_str, 'order_sys_id': None,
                     'stock_code': code, 'action': action, 'volume': int(volume),
+                    'order_remark': order_remark or '', 'wire_remark': wire_remark,
                 }
                 self._return_index[ret_str] = int_id
+                self._return_index[str(int_id)] = int_id
+                self._return_index[wire_remark] = int_id
                 self.order_id_map[int_id] = int_id
-                if len(self._id_map) > 4096:
-                    for k in list(self._id_map)[:2048]:
-                        self._id_map.pop(k, None)
+                self._trim_tracking_locked()
             logger.info(f'RPC下单已提交: {action} {code} {volume}股 @ {price}, order_id={int_id}, 返回={ret_str}')
             return int_id
         except Exception as e:

@@ -34,6 +34,17 @@ class FakeTrader:
         return [FakeOrder(self.seq, self.fill_status)]
     def cancel_order(self, aid, seq): self.cancel_called.append(seq)
 
+class SequenceTrader(FakeTrader):
+    def __init__(self, states, seq=8888):
+        super().__init__(fill_status=states[-1][0], seq=seq)
+        self.states = list(states)
+        self.query_count = 0
+    def query_stock_orders(self, aid, cancelable_only=False):
+        idx = min(self.query_count, len(self.states) - 1)
+        self.query_count += 1
+        status, price, vol = self.states[idx]
+        return [FakeOrder(self.seq, status, price=price, vol=vol)]
+
 class _ExecBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="ipc_exec_")
@@ -197,6 +208,31 @@ class TestProcessOrderFlow(_ExecBase):
         self.assertEqual(rec["status"], "cancelled_timeout")
         self.assertIn(9001, fake.cancel_called)
 
+    def test_partial_waits_until_full_fill(self):
+        path = self._write_pending(305, action="buy", timeout_sec=2)
+        fake = SequenceTrader([(55, 10.1, 200), (56, 10.2, 1000)], seq=9500)
+        _o = ex._try_connect_xttrader; ex._try_connect_xttrader = lambda qp: fake
+        try: ex.process_one_order(self.acc, path)
+        finally: ex._try_connect_xttrader = _o
+        with open(os.path.join(self.acc["dirs"]["done"], "ord_305.json"), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["status"], "filled")
+        self.assertEqual(rec["filled_volume"], 1000)
+        self.assertEqual(fake.cancel_called, [])
+
+    def test_timeout_preserves_partial_volume(self):
+        path = self._write_pending(306, action="buy", timeout_sec=1)
+        fake = FakeTrader(fill_status=55, seq=9600)
+        fake.query_stock_orders = lambda aid, cancelable_only=False: [FakeOrder(9600, 55, price=10.2, vol=200)]
+        _o = ex._try_connect_xttrader; ex._try_connect_xttrader = lambda qp: fake
+        try: ex.process_one_order(self.acc, path)
+        finally: ex._try_connect_xttrader = _o
+        with open(os.path.join(self.acc["dirs"]["done"], "ord_306.json"), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["status"], "partial")
+        self.assertEqual(rec["filled_volume"], 200)
+        self.assertIn(9600, fake.cancel_called)
+
     def test_rejected_order_status_writes_rejected(self):
         path = self._write_pending(304, action="sell", timeout_sec=1)
         fake = FakeTrader(fill_status=57, seq=9400)
@@ -296,6 +332,38 @@ class TestHandleAccountHeartbeat(_ExecBase):
         self.assertTrue(os.path.exists(hb))
         self.assertTrue(started.wait(0.5))
         self.assertLess(elapsed, 0.5)
+
+    def test_main_starts_all_heartbeat_threads_before_handling_accounts(self):
+        acc2_dir = os.path.join(self.tmp, "TEST_ACC_2")
+        acc2 = {"account_id":"TEST_ACC_2","qmt_path":"C:/QMT/userdata_mini",
+                "dir":acc2_dir,"dirs":ex._account_dirs(acc2_dir)}
+        calls = []
+        old_discover = ex.discover_accounts
+        old_ensure = ex._ensure_heartbeat_thread
+        old_handle = ex.handle_account
+        old_interval = ex.MAIN_INTERVAL_SEC
+        old_last_run = ex._MAIN_STATE.get("last_run", 0)
+        ex.discover_accounts = lambda: [self.acc, acc2]
+        ex._ensure_heartbeat_thread = lambda acc: calls.append(("hb", acc["account_id"]))
+        def handle(acc):
+            calls.append(("handle", acc["account_id"]))
+            self.assertEqual(
+                calls[:2],
+                [("hb", "TEST_ACC_1"), ("hb", "TEST_ACC_2")]
+            )
+        ex.handle_account = handle
+        ex.MAIN_INTERVAL_SEC = 0
+        ex._MAIN_STATE["last_run"] = 0
+        try:
+            ex.main()
+        finally:
+            ex.discover_accounts = old_discover
+            ex._ensure_heartbeat_thread = old_ensure
+            ex.handle_account = old_handle
+            ex.MAIN_INTERVAL_SEC = old_interval
+            ex._MAIN_STATE["last_run"] = old_last_run
+        self.assertIn(("handle", "TEST_ACC_1"), calls)
+        self.assertIn(("handle", "TEST_ACC_2"), calls)
 
 class TestLogRotation(unittest.TestCase):
     def setUp(self):

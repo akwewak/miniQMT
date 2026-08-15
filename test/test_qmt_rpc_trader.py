@@ -101,7 +101,7 @@ class FakeRpcClient:
         return {
             "order_sys_id": "sys%d" % self._seq,
             "user_order_id": uid,
-            "remark": uid,
+            "remark": self._orders.get(uid, {}).get("remark", uid),
             "stock_code": self._orders.get(uid, {}).get("stock_code", "600000.SH"),
             "action": self._orders.get(uid, {}).get("action", "BUY"),
             "volume": self._orders.get(uid, {}).get("volume", 100),
@@ -124,7 +124,7 @@ class FakeRpcClient:
             self._orders[uid] = {
                 "order_sys_id": "sys%d" % self._seq,
                 "user_order_id": uid,
-                "remark": uid,
+                "remark": params.get("order_remark") or uid,
                 "stock_code": params.get("stock_code"),
                 "action": "BUY" if params.get("order_type") == base.STOCK_BUY else "SELL",
                 "volume": params.get("order_volume"),
@@ -351,7 +351,7 @@ class QmtRpcTraderTest(unittest.TestCase):
         self.assertIsInstance(oid, int)
         self.assertIn(oid, t.order_id_map)
         self.assertIn(oid, t._id_map)
-        self.assertEqual(len(t._return_index), 1)
+        self.assertGreaterEqual(len(t._return_index), 1)
         order_calls = [c for c in t._bq.client.calls if c[0] == "order_stock"]
         self.assertEqual(order_calls[0][1]["stock_code"], "600000.SH")
 
@@ -413,6 +413,17 @@ class QmtRpcTraderTest(unittest.TestCase):
         self.assertEqual(orders[0].order_id, oid)
         self.assertEqual(t._id_map[oid]["order_sys_id"], "sys1")
 
+    def test_order_remark_preserves_strategy_label(self):
+        t = self._make()
+        oid = t.buy("600000.SH", amount=100, price=10.0,
+                    strategy_name="grid", order_remark="auto_grid")
+        order_calls = [c for c in t._bq.client.calls if c[0] == "order_stock"]
+        wire_remark = order_calls[0][1]["order_remark"]
+        self.assertTrue(wire_remark.startswith(str(oid) + "|"))
+        self.assertIn("auto_grid", wire_remark)
+        orders = t._read_all_orders()
+        self.assertEqual(orders[0].order_id, oid)
+
     # ==================================================================
     # 回调：order + trade 去重触发（原有 + 扩展）
     # ==================================================================
@@ -437,6 +448,24 @@ class QmtRpcTraderTest(unittest.TestCase):
         for o in t._read_all_orders():
             t._maybe_fire_from_order(o)
         self.assertEqual(len(fired_trades), 1)
+
+    def test_callbacks_fire_incremental_partial_then_full(self):
+        t = self._make()
+        fired_trades = []
+        t.register_trade_callback(lambda tr: fired_trades.append(tr))
+        oid = t.buy("600000.SH", amount=300, price=10.0)
+
+        t._bq.client.set_order_status("bq:1", "55", traded_volume=100, price=10.0)
+        for o in t._read_all_orders():
+            t._maybe_fire_from_order(o)
+
+        t._bq.client.set_order_status("bq:1", "56", traded_volume=300, price=10.1)
+        for o in t._read_all_orders():
+            t._maybe_fire_from_order(o)
+
+        self.assertEqual([tr.traded_volume for tr in fired_trades], [100, 200])
+        self.assertEqual([tr.order_id for tr in fired_trades], [oid, oid])
+        self.assertNotEqual(fired_trades[0].traded_id, fired_trades[1].traded_id)
 
     def test_rejected_order_triggers_only_order_callback(self):
         t = self._make()

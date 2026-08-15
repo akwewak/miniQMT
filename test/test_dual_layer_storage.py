@@ -14,6 +14,7 @@ P5 - 测试覆盖空白：
 
 import unittest
 import sqlite3
+import gc
 import os
 import sys
 import time
@@ -105,6 +106,36 @@ def _insert_memory_position(conn, stock_code, volume, available, cost_price=10.0
     conn.commit()
 
 
+def _remove_sqlite_file(path, retries=20, delay=0.1):
+    """删除测试 SQLite 文件；Windows 下短暂等待连接句柄释放。"""
+    last_error = None
+    suffixes = ("", "-wal", "-shm", "-journal")
+
+    for attempt in range(retries):
+        blocked = False
+        for suffix in suffixes:
+            target = f"{path}{suffix}"
+            if not os.path.exists(target):
+                continue
+            try:
+                os.remove(target)
+            except FileNotFoundError:
+                continue
+            except PermissionError as exc:
+                blocked = True
+                last_error = exc
+
+        if not blocked:
+            return
+
+        gc.collect()
+        if attempt < retries - 1:
+            time.sleep(delay)
+
+    if last_error is not None:
+        raise last_error
+
+
 # --------------------------------------------------------------------------
 # 测试组 A：_sync_memory_to_db 的 INSERT/UPDATE 路径
 # --------------------------------------------------------------------------
@@ -130,11 +161,10 @@ class TestSyncMemoryToDbPaths(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         config.DB_PATH = cls._orig_db_path
-        if os.path.exists(cls.TEST_DB):
-            try:
-                os.remove(cls.TEST_DB)
-            except Exception:
-                pass
+        try:
+            _remove_sqlite_file(cls.TEST_DB)
+        except Exception:
+            pass
 
     def _make_pm_with_memory(self, memory_conn, sqlite_conn_path):
         """
@@ -157,8 +187,7 @@ class TestSyncMemoryToDbPaths(unittest.TestCase):
 
     def setUp(self):
         # 每个测试前清理测试 DB
-        if os.path.exists(self.TEST_DB):
-            os.remove(self.TEST_DB)
+        _remove_sqlite_file(self.TEST_DB)
         self.sqlite_conn = _make_sqlite_conn(self.TEST_DB)
         self.sqlite_conn.close()  # 让 _sync_memory_to_db 自己建连接
 
@@ -166,8 +195,7 @@ class TestSyncMemoryToDbPaths(unittest.TestCase):
 
     def tearDown(self):
         self.memory_conn.close()
-        if os.path.exists(self.TEST_DB):
-            os.remove(self.TEST_DB)
+        _remove_sqlite_file(self.TEST_DB)
 
     # ------------------------------------------------------------------
     # A1: INSERT 路径 - available 必须为 0
@@ -644,16 +672,14 @@ class TestEmptyRealPositionCleanup(unittest.TestCase):
     def setUp(self):
         import threading
         os.makedirs("data", exist_ok=True)
-        if os.path.exists(self.TEST_DB):
-            os.remove(self.TEST_DB)
+        _remove_sqlite_file(self.TEST_DB)
         self.memory_conn = _make_memory_conn()
         self.empty_df = pd.DataFrame(columns=['证券代码', '股票余额', '可用余额', '成本价', '市值'])
         self.threading = threading
 
     def tearDown(self):
         self.memory_conn.close()
-        if os.path.exists(self.TEST_DB):
-            os.remove(self.TEST_DB)
+        _remove_sqlite_file(self.TEST_DB)
 
     def _seed_position(self, stock_code="301161"):
         _insert_memory_position(self.memory_conn, stock_code, volume=1900, available=0,
@@ -880,19 +906,16 @@ class TestGridDatabaseSchemaConsistency(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         config.DB_PATH = cls._orig_db_path
-        if os.path.exists(cls.TEST_DB):
-            try:
-                os.remove(cls.TEST_DB)
-            except Exception:
-                pass
+        try:
+            _remove_sqlite_file(cls.TEST_DB)
+        except Exception:
+            pass
 
     def setUp(self):
-        if os.path.exists(self.TEST_DB):
-            os.remove(self.TEST_DB)
+        _remove_sqlite_file(self.TEST_DB)
 
     def tearDown(self):
-        if os.path.exists(self.TEST_DB):
-            os.remove(self.TEST_DB)
+        _remove_sqlite_file(self.TEST_DB)
 
     def _get_table_columns(self, conn, table_name):
         """获取表的所有列名集合"""

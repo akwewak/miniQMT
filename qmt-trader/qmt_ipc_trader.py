@@ -61,6 +61,7 @@ _BALANCE_COLUMNS = [
 _IPC_STATUS_TO_QMT = {
     'filled': 56,             # 已成
     'partial': 55,            # 部成
+    'partial_cancelled': 53,  # 部撤
     'pending': 50,            # 已报
     'rejected': 57,           # 废单
     'error': 57,              # 废单
@@ -188,8 +189,9 @@ class QmtIpcTrader:
         # 成交回报轮询线程控制
         self._poller_thread = None
         self._poller_stop = False
-        self._seen_deals = set()   # 已触发过 trade_callback 的 order_id
+        self._seen_deals = {}      # order_id -> 已推送过的累计成交量
         self._seen_orders = set()  # 已触发过 order_callback 的 (order_id, status)
+        self._timeout_orders = {}  # order_id -> 客户端等待超时后已追撤的订单快照
 
         self._connected = False
         logger.info('操作提示: QmtIpcTrader 已创建，请确保大QMT端 QMT_trade_executor.py 已运行且心跳持续刷新')
@@ -217,6 +219,9 @@ class QmtIpcTrader:
         existing = self._read_json(cfg_path) or {}
         existing['account_id'] = self.account
         existing['account_type'] = self.account_type
+        ipc_secret = getattr(config, 'QMT_IPC_SECRET', '') if config else ''
+        if ipc_secret:
+            existing['ipc_secret'] = ipc_secret
         # qmt_path：保留用户已填的大QMT路径；未填时用策略端已知 path 作建议默认
         if not existing.get('qmt_path') and self.path:
             existing['qmt_path'] = self.path
@@ -271,6 +276,18 @@ class QmtIpcTrader:
             for k in list(self.order_id_map)[:2048]:
                 self.order_id_map.pop(k, None)
 
+    def _trim_seen_cache(self):
+        """限制回调去重缓存容量，避免长时间运行缓慢增长。"""
+        if len(self._seen_orders) > 4096:
+            for k in list(self._seen_orders)[:2048]:
+                self._seen_orders.discard(k)
+        if len(self._seen_deals) > 4096:
+            for k in list(self._seen_deals)[:2048]:
+                self._seen_deals.pop(k, None)
+        if len(self._timeout_orders) > 4096:
+            for k in list(self._timeout_orders)[:2048]:
+                self._timeout_orders.pop(k, None)
+
     def get_ipc_health(self):
         """返回 IPC 通道健康诊断快照，供控制台/日志排障（参考 xtquant_big_convert metrics）。"""
         def _count(dirpath):
@@ -290,6 +307,7 @@ class QmtIpcTrader:
             'pending_count': _count(self._dir('orders', 'pending')),
             'processing_count': _count(self._dir('orders', 'processing')),
             'done_count': _count(self._dir('orders', 'done')),
+            'timeout_unknown_count': len(self._timeout_orders),
             'poller_alive': bool(self._poller_thread and self._poller_thread.is_alive()),
         }
 
@@ -363,25 +381,39 @@ class QmtIpcTrader:
                             self._seen_orders.add(order_key)
                             self._fire_order_callback(rec)
 
-                        # 成交回调（filled/partial 且每个 order_id 只触发一次）
-                        if status in ('filled', 'partial') and str(oid) not in self._seen_deals:
-                            self._seen_deals.add(str(oid))
-                            self._fire_trade_callback(rec)
+                        # 成交回调：done/ 记录是累计成交量，这里只向上层推送增量。
+                        if status in ('filled', 'partial', 'partial_cancelled'):
+                            oid_key = str(oid)
+                            filled_volume = int(rec.get('filled_volume') or 0)
+                            previous_volume = int(self._seen_deals.get(oid_key, 0) or 0)
+                            delta_volume = filled_volume - previous_volume
+                            if delta_volume > 0:
+                                self._seen_deals[oid_key] = filled_volume
+                                self._fire_trade_callback(
+                                    rec,
+                                    traded_volume=delta_volume,
+                                    traded_id_suffix=f'cum_{filled_volume}'
+                                )
+                        self._trim_seen_cache()
             except Exception as e:
                 logger.warning(f'成交回报轮询异常: {e}')
             time.sleep(interval)
 
-    def _fire_trade_callback(self, rec):
+    def _fire_trade_callback(self, rec, traded_volume=None, traded_id_suffix=None):
         """把回执构造成 XtTrade-like 对象，触发 trade_callbacks。"""
+        volume = rec.get('filled_volume', 0) if traded_volume is None else traded_volume
+        base_trade_id = str(rec.get('entrust_id', rec.get('order_id', '')))
+        if traded_id_suffix:
+            base_trade_id = f'{base_trade_id}_{traded_id_suffix}'
         trade = _FakeXtObject(
             order_id=rec.get('order_id'),
             stock_code=rec.get('stock_code', ''),
-            traded_volume=rec.get('filled_volume', 0),
+            traded_volume=volume,
             traded_price=rec.get('filled_price', 0),
-            traded_amount=rec.get('filled_price', 0) * rec.get('filled_volume', 0),
+            traded_amount=rec.get('filled_price', 0) * volume,
             account_id=self.account,
             account_type=self.account_type,
-            traded_id=str(rec.get('entrust_id', rec.get('order_id', ''))),
+            traded_id=base_trade_id,
             traded_time=int(time.time()),
             order_type=_STOCK_BUY if rec.get('action') == 'buy' else _STOCK_SELL,
             order_status=_IPC_STATUS_TO_QMT.get(rec.get('status'), 56),
@@ -410,7 +442,7 @@ class QmtIpcTrader:
         写 pending/ 下单文件 + 轮询 done/ 等待回执。
 
         Returns:
-            int order_id（>0，已提交/成交），或 None（失败/超时）
+            int order_id（>0，已提交/成交；超时时已追撤），或 None（确认失败）
         """
         if volume is None or volume <= 0:
             logger.error(f'IPC下单参数错误: volume={volume}')
@@ -440,6 +472,9 @@ class QmtIpcTrader:
                 'timeout_sec': self.order_timeout,
                 'remark': order_remark or '',
             }
+            ipc_secret = getattr(config, 'QMT_IPC_SECRET', '') if config else ''
+            if ipc_secret:
+                order['secret'] = ipc_secret
             # 原子写入：.tmp → rename
             tmp = self._dir('orders', 'pending', f'_{order_id}.tmp')
             final = self._dir('orders', 'pending', f'ord_{order_id}.json')
@@ -454,7 +489,7 @@ class QmtIpcTrader:
                 rec = self._find_done_record(order_id)
                 if rec:
                     status = rec.get('status', '')
-                    if status in ('filled', 'partial'):
+                    if status in ('filled', 'partial', 'partial_cancelled'):
                         logger.info(f'IPC下单成交: order_id={order_id}, status={status}, '
                                     f"价={rec.get('filled_price')}, 量={rec.get('filled_volume')}")
                         return order_id
@@ -465,7 +500,14 @@ class QmtIpcTrader:
                 time.sleep(0.2)
 
             logger.warning(f'IPC下单等待回执超时({self.order_timeout}秒): order_id={order_id}')
-            return None
+            self._timeout_orders[order_id] = dict(order)
+            self._trim_seen_cache()
+            cancel_result = self._write_cancel(order_id)
+            logger.warning(
+                f'IPC下单状态未知，已提交追撤并返回order_id阻止上层重复下单: '
+                f'order_id={order_id}, cancel_result={cancel_result}'
+            )
+            return order_id
         except Exception as e:
             logger.error(f'IPC下单异常: {e}')
             return None
@@ -501,8 +543,8 @@ class QmtIpcTrader:
         try:
             # 已经在 done/ 中且为终态的委托无法撤单
             rec = self._find_done_record(order_id)
-            if rec and rec.get('status') in ('filled', 'rejected', 'cancelled',
-                                             'cancelled_timeout', 'error'):
+            if rec and rec.get('status') in ('filled', 'partial_cancelled', 'rejected',
+                                             'cancelled', 'cancelled_timeout', 'error'):
                 logger.warning(f'IPC撤单失败: order_id={order_id} 已是终态({rec.get("status")})')
                 return -1
             self._ensure_dirs()
@@ -676,7 +718,7 @@ class QmtIpcTrader:
 
     def query_stock_trades(self):
         """查询当日成交，兼容 easy_qmt_trader.query_stock_trades()。返回 DataFrame。"""
-        orders = [o for o in self._read_all_orders() if o.order_status in (55, 56)]
+        orders = [o for o in self._read_all_orders() if o.order_status in (53, 55, 56)]
         return self._trades_to_df(orders)
 
     def today_trades(self):

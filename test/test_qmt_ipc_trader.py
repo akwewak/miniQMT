@@ -238,11 +238,14 @@ class TestOrder(_IpcTestBase):
         self.assertIsNotNone(order_id)
         self.assertIsInstance(order_id, int)
 
-    def test_buy_timeout_returns_none(self):
-        """QMT 端不回执 → 超时返回 None。"""
+    def test_buy_timeout_returns_order_id_and_writes_cancel(self):
+        """QMT 端不回执 → 返回已知 order_id 并写追撤，阻止上层重复下单。"""
         self._write_heartbeat()
         order_id = self.trader.buy("000001.SZ", amount=1000, price=10.5)
-        self.assertIsNone(order_id)
+        self.assertIsInstance(order_id, int)
+        cancel_path = os.path.join(self.ipc_root, "cancel", f"cancel_{order_id}.json")
+        self.assertTrue(os.path.exists(cancel_path))
+        self.assertIn(order_id, self.trader._timeout_orders)
 
     def test_buy_rejected_returns_none(self):
         self._write_heartbeat()
@@ -442,6 +445,25 @@ class TestDealPoller(_IpcTestBase):
         # 同一 order_id 只触发一次
         self.assertEqual(len(received), 1)
 
+    def test_trade_callback_fires_incremental_volume(self):
+        self._write_heartbeat()
+        received = []
+        self.trader.register_trade_callback(lambda trade: received.append(trade))
+        self.trader.connect()
+
+        self._write_done(556, status="partial", filled_volume=100, total_volume=300)
+        deadline = time.time() + 3
+        while time.time() < deadline and len(received) < 1:
+            time.sleep(0.1)
+
+        self._write_done(556, status="filled", filled_volume=300, total_volume=300)
+        deadline = time.time() + 3
+        while time.time() < deadline and len(received) < 2:
+            time.sleep(0.1)
+
+        self.assertEqual([t.traded_volume for t in received], [100, 200])
+        self.assertNotEqual(received[0].traded_id, received[1].traded_id)
+
     def test_order_callback_fired(self):
         self._write_heartbeat()
         received = []
@@ -628,7 +650,7 @@ class TestInterfaceContract(unittest.TestCase):
 
     def test_status_mapping_complete(self):
         """IPC status → QMT 状态码映射覆盖所有终态。"""
-        for status in ['filled', 'partial', 'rejected', 'cancelled', 'pending']:
+        for status in ['filled', 'partial', 'partial_cancelled', 'rejected', 'cancelled', 'pending']:
             self.assertIn(status, _IPC_STATUS_TO_QMT)
 
 
@@ -720,7 +742,7 @@ class TestIpcHealth(_IpcTestBase):
         h = self.trader.get_ipc_health()
         for k in ['account', 'ipc_root', 'connected', 'qmt_alive',
                   'heartbeat_age', 'heartbeat_max_age', 'pending_count',
-                  'processing_count', 'done_count', 'poller_alive']:
+                  'processing_count', 'done_count', 'timeout_unknown_count', 'poller_alive']:
             self.assertIn(k, h)
 
     def test_health_reflects_alive_and_counts(self):

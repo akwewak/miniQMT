@@ -35,6 +35,7 @@ PROCESSING_STALE_SEC = int(os.environ.get("QMT_IPC_PROCESSING_STALE_SEC", "120")
 DONE_RETENTION_SEC = int(os.environ.get("QMT_IPC_DONE_RETENTION_SEC", "86400"))
 SNAPSHOT_INTERVAL_SEC = 30
 SNAPSHOT_TASK_STALE_SEC = int(os.environ.get("QMT_IPC_SNAPSHOT_TASK_STALE_SEC", "60"))
+HEARTBEAT_INTERVAL_SEC = float(os.environ.get("QMT_IPC_HEARTBEAT_INTERVAL_SEC", "2.0"))
 XT_CONNECT_TIMEOUT_SEC = int(os.environ.get("QMT_IPC_XT_CONNECT_TIMEOUT_SEC", "8"))
 XT_QUERY_TIMEOUT_SEC = int(os.environ.get("QMT_IPC_XT_QUERY_TIMEOUT_SEC", "5"))
 MAIN_INTERVAL_SEC = float(os.environ.get("QMT_IPC_MAIN_INTERVAL_SEC", "1.0"))
@@ -62,6 +63,8 @@ _WORKER_STATE = {"thread": None, "started_at": 0.0}
 _WORKER_LOCK = threading.Lock()
 _SNAPSHOT_STATE = {}
 _SNAPSHOT_LOCK = threading.Lock()
+_HEARTBEAT_STATE = {}
+_HEARTBEAT_LOCK = threading.Lock()
 _LOG_LOCK = threading.Lock()
 
 
@@ -201,11 +204,13 @@ def discover_accounts():
         account_id = cfg.get("account_id") or name
         account_type = cfg.get("account_type") or "STOCK"
         qmt_path = cfg.get("qmt_path") or _DEFAULT_QMT_PATH
+        ipc_secret = cfg.get("ipc_secret") or ""
         if filt and account_id not in filt:
             continue
         accounts.append({"account_id": account_id, "qmt_path": qmt_path,
-                         "account_type": account_type,
-                         "dir": sub, "dirs": _account_dirs(sub)})
+                          "account_type": account_type,
+                          "ipc_secret": ipc_secret,
+                          "dir": sub, "dirs": _account_dirs(sub)})
     if not accounts and os.path.isdir(os.path.join(IPC_ROOT, "orders")):
         accounts.append({"account_id": _DEFAULT_ACCOUNT_ID,
                          "qmt_path": _DEFAULT_QMT_PATH, "account_type": "STOCK",
@@ -482,6 +487,13 @@ def write_done(dirs, processing_path, order, status, msg,
         pass
 
 
+def _order_secret_valid(acc, order):
+    secret = acc.get("ipc_secret") or ""
+    if not secret:
+        return True
+    return str(order.get("secret", "")) == str(secret)
+
+
 def _try_connect_xttrader(qmt_path):
     """Import + connect XtQuantTrader. Returns trader or None."""
     box = {"t": None, "rc": None, "err": None}
@@ -538,6 +550,71 @@ def _write_heartbeat(acc):
                        {"ts": datetime.now().isoformat(), "account_id": acc["account_id"]})
 
 
+def _heartbeat_loop(acc):
+    account_id = acc["account_id"]
+    sleep_sec = HEARTBEAT_INTERVAL_SEC
+    if sleep_sec <= 0:
+        sleep_sec = 2.0
+    if sleep_sec < 0.2:
+        sleep_sec = 0.2
+    log("[%s] heartbeat loop started interval=%.3fs" % (account_id, sleep_sec))
+    while True:
+        try:
+            _write_heartbeat(acc)
+        except Exception as e:
+            log("[%s] heartbeat write failed: %s" % (account_id, str(e)[:120]))
+        time.sleep(sleep_sec)
+
+
+def _ensure_heartbeat_thread(acc):
+    account_id = acc["account_id"]
+    with _HEARTBEAT_LOCK:
+        state = _HEARTBEAT_STATE.get(account_id) or {}
+        th = state.get("thread")
+        if th is not None and th.is_alive():
+            return False
+        th = threading.Thread(target=_heartbeat_loop, args=(acc,),
+                              name="QmtIpcHeartbeat-%s" % account_id)
+        th.daemon = True
+        _HEARTBEAT_STATE[account_id] = {"thread": th, "started_at": time.time()}
+        th.start()
+        return True
+
+
+def _order_result_from_status(status, traded_price, traded_vol, terminal_only=False):
+    if status == ORDER_ALL_TRADED:
+        return {"status": "filled", "price": traded_price, "vol": traded_vol}
+    if status == ORDER_PART_TRADED_CANCELED:
+        return {"status": "partial_cancelled", "price": traded_price, "vol": traded_vol}
+    if status == ORDER_CANCELED:
+        if traded_vol > 0:
+            return {"status": "partial_cancelled", "price": traded_price, "vol": traded_vol}
+        return {"status": "cancelled", "price": 0, "vol": 0}
+    if status == ORDER_REJECTED:
+        return {"status": "rejected", "price": traded_price, "vol": traded_vol}
+    if status == ORDER_PART_TRADED and traded_vol > 0:
+        if terminal_only:
+            return {"status": "partial", "price": traded_price, "vol": traded_vol}
+        return {"status": "partial", "price": traded_price, "vol": traded_vol}
+    return None
+
+
+def _query_xt_order_result(trader, account_obj, account_id, seq, terminal_only=False):
+    ok_orders, orders, orders_via = _call_account_method(
+        trader, "query_stock_orders", account_obj, account_id)
+    if not ok_orders:
+        return None, orders_via
+    for o in (orders or []):
+        oid2 = _first_attr(o, ["order_id", "order_sysid"], "")
+        if str(oid2) != str(seq):
+            continue
+        status = _as_int(_first_attr(o, ["order_status"], 0))
+        traded_price = _as_float(_first_attr(o, ["traded_price"], 0))
+        traded_vol = _as_int(_first_attr(o, ["traded_vol", "traded_volume"], 0))
+        return _order_result_from_status(status, traded_price, traded_vol, terminal_only), ""
+    return None, "order not found"
+
+
 def process_one_order(acc, filepath):
     dirs, account_id = acc["dirs"], acc["account_id"]
     filename = os.path.basename(filepath)
@@ -554,6 +631,10 @@ def process_one_order(acc, filepath):
                      "volume": 0}
             log("[%s] invalid order json %s, write error" % (account_id, filename))
             write_done(dirs, processing_path, order, "error", "invalid order json")
+            return
+        if not _order_secret_valid(acc, order):
+            log("[%s] invalid order secret %s, write error" % (account_id, filename))
+            write_done(dirs, processing_path, order, "error", "invalid order secret")
             return
         oid = order["order_id"]
         log("[%s] handle %s: %s %s %s" % (account_id, oid, order["action"],
@@ -599,6 +680,7 @@ def process_one_order(acc, filepath):
         timeout = order.get("timeout_sec", 30)
         deadline = time.time() + timeout
         result = None
+        last_partial = None
         while time.time() < deadline:
             time.sleep(0.5)
             _write_heartbeat(acc)  # keep heartbeat fresh during blocking order wait
@@ -610,30 +692,27 @@ def process_one_order(acc, filepath):
                     log("[%s] inflight cancel failed oid=%s seq=%s: %s" % (account_id, oid, seq, via))
                 try: os.remove(cancel_path)
                 except Exception: pass
-            ok_orders, orders, orders_via = _call_account_method(
-                trader, "query_stock_orders", account_obj, account_id)
-            if not ok_orders:
+            current_result, orders_via = _query_xt_order_result(
+                trader, account_obj, account_id, seq)
+            if orders_via and orders_via != "order not found":
                 log("[%s] query_stock_orders failed during wait: %s" % (account_id, orders_via))
                 continue
-            for o in (orders or []):
-                oid2 = _first_attr(o, ["order_id", "order_sysid"], "")
-                if str(oid2) == str(seq):
-                    status = _as_int(_first_attr(o, ["order_status"], 0))
-                    traded_price = _as_float(_first_attr(o, ["traded_price"], 0))
-                    traded_vol = _as_int(_first_attr(o, ["traded_vol", "traded_volume"], 0))
-                    if status == ORDER_ALL_TRADED:
-                        result = {"status": "filled", "price": traded_price, "vol": traded_vol}
-                    elif status in (ORDER_PART_TRADED, ORDER_PART_TRADED_CANCELED):
-                        result = {"status": "partial", "price": traded_price, "vol": traded_vol}
-                    elif status == ORDER_CANCELED:
-                        result = {"status": "cancelled", "price": 0, "vol": 0}
-                    elif status == ORDER_REJECTED:
-                        result = {"status": "rejected", "price": traded_price, "vol": traded_vol}
-                    break
-            if result: break
+            if current_result:
+                if current_result["status"] == "partial":
+                    last_partial = current_result
+                    continue
+                result = current_result
+                break
         if result is None:
             _cancel_xt_order(trader, account_obj, account_id, seq)
-            result = {"status": "cancelled_timeout", "price": 0, "vol": 0}
+            current_result, _ = _query_xt_order_result(
+                trader, account_obj, account_id, seq, terminal_only=True)
+            if current_result and current_result.get("vol", 0) > 0:
+                result = current_result
+            elif last_partial and last_partial.get("vol", 0) > 0:
+                result = last_partial
+            else:
+                result = {"status": "cancelled_timeout", "price": 0, "vol": 0}
             log("[%s] order %s timeout(%ss) cancelled" % (account_id, oid, timeout))
         write_done(dirs, processing_path, order, result["status"],
                    "price=%s, vol=%s" % (result["price"], result["vol"]),
@@ -788,6 +867,7 @@ def _dump_context_info(ContextInfo):
 def handle_account(acc):
     """Heartbeat, leftovers, pending orders, account snapshot."""
     dirs = acc["dirs"]
+    _ensure_heartbeat_thread(acc)
     _write_heartbeat(acc)
     recover_leftovers(acc)
     pending_dir = dirs["pending"]
@@ -894,6 +974,9 @@ def main():
                 _MAIN_STATE["last_log"] = now
                 log("no account dirs found (waiting for config.json)")
             return
+        for acc in accounts:
+            try: _ensure_heartbeat_thread(acc)
+            except Exception as e: log("[%s] heartbeat start error: %s" % (acc.get("account_id", "?"), e))
         for acc in accounts:
             try: handle_account(acc)
             except Exception as e: log("[%s] handle_account error: %s" % (acc.get("account_id", "?"), e))
