@@ -681,7 +681,10 @@
     }
 
     function getApiTokenHeader() {
-        const token = elements.apiToken ? elements.apiToken.value.trim() : '';
+        let token = elements.apiToken ? elements.apiToken.value.trim() : '';
+        if (!token) {
+            token = (localStorage.getItem('qmt_api_token') || '').trim();
+        }
         return token ? { 'X-API-Token': token } : {};
     }
 
@@ -2355,9 +2358,13 @@
     // API Token localStorage 持久化
     const _savedToken = localStorage.getItem('qmt_api_token');
     if (_savedToken && elements.apiToken) elements.apiToken.value = _savedToken;
-    elements.apiToken && elements.apiToken.addEventListener('change', () => {
+    const _persistApiToken = () => {
         localStorage.setItem('qmt_api_token', elements.apiToken.value.trim());
-    });
+    };
+    if (elements.apiToken) {
+        elements.apiToken.addEventListener('input', _persistApiToken);
+        elements.apiToken.addEventListener('change', _persistApiToken);
+    }
 
     // --- 初始数据加载 ---
     async function fetchAllData() {

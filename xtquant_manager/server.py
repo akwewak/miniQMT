@@ -973,6 +973,31 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
     _FLASK_PROBE_TTL = 5.0
     _FLASK_PROBE_TIMEOUT = 1.0
 
+    def _flask_probe_token() -> str:
+        """获取 Flask /api/status 反向探测需要携带的 Web API Token。"""
+        token = ""
+        try:
+            import config as _config
+            token = getattr(_config, "WEB_API_TOKEN", "") or ""
+        except Exception:
+            token = ""
+        if not token:
+            try:
+                import os as _os
+                token = _os.environ.get("QMT_API_TOKEN", "") or ""
+            except Exception:
+                token = ""
+        if not token:
+            token = getattr(security_config, "api_token", "") or ""
+        return str(token) if token else ""
+
+    def _build_flask_status_request(url: str):
+        token = _flask_probe_token()
+        if not token:
+            return url
+        import urllib.request
+        return urllib.request.Request(url, headers={"X-API-Token": token})
+
     def _probe_flask_settings(aid: str):
         """反向调用该账号的 Flask /api/status，取运行时内存态开关。
 
@@ -998,8 +1023,9 @@ def _register_routes(app: FastAPI, security_config: SecurityConfig):
             try:
                 import urllib.request
                 import json as _json
+                req = _build_flask_status_request(base + "/api/status")
                 with urllib.request.urlopen(
-                    base + "/api/status", timeout=_FLASK_PROBE_TIMEOUT
+                    req, timeout=_FLASK_PROBE_TIMEOUT
                 ) as resp:
                     body = _json.loads(resp.read().decode("utf-8"))
                 if body.get("status") == "success":

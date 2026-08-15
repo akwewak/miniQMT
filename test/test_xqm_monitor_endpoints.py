@@ -348,7 +348,7 @@ class TestFlaskReverseProbe(unittest.TestCase):
                 return False
 
         def _counting_urlopen(url, timeout=None):
-            calls.append(url)
+            calls.append(getattr(url, "full_url", url))
             return _Resp()
 
         import config as _config
@@ -378,7 +378,7 @@ class TestFlaskReverseProbe(unittest.TestCase):
                 return False
 
         def _counting_urlopen(url, timeout=None):
-            calls.append(url)
+            calls.append(getattr(url, "full_url", url))
             return _Resp()
 
         import config as _config
@@ -390,6 +390,44 @@ class TestFlaskReverseProbe(unittest.TestCase):
             c.get("/api/status")
 
         self.assertEqual(calls, ["http://127.0.0.1:5101/api/status"])
+
+    def test_flask_probe_sends_web_api_token(self):
+        import json as _j
+        import urllib.request
+        from unittest.mock import patch
+
+        calls = []
+
+        class _Resp:
+            def read(self):
+                return _j.dumps(
+                    {"status": "success", "settings": {"isMonitoring": True}}
+                ).encode("utf-8")
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def _token_required_urlopen(req, timeout=None):
+            calls.append(req)
+            if not isinstance(req, urllib.request.Request):
+                raise OSError("missing request headers")
+            if req.get_header("X-api-token") != "flask-token":
+                raise OSError("missing token")
+            return _Resp()
+
+        import config as _config
+        with patch.object(_config, "WEB_API_TOKEN", "flask-token", create=True), \
+             patch.object(_config, "WEB_SERVER_BASE_PORT", 5100), \
+             patch.object(_config, "get_all_accounts_config",
+                          return_value=[{"account_id": ACC}]), \
+             patch("urllib.request.urlopen", side_effect=_token_required_urlopen):
+            c = TestClient(create_app(self.sec))
+            s = c.get("/api/status").json()["settings"]
+
+        self.assertTrue(s["isMonitoring"])
+        self.assertEqual(calls[0].full_url, "http://127.0.0.1:5100/api/status")
+        self.assertEqual(calls[0].get_header("X-api-token"), "flask-token")
 
     def test_account_not_in_config_is_not_probed(self):
         """账号不在 account_config.json 中时放弃探测，不能张冠李戴读别人的状态"""
