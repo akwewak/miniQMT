@@ -33,6 +33,9 @@ marshmallow>=3.14.0
 # HTTP请求库
 requests>=2.26.0
 
+# .env 环境变量加载
+python-dotenv>=1.0.0,<2.0.0
+
 # 终端颜色输出
 colorama>=0.4.0
 

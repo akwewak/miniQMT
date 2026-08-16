@@ -31,6 +31,7 @@ set "PREFERRED_PYTHON_EXE=C:\Users\PC\Anaconda3\envs\python39\python.exe"
 set "ENV_TYPE="
 set "CONDA_ENV=python39"
 set "UV_VENV_DIR=.venv"
+set "PYTHONIOENCODING=utf-8:replace"
 
 if not exist "%LAUNCHER%" (
     echo [ERROR] launcher script missing: %LAUNCHER%

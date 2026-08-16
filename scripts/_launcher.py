@@ -29,6 +29,7 @@ miniQMT 总控制台后端（被 miniqmt.bat 调用）。
 from __future__ import annotations
 
 import argparse
+import builtins
 import json
 import os
 import subprocess
@@ -36,13 +37,59 @@ import sys
 import time
 from pathlib import Path
 
-# 强制使用 UTF-8 输出，避免 chcp 65001 下中文乱码
-if sys.platform == "win32":
+_BUILTIN_PRINT = builtins.print
+
+
+def _configure_stdio_encoding() -> None:
+    """尽量让旧 Windows 控制台可输出中文；失败时交给安全 print 兜底。"""
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8:replace")
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def _safe_console_text(value, encoding: str | None) -> str:
+    text = str(value)
+    encoding = encoding or "utf-8"
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
+        return text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    except LookupError:
+        return text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+
+
+def print(*args, **kwargs):  # noqa: A001 - 本模块内统一兜底控制台输出
+    try:
+        _BUILTIN_PRINT(*args, **kwargs)
+        return
+    except UnicodeError:
+        pass
+    except (OSError, ValueError):
+        return
+
+    file = kwargs.get("file") or sys.stdout
+    encoding = getattr(file, "encoding", None)
+    safe_args = tuple(_safe_console_text(arg, encoding) for arg in args)
+    safe_kwargs = dict(kwargs)
+    for key in ("sep", "end"):
+        if key in safe_kwargs and safe_kwargs[key] is not None:
+            safe_kwargs[key] = _safe_console_text(safe_kwargs[key], encoding)
+    try:
+        _BUILTIN_PRINT(*safe_args, **safe_kwargs)
     except Exception:
         pass
+
+
+def input(prompt=""):  # noqa: A001 - 复用安全 print 输出交互提示
+    if prompt:
+        print(prompt, end="")
+    return builtins.input()
+
+
+_configure_stdio_encoding()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH  = PROJECT_ROOT / "account_config.json"
@@ -462,7 +509,7 @@ REQUIREMENTS_FILE = PROJECT_ROOT / "utils" / "requirements.txt"
 # 核心 PyPI 依赖：pip 能装的（xtquant 是 QMT 客户端附带，单独标注）
 CORE_DEPS = [
     "pandas", "numpy", "flask", "flask_cors", "mootdx",
-    "marshmallow", "requests", "colorama",
+    "marshmallow", "requests", "dotenv", "colorama",
 ]
 XQM_DEPS = [
     "fastapi", "uvicorn", "pydantic",

@@ -43,6 +43,49 @@ class TestCheckPythonEnv(unittest.TestCase):
         self.assertEqual(info["executable"], sys.executable)
 
 
+class TestLauncherConsoleOutput(unittest.TestCase):
+    class AsciiOnlyStream(io.StringIO):
+        @property
+        def encoding(self):
+            return "ascii"
+
+        def write(self, text):
+            text.encode("ascii")
+            return super().write(text)
+
+    def test_safe_print_replaces_unencodable_text(self):
+        stream = self.AsciiOnlyStream()
+
+        with patch.object(_launcher.sys, "stdout", stream):
+            _launcher.print("miniQMT 总控制台 ✓")
+
+        output = stream.getvalue()
+        self.assertIn("miniQMT", output)
+        self.assertIn("?", output)
+
+    def test_safe_input_prompt_replaces_unencodable_text(self):
+        stream = self.AsciiOnlyStream()
+
+        with patch.object(_launcher.sys, "stdout", stream), \
+             patch("builtins.input", return_value="q"):
+            value = _launcher.input("请选择 总控制台 ✓: ")
+
+        self.assertEqual(value, "q")
+        self.assertIn("?", stream.getvalue())
+
+    def test_menu_can_render_on_ascii_only_stdout(self):
+        stream = self.AsciiOnlyStream()
+
+        with patch.object(_launcher.sys, "stdout", stream), \
+             patch.object(_launcher.os, "system", return_value=0), \
+             patch.object(_launcher, "_print_xttrader_status"), \
+             patch("builtins.input", return_value="q"):
+            rc = _launcher.cmd_menu(None)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("miniQMT", stream.getvalue())
+
+
 class TestSetupWizardHelpers(unittest.TestCase):
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp(prefix="launcher_wizard_"))
