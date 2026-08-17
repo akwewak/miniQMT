@@ -1504,6 +1504,38 @@ class GridTradingManager:
                 'status': session.status
             }
 
+    def pause_session_by_stock(self, stock_code: str, reason: str = "auto_pause") -> dict:
+        """按股票代码暂停活跃网格会话：保留会话，仅禁止自动产生新单。"""
+        with self.lock:
+            session = self.sessions.get(self._normalize_code(stock_code))
+            if not session or session.status != 'active':
+                return {
+                    'stock_code': stock_code,
+                    'paused': False,
+                    'reason': 'no_active_session'
+                }
+
+            if not session.enabled:
+                return {
+                    'session_id': session.id,
+                    'stock_code': session.stock_code,
+                    'paused': False,
+                    'reason': 'already_disabled',
+                    'enabled': False,
+                    'status': session.status
+                }
+
+            result = self.set_session_enabled(session.id, False)
+            result.update({
+                'paused': True,
+                'reason': reason
+            })
+            logger.info(
+                f"[GRID] pause_session_by_stock: stock_code={session.stock_code}, "
+                f"session_id={session.id}, reason={reason}"
+            )
+            return result
+
     def _find_session_by_id(self, session_id: int) -> Optional[GridSession]:
         """按会话ID查找内存会话。"""
         for s in self.sessions.values():

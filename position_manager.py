@@ -5053,6 +5053,28 @@ class PositionManager:
         logger.info(f"[外部成交] {stock_code} 已标记下轮监控强制同步持仓")
         return recorded
 
+    def _pause_grid_after_take_profit_full(self, stock_code):
+        """全仓止盈成交后，按配置暂停该股票的网格会话。"""
+        if not getattr(config, 'ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL', True):
+            return
+
+        grid_manager = getattr(self, 'grid_manager', None)
+        if not grid_manager or not hasattr(grid_manager, 'pause_session_by_stock'):
+            return
+
+        try:
+            result = grid_manager.pause_session_by_stock(
+                stock_code,
+                reason='take_profit_full'
+            ) or {}
+            if result.get('paused'):
+                logger.info(
+                    f"[GRID] {stock_code} 全仓止盈已成交，已暂停该股网格会话 "
+                    f"(session_id={result.get('session_id')})"
+                )
+        except Exception as e:
+            logger.warning(f"[GRID] {stock_code} 全仓止盈后暂停网格会话失败: {e}")
+
     def _confirm_filled_order(self, stock_code, order_id, source, trade=None, order_info=None):
         """统一处理真实成交确认：清 pending、落状态、补流水、请求持仓快刷。"""
         stock_code_base = self._base_stock_code(stock_code)
@@ -5084,6 +5106,8 @@ class PositionManager:
 
             pending_snapshot.setdefault('stock_code', stock_code_base)
             self._record_trade_after_confirmation(order_id, pending_snapshot, trade=trade)
+            if signal_type == 'take_profit_full':
+                self._pause_grid_after_take_profit_full(stock_code_base)
 
         if matched_key or order_info:
             self._request_immediate_position_refresh(stock_code_base, source)

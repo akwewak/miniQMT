@@ -474,6 +474,50 @@ class TestTraderCallback(TestBase):
             self.pm._on_trade_callback(trade)
             mock_sync.assert_not_called()
 
+    def test_c2b_take_profit_full_trade_pauses_grid_session_when_enabled(self):
+        """take_profit_full 成交后，默认应暂停该股票网格会话。"""
+        stock_code = "301560"
+        order_id = 940572675
+        self.pm.track_order(stock_code, order_id, "take_profit_full", {"volume": 700})
+        self.pm.grid_manager = MagicMock()
+        self.pm.grid_manager.pause_session_by_stock.return_value = {
+            "paused": True,
+            "session_id": 12,
+            "stock_code": f"{stock_code}.SZ"
+        }
+
+        old_flag = getattr(config, "ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL", True)
+        try:
+            config.ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = True
+            with patch.object(self.pm, "_request_immediate_position_refresh"):
+                trade = _FakeTrade(order_id=order_id, stock_code=f"{stock_code}.SZ")
+                self.pm._on_trade_callback(trade)
+        finally:
+            config.ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = old_flag
+
+        self.pm.grid_manager.pause_session_by_stock.assert_called_once_with(
+            stock_code,
+            reason='take_profit_full'
+        )
+
+    def test_c2c_take_profit_full_trade_does_not_pause_grid_when_disabled(self):
+        """开关关闭时，take_profit_full 成交不应暂停网格会话。"""
+        stock_code = "301560"
+        order_id = 940572676
+        self.pm.track_order(stock_code, order_id, "take_profit_full", {"volume": 700})
+        self.pm.grid_manager = MagicMock()
+
+        old_flag = getattr(config, "ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL", True)
+        try:
+            config.ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = False
+            with patch.object(self.pm, "_request_immediate_position_refresh"):
+                trade = _FakeTrade(order_id=order_id, stock_code=f"{stock_code}.SZ")
+                self.pm._on_trade_callback(trade)
+        finally:
+            config.ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = old_flag
+
+        self.pm.grid_manager.pause_session_by_stock.assert_not_called()
+
     # ===================================================================
     # Group D: 超时兜底机制
     # ===================================================================

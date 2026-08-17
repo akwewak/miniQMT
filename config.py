@@ -479,6 +479,7 @@ MARKET_HEALTH_ALLOW_MOOTDX_FOR_TRADING = False
 
 # ========== 全仓止盈与委托冲突控制 ==========
 ALLOW_TAKE_PROFIT_FULL_WITH_PENDING = False  # 全仓止盈是否允许跳过活跃委托检查
+ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = _env_bool("ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL", True)  # 全仓止盈成交后暂停该股网格会话
 
 # 说明:
 # - 当止盈止损委托单提交后超过指定时间仍未成交时:

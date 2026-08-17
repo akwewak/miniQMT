@@ -824,6 +824,7 @@ def get_config():
             "globalAutoOperation": config.ENABLE_AUTO_OPERATION,
             "globalAllowBuySell": config.ENABLE_AUTO_TRADING,
             "globalAllowGridTrading": config.ENABLE_GRID_TRADING,
+            "pauseGridAfterTakeProfitFull": getattr(config, 'ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL', True),
             "simulationMode": getattr(config, 'ENABLE_SIMULATION_MODE', False)
         }
         
@@ -925,6 +926,13 @@ def _apply_config_params(config_data):
                     position_manager.init_grid_manager(trading_executor)
             except Exception as e:
                 logger.error(f"自动网格开关开启后初始化网格管理器失败: {e}")
+
+    if "pauseGridAfterTakeProfitFull" in config_data:
+        old_pause_grid = getattr(config, 'ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL', True)
+        value = bool(config_data["pauseGridAfterTakeProfitFull"])
+        setattr(config, 'ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL', value)
+        db_configs['ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL'] = value
+        logger.info(f"全仓止盈后暂停网格: {old_pause_grid} -> {value}")
 
     return db_configs
 
