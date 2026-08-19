@@ -598,6 +598,13 @@ class TradingStrategy:
                     logger.debug(f"{stock_code} 卖出信号已处理，跳过")
                     return False
 
+                # MACD 技术指标卖出开关：默认关闭，满足条件仅记录信号，不执行真实卖出
+                # 注意：关闭期间信号按"已处理"记录，盘中改为 True 需重启进程才会对当日信号重新生效
+                if not config.ENABLE_MACD_SELL:
+                    self.processed_signals.add(signal_key)
+                    logger.info(f"{stock_code} 检测到MACD技术指标卖出信号，但 ENABLE_MACD_SELL=False，仅记录信号不执行卖出")
+                    return False
+
                 # 获取持仓
                 position = self.position_manager.get_position(stock_code)
                 if not position:
@@ -607,9 +614,9 @@ class TradingStrategy:
                 
                 volume = position['volume']
                 
-                # 执行卖出
+                # 执行卖出（price_type=5=LATEST_PRICE；旧值0为非法枚举，QMT客户端会本地拒绝且不产生废单）
                 logger.info(f"执行 {stock_code} 卖出策略，数量: {volume}")
-                order_id = self.trading_executor.sell_stock(stock_code, volume, price_type=0)
+                order_id = self.trading_executor.sell_stock(stock_code, volume, price_type=5)
                 
                 if order_id:
                     # 记录已处理信号

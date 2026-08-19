@@ -107,6 +107,7 @@ ENABLE_AUTO_OPERATION = False   # 全局自动操作总开关：关闭时自动�
 ENABLE_AUTO_TRADING = False     # 非网格自动策略执行开关（不影响网格交易）
 ENABLE_ALLOW_BUY = True         # 是否允许买入操作
 ENABLE_ALLOW_SELL = True        # 是否允许卖出操作
+ENABLE_MACD_SELL = _env_bool("ENABLE_MACD_SELL", False)  # MACD技术指标卖出开关：False=满足条件仅记录信号不实盘卖出，True=执行真实卖出
 
 def is_global_monitor_enabled():
     """全局自动操作总开关：关闭时所有自动策略不再产生新交易动作。"""
