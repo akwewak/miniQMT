@@ -9,6 +9,20 @@
 `api_token` 为空时，仅**本机**（TCP 对端为 `127.0.0.1`/`::1`）可免 Token 访问；
 非本机访问一律拒绝。绑定 `0.0.0.0` 对外提供服务时**必须**配置 Token。
 
+### Token 来源优先级
+
+v3.8.9 起，独立网关启动时按以下顺序解析 Token：
+
+```text
+XQM_API_TOKEN > QMT_API_TOKEN > xtquant_manager_config.json/api_token
+```
+
+推荐做法：
+
+- web1.0 与网关共用凭证：只设置 `QMT_API_TOKEN`
+- 网关使用独立凭证：同时设置 `QMT_API_TOKEN` 与 `XQM_API_TOKEN`，以后者作为网关 Token
+- 避免在 `xtquant_manager_config.json` 写真实 Token；JSON 中的 `api_token` 只作为本地兜底
+
 `/api/v1/health` 免 Token 可达，可直接用作存活探针，但未携带有效 Token 时
 只返回 `total` / `healthy` 计数，`accounts` 为空对象 `{}`（账号 ID 属敏感信息，
 是遍历其他账号数据的入口）。带 Token 才返回完整账号明细。

@@ -85,6 +85,21 @@
 
 Web 中的“自动/暂停”切换对应 `grid_trading_sessions.enabled`。暂停后会话、账本和当前网格参数都会保留，只是不再发出新的网格买卖单；“停止网格”则会结束会话并撤销未完成网格委托。
 
+### 全仓止盈后的自动暂停  [v3.8.9]
+
+动态止盈止损触发 `take_profit_full` 并收到真实成交确认后，系统默认会自动暂停同一股票的活跃网格会话，防止清仓后网格因为价格反弹继续生成卖出信号或提交新网格单。
+
+| 项 | 行为 |
+|----|------|
+| 配置开关 | `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`，默认 `True` |
+| 触发时机 | `take_profit_full` 委托成交确认后；不是信号生成时，也不是委托提交时 |
+| 影响范围 | 只影响成交股票对应的活跃网格会话，不影响其他股票 |
+| 暂停语义 | 设置 `grid_trading_sessions.enabled=False`，保留 active 会话、账本、统计和参数 |
+| 恢复方式 | 通过 Web/API 将该会话切回“自动”即可继续 |
+
+!!! note "暂停不等于停止"
+    该联动不会调用“停止网格”，也不会清理会话历史。它只是把单个会话的自动执行开关关掉，让用户在全仓止盈后重新确认是否继续运行该股网格。
+
 ---
 
 ## 退出条件
@@ -243,6 +258,7 @@ curl -X POST http://localhost:5000/api/grid/stop \
 - 默认不要求先触发首次止盈即可启动网格；如需更保守风控，可设置 `GRID_REQUIRE_PROFIT_TRIGGERED = True` 或同名环境变量
 - 每只股票同一时间只能有一个活跃网格会话
 - 单个网格会话可通过 Web”自动/暂停”开关临时禁止新网格单，不等同于停止会话
+- `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=True` 时，全仓止盈成交确认后会自动把同股活跃网格会话切到暂停
 - **买卖量基数统一**：固定金额模式下，买入量与卖出量使用同一基数 `current_volume × position_ratio`（有持仓时），确保每档买卖操作量对称；首次买入（无持仓）回退为基于 `max_investment × position_ratio / price` 计算。固定股数模式（`trade_mode='shares'`）则买卖统一使用 `fixed_volume` 股（对齐100股，买入仍受 `max_investment` 硬上限兜底）
 - 网格数据持久化在 SQLite `grid_trading_sessions` / `grid_trades` / `grid_orders` / `grid_lots` / `grid_lot_matches` 表中（详见[数据库表结构](database.md)）
 - 实盘网格下单以**成交回报**为准（`GRID_CONFIRM_LIVE_ORDER_BY_DEAL`）：委托先进入 `grid_orders`，真实成交后才写 `grid_trades`、账本和普通 `trade_records`，系统重启自动对账恢复未完成委托

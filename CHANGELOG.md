@@ -6,6 +6,56 @@
 
 ## [Unreleased]
 
+## [3.8.9] - 2026-08-19
+
+> 本版本汇总 **v3.8.8 发布后的全部主干变更**：重点收紧 web1.0 / XtQuantManager 的 API 鉴权，补齐北交所股票代码支持，修复 Web 状态同步、IPC/RPC 委托状态与 Windows 启动器控制台鲁棒性，新增"全仓止盈后暂停同股网格会话"的风险联动；发布前接连修复两个实盘 bug——持仓清零后止盈状态残留（清仓再买入继承脏状态）与 MACD 技术指标卖出 `price_type` 非法值（实盘连续废单循环），并新增 `ENABLE_MACD_SELL` 保守开关。
+
+### Security
+- **web1.0 Flask 统一保护 `/api/*`**：`QMT_API_TOKEN` 配置后，所有 `/api/*` 请求均需 `X-API-Token`，包括 GET 查询和 `/api/sse` 实时流；Token 比对改用 `hmac.compare_digest`，避免时序侧信道。
+- **新增 `WEB_PUBLIC_MODE` fail-closed 模式**：公网映射、反向代理或内网穿透场景可设置 `WEB_PUBLIC_MODE=true`。此时即使 `QMT_API_TOKEN` 为空，Flask 也会拒绝 `/api/*`，避免误把无鉴权服务暴露出去。
+- **web1.0 前端 Token 通路补齐**：统一通过 `apiFetch` 携带 `X-API-Token`，网格悬停卡、配置预览等只读请求也不再绕过鉴权；SSE 改为 fetch stream，以便携带请求头；API Token 在输入/变更时即时持久化到 `localStorage`。
+- **XtQuantManager Token 优先使用环境变量**：独立网关启动时按 `XQM_API_TOKEN > QMT_API_TOKEN > xtquant_manager_config.json/api_token` 解析 Token，减少在 JSON 配置里保存明文凭证的需求。
+
+### Added
+- **全仓止盈后暂停同股网格会话**：新增 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`，默认 `True`，支持环境变量与配置数据库持久化；Web 配置字段为 `pauseGridAfterTakeProfitFull`。
+- **成交确认后触发网格暂停**：仅在 `_confirm_filled_order()` 确认本地跟踪的 `take_profit_full` 委托已成交后执行暂停；不是检测到止盈信号时触发，也不是委托提交成功时触发。
+- **只暂停，不停止/删除会话**：通过 `grid_trading_sessions.enabled=False` 暂停该股票活跃网格会话，保留会话、账本、历史统计和当前参数；后续可通过 Web/API 手动恢复“自动”。
+- **北交所股票代码支持**：统一支持 `.BJ` / `BJ.` / 裸 `920xxx`，`Methods.add_xt_suffix()` 可自动把 `920118` 归一为 `920118.BJ`；Web、交易执行、行情、IPC/RPC 与 XtQuantManager 兼容端点同步支持。
+- **IPC 可选共享密钥**：新增 `QMT_IPC_SECRET`，策略端写入订单 JSON，大 QMT executor 读取 `config.json` 后校验；为空时保持原本地信任模型。
+- **MACD 技术指标卖出保守开关 `ENABLE_MACD_SELL`**：默认 `False`——满足"MACD 死叉 + 均线空头排列"条件时仅记录一条信号日志，不实盘下单；置 `True` 后按信号执行真实卖出（`price_type=5` 最新价）。支持 `.env`/环境变量。开关关闭期间信号按"当日已处理"记录，盘中改值需重启进程才会对当日信号重新生效。注意该开关只管 MACD 技术指标卖出，不影响动态止盈止损、止损补仓与网格卖出。
+
+### Changed
+- **股票代码后缀规则更精细**：深市/沪市股票、ETF、基金、债券与北交所 `920` 段按本地交易所规则补全后缀，兼容 `SH.600036` / `SZ.000001` / `BJ.920118` 前缀格式。
+- **北交所行情兜底边界明确**：`.BJ` 代码在当前实现中不走 Mootdx 实时/历史兜底，避免外部源不支持时返回误导性数据。
+- **web1.0 全局自动操作状态持续同步**：顶部总闸 `isMonitoring` 从 `/api/status` 与 SSE 定期同步，用户点击后的短时意图优先，但不再只在初始化时读取一次，避免长期漂移。
+- **大 QMT IPC executor 心跳更稳**：新增 `QMT_IPC_HEARTBEAT_INTERVAL_SEC` 环境变量（默认 2 秒），独立心跳线程与阻塞等待期间刷新心跳，减少慢委托被误判为 executor 离线。
+- **Windows 启动器控制台鲁棒性增强**：`miniqmt.bat` 设置 `PYTHONIOENCODING=utf-8:replace`，`scripts/_launcher.py` 对旧控制台的输出/输入做安全包装，旧 Windows 控制台遇到 Unicode 文本不再因 `UnicodeError` 崩溃；依赖检查同步补 `python-dotenv`。
+
+### Fixed
+- **网关反向探测 Flask 状态时携带 Token**：XtQuantManager 反向请求账号 Flask `/api/status` 时优先使用 `config.WEB_API_TOKEN`，其次 `QMT_API_TOKEN`，再回退网关 `api_token`，避免 Flask 开启 Token 后网关状态探测持续 401 告警。
+- **IPC/RPC 委托状态归一修复**：查询委托/成交时补齐 `status_msg`、`order_remark`、`strategy_name` 等字段，RPC 下单 wire remark 使用 `int_id|order_remark`，既能关联合成订单 ID，又能保留策略备注。
+- **RPC 部分成交增量回调**：部分成交后再全成时，第二次只推新增成交量，避免成交回调重复累计；`rejected` / `cancelled` 不再触发 trade callback。
+- **IPC/RPC 订单终态处理增强**：大 QMT 文件 IPC 端强化 `pending` / `processing` / `done` 状态流转、终态查询与废单/撤单映射，减少“拒单被当成交”或“撤单触发成交回调”的误判。
+- **MACD 技术指标卖出 `price_type=0` 非法值导致实盘连续废单**（2026-08-19 实盘 bug）：`strategy.execute_sell_strategy` 是全仓库唯一显式传 `price_type` 的卖出调用点，旧值 `0` 不属于 xtquant 任何合法报价类型（实测 `FIX_PRICE=11`、`LATEST_PRICE=5`），QMT 客户端在本地参数校验层直接拒绝——`order_stock_async` 回报 `order_id=-1`，**不生成委托、不产生废单记录、不触发 `on_order_error`**，与"柜台拒单"表象完全不同，极难排障。该路径历史 126 次卖出全部被拒；叠加"卖出失败不标记 `processed_signals`、无失败冷却"，形成每 ~16 秒一轮的死循环（当日 78+ 轮）。现改为 `price_type=5`（与止盈/止损/网格全部成功路径一致），并默认由 `ENABLE_MACD_SELL=False` 保守关闭（见 Added）。
+- **持仓清零时清理持久化止盈状态**（2026-08-18 实盘 bug）：QMT 清仓后仍会返回 `volume=0` 的持仓残留行，实盘同步 `_sync_real_positions_to_memory` 走更新分支使 `profit_triggered / highest_price / open_date` 等旧仓状态残留并持久化；清仓后再买入时继承旧仓状态，导致新仓永不首次止盈、动态止盈位按旧高点误算（可能触发全仓误卖）。现检测到持仓数量从有到无的转变时直接删除内存+SQLite 记录（新私有方法 `_delete_position_direct`，不经 `get_position`，防同步循环内无限递归），再买入时走新增分支全新初始化；本地无记录的 `volume=0`（含 NaN/None）残留行跳过插入，不再重建脏记录。`remove_position` 改为复用该方法，行为不变。
+- **P6 兜底删除在持仓全部清空时失效**：`_sync_memory_to_db` 的 `commit()` 原位于"内存持仓非空"分支内，当持仓全部清空（内存为空）时 DELETE 不提交、连接关闭时回滚——恰好是"最后一笔持仓清零"这一最需要兜底清理的场景。现 P6 删除后立即提交。
+- **SQLite 即时删除连接句柄泄漏**：`remove_position` / `_delete_position_direct` 的 SQLite 即时删除原来用 `with sqlite3.connect(...)`（只管理事务不关闭连接），现显式 `close()`，避免 Windows 下 `-shm/-wal` 文件锁残留。
+
+### Tests
+- `test/test_stock_code_suffix.py`：新增北交所 `.BJ` / `BJ.` / 裸 `920xxx` 代码归一回归。
+- `test/test_web_api_complete.py`、`test/test_web1_grid_dialog_static.py`、`test/test_xqm_monitor_endpoints.py`、`test/test_xtquant_manager/test_server.py`：覆盖 web1.0 全 `/api/*` 鉴权、前端 Token 请求链路、SSE/fetch stream 与网关反向探测 Token。
+- `test/test_qmt_ipc_executor.py`、`test/test_qmt_ipc_trader.py`、`test/test_qmt_rpc_trader.py`：覆盖 IPC secret、心跳、订单状态映射、`order_remark` 保留、部分成交增量与拒单/撤单语义。
+- `test/test_launcher_deployment.py`：覆盖 Windows 启动器输出/依赖检查与控制台相关回归。
+- `test/test_trader_callback.py`：新增全仓止盈成交确认后的网格暂停回归；覆盖开关启用时暂停该股活跃网格会话、开关关闭时保持会话自动执行两种路径。
+- `test/test_position_clear_reset.py`：新增 9 用例——清仓删除（内存+SQLite 双删）、清仓再买入新仓语义（2026-08-18 场景复现）、残留行不重建、部分卖出不触发、卖出在途不误删、删除后重启恢复无残留、删除路径不经 `get_position`（防递归回归）、SQLite 即时删除失败由 P6 兜底、NaN/None 余额行安全处理；已注册至 `dual_layer_storage` 组（critical）。
+- 发布验证：2026-08-19 使用 `C:\Users\PC\Anaconda3\envs\python39\python.exe test/run_integration_regression_tests.py --all-with-fast` 完整回归，**33 组、123 模块、2548 用例，2548 通过，0 失败，0 错误，0 跳过，成功率 100%**（含 `ENABLE_MACD_SELL` 开关与 `price_type` 修复后的全部指标/止盈/端到端用例）。
+
+### Docs
+- `docs/site/miniqmt/configuration.md`：补充 `WEB_PUBLIC_MODE`、`ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`、`ENABLE_MACD_SELL`、`QMT_IPC_SECRET`、北交所代码规则、IPC/RPC 订单状态说明和 v3.8.9 测试统计。
+- `docs/site/miniqmt/web-api.md` / `docs/site/miniqmt/web-frontend.md`：同步全 `/api/*` 鉴权、SSE Token、状态同步、网关反向探测与配置字段说明。
+- `docs/site/xqm/*`：补充网关 Token 优先级与安全建议。
+- `README.md` / `QUICK_START.md` / `CLAUDE.md` / `.env.example` / `docs/site/miniqmt/index.md` / `docs/site/miniqmt/testing.md`：同步 v3.8.9 发布能力、北交所示例、`ENABLE_MACD_SELL` 开关说明和回归统计。
+
 ## [3.8.8] - 2026-08-13
 
 > 本版本聚焦 **实盘委托号可靠性与基础数据完整性**：加固异步下单 `seq -> order_id` 的匹配链路（防止止盈止损卖出后拿不到委托号而重复发单），修复基准成本被 QMT 持仓刷新抹掉、无卖盘时买入拿到 0 价，以及总控制台停止菜单停不掉进程的问题。同时完成一轮文档库清理。
@@ -536,7 +586,8 @@
 - 模拟交易模式（无需 QMT 即可验证策略）
 - 回归测试框架基础设施
 
-[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.8...HEAD
+[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.9...HEAD
+[3.8.9]: https://github.com/weihong-su/miniQMT/compare/v3.8.8...v3.8.9
 [3.8.8]: https://github.com/weihong-su/miniQMT/compare/v3.8.7...v3.8.8
 [3.8.7]: https://github.com/weihong-su/miniQMT/compare/v3.8.6...v3.8.7
 [3.8.6]: https://github.com/weihong-su/miniQMT/compare/v3.8.5...v3.8.6

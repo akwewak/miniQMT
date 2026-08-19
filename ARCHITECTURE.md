@@ -216,6 +216,8 @@ graph LR
 | **grid_validation.py** | 网格参数校验 | `validate_grid_params()` | config |
 | **xtquant_manager/** | HTTP网关（多账户，可选） | `XtQuantServer`, `XtQuantClient`, `XtDataAdapter` | xtquant, fastapi |
 
+> v3.8.9 起，股票代码在行情、交易、Web 与 IPC/RPC 路径统一支持 `.SH` / `.SZ` / `.BJ` 后缀和 `SH.` / `SZ.` / `BJ.` 前缀格式，裸 `920xxx` 会归一为北交所 `.BJ`。web1.0 Flask 统一在 `before_request` 层保护所有 `/api/*`，配置 `QMT_API_TOKEN` 后 GET、写操作和 SSE 都需要 `X-API-Token`。
+
 ---
 
 ## 线程架构
@@ -377,6 +379,7 @@ while not stop_flag:
 - `ENABLE_AUTO_OPERATION`: 全局自动操作总开关
 - `ENABLE_GRID_TRADING`: 启用/禁用网格交易
 - `grid_trading_sessions.enabled`: 单个网格会话自动/暂停开关
+- `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`: 全仓止盈成交确认后暂停同股网格会话
 - `GRID_CALLBACK_RATIO`: 回调触发比例(0.5%)
 - `GRID_BUY_COOLDOWN` / `GRID_SELL_COOLDOWN`: 买入/卖出冷却时间(秒)
 
@@ -444,6 +447,8 @@ ENABLE_XTQUANT_MANAGER = False      # False=直连xtquant(默认), True=HTTP路�
 XTQUANT_MANAGER_URL = "http://127.0.0.1:8888"
 XTQUANT_MANAGER_TOKEN = ""          # 空=本机免认证
 ```
+
+独立网关服务端 Token 优先级为 `XQM_API_TOKEN > QMT_API_TOKEN > xtquant_manager_config.json/api_token`。生产建议使用环境变量或 `.env`，不要把真实 Token 写入 JSON 明文配置。
 
 ### 系统层级
 
@@ -657,6 +662,7 @@ def validate_trading_signal(self, stock_code, signal_type, signal_info):
 - 检测到 `stop_loss` 时，立即设置 `force_grid_stop = True`
 - 在 `signal_lock` **外部**调用 `grid_manager.stop_grid_session()`，避免 `signal_lock → grid_manager.lock` 潜在死锁
 - 网格会话在止损信号进入策略线程前已被强制停止
+- `take_profit_full` 不强制停止网格；v3.8.9 起仅在成交确认后按 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` 暂停同股网格会话，保留会话与账本，避免清仓后继续发新网格单
 
 ```python
 # position_manager.py - 监控循环信号检测
@@ -768,7 +774,7 @@ market_deviation = abs(current_price - current_center) / current_center  # 市�
 deviation = max(drift_deviation, market_deviation)         # 取最大值
 ```
 
-**强制退出（硬优先级）**: 当普通持仓触发止损信号时，在 `signal_lock` 外立即调用 `stop_grid_session()`，避免锁顺序死锁，确保网格会话在止损执行前完全停止。
+**强制退出（硬优先级）**: 当普通持仓触发止损信号时，在 `signal_lock` 外立即调用 `stop_grid_session()`，避免锁顺序死锁，确保网格会话在止损执行前完全停止。全仓止盈则采用更温和的联动：`take_profit_full` 成交确认后默认只暂停同股网格会话（`grid_trading_sessions.enabled=False`），不停止或删除会话。
 
 ### 网格盈亏计算
 
@@ -1375,8 +1381,10 @@ logger.info(f"检测到止盈信号: {stock_code}")  # 关键事件
 | `ENABLE_AUTO_TRADING` | `False` | 非网格自动策略执行开关 |
 | `ENABLE_THREAD_MONITOR` | `True` | 线程健康监控 |
 | `ENABLE_GRID_TRADING` | `True` | 网格交易功能开关 |
+| `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` | `True` | 全仓止盈 `take_profit_full` 成交确认后暂停同股网格会话 |
 | `ENABLE_SELL_MONITOR` | `True` | 卖出监控功能开关 |
 | `ENABLE_XTQUANT_MANAGER` | `False` | XtQuantManager HTTP网关（多账户） |
+| `WEB_PUBLIC_MODE` | `False` | 公网映射/反向代理 fail-closed 模式，Token 为空时也拒绝 `/api/*` |
 | `ENABLE_HEARTBEAT_LOG` | `True` | 心跳日志（每30分钟输出系统状态） |
 | `ENABLE_PREMARKET_XTQUANT_REINIT` | `True` | 盘前9:25自动重新初始化xtquant |
 | `DEBUG` | `False` | 调试模式 |
@@ -1424,6 +1432,7 @@ logger.info(f"检测到止盈信号: {stock_code}")  # 关键事件
 | `GRID_COUNTERPARTY_BUY_PRICE_BUFFER_RATIO` | `0.02` | 对手价买入资金预占缓冲(2%) |
 | `GRID_ENABLE_PRICE_LIMIT_GUARD` | `True` | 涨跌停/停牌防护 |
 | `GRID_PRICE_LIMIT_EPS` | `0.001` | 涨跌停判定容差(元) |
+| `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` | `True` | 全仓止盈成交确认后暂停同股活跃网格会话，保留会话与账本 |
 
 #### 行情源健康评分
 
@@ -1475,14 +1484,15 @@ logger.info(f"检测到止盈信号: {stock_code}")  # 关键事件
 
 ---
 
-**文档版本**: v1.6
-**最后更新**: 2026-06-27
+**文档版本**: v1.7
+**最后更新**: 2026-08-17
 **维护者**: miniQMT Team
 
 ### 变更记录
 
 | 版本 | 日期 | 变更说明 |
 |------|------|---------|
+| v1.7 | 2026-08-17 | 同步 v3.8.9：Web `/api/*` 统一鉴权、`WEB_PUBLIC_MODE`、北交所 `.BJ` 代码归一、网关 Token 环境变量优先级和全仓止盈暂停同股网格会话 |
 | v1.6 | 2026-06-27 | 同步行情源健康评分（内存观察版、不落库、`/api/market/health`）与网格启动条件默认值：`GRID_REQUIRE_PROFIT_TRIGGERED=False` |
 | v1.5 | 2026-06-13 | 新增「网格实盘交易机制」章节（成交确认/对手价/涨跌停防护/信号复核/启动对账/真实盈亏账本）；新增 grid_orders/grid_lots/grid_lot_matches 表及 grid_config_templates；grid_trading_sessions 补 total_buy_volume/total_sell_volume；修正错误表名 grid_sessions→grid_trading_sessions、目标盈利 8%→10%；修正失效文档死链 |
 | v1.4 | 2026-03-28 | 修正数据库表结构（grid_trading_sessions/grid_trades真实字段）；修正会话状态值（active/stopped）；更新网格交易配置参数（GRID_DEFAULT_PRICE_INTERVAL等）；修正ENABLE_GRID_TRADING/ENABLE_SELL_MONITOR默认值 |

@@ -7,13 +7,29 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 | Flask 直连 (`web_server.py`) | `http://127.0.0.1:5000`（每账号一个端口） | web1.0、单机完整功能 |
 | xtquant_manager 网关 | `http://127.0.0.1:8888` | web2.0、多账号、远程访问 |
 
-**认证**：需要 Token 的接口通过 `QMT_API_TOKEN` 环境变量（Flask）或 `api_token` 配置（网关）设置。
+**认证**：Token 通过 `QMT_API_TOKEN` 环境变量（Flask）或 XtQuantManager 服务端 Token（优先级 `XQM_API_TOKEN > QMT_API_TOKEN > xtquant_manager_config.json/api_token`）设置，请求统一使用 `X-API-Token` 头。
 
-- **Flask 直连模式**：`require_token` 装饰器在**未设置 `QMT_API_TOKEN` 时放行**（适合纯内网部署，Flask 仅绑 `127.0.0.1`）；设置后需在请求头 `X-API-Token` 或 URL 参数 `?token=` 中携带令牌。除只读查询外，多数写操作端点（监控开关、初始化持仓、买入、持仓/网格参数更新、网格启停与模板保存、配置保存、数据管理等）均带 `@require_token` 保护，本文档在这些行的说明中标注 **🔑 需 Token**。
+- **Flask 直连模式**：v3.8.9 起统一保护所有 `/api/*`，包括 GET 查询和 `/api/sse` 实时流；设置 `QMT_API_TOKEN` 后必须携带请求头 `X-API-Token: <token>`，不再建议把 Token 放进 URL 查询参数。未设置 `QMT_API_TOKEN` 且 `WEB_PUBLIC_MODE=false` 时放行，适合默认只绑 `127.0.0.1` 的本机调试。
+- **Flask 公网模式**：设置 `WEB_PUBLIC_MODE=true` 后，即使 `QMT_API_TOKEN` 为空也拒绝所有 `/api/*`，用于宝塔面板、内网穿透、反向代理等公网暴露场景的 fail-closed 保护。
 - **网关模式**：**所有数据端点（含只读）均需 `X-API-Token`**，只读端点同样会返回持仓成本、盈亏与成交明细，属财务隐私数据。唯一例外是 `/api/v1/health`（存活探针）——免 Token 可达，但无 Token 时只返回 `total`/`healthy` 计数，不返回 `accounts` 明细。`api_token` 为空时仅本机可访问，非本机一律拒绝。
 - 网关默认**不信任** `X-Forwarded-For`（`trust_proxy: false`），避免伪造该头冒充本机绕过认证；仅在受信任反向代理之后才可开启。详见 [XQM 安全配置](../xqm/guides/security.md)。
 
 **多账号路由（网关）**：通过 `X-Account-Id` 请求头切换目标账号；未指定时回退到第一个已注册账号。
+
+!!! note "表格里的 Token 标注"
+    历史文档在写接口旁标注 **🔑 需 Token**。v3.8.9 起，Flask 直连只要配置了 `QMT_API_TOKEN`，所有 `/api/*` 都需要 Token；这些标注仅用于提醒“该端点一定是敏感写操作”，不是鉴权范围的全部。
+
+## 股票代码入参
+
+股票代码参数支持后缀格式、前缀格式和 6 位裸代码，后端会统一归一为 `XXXXXX.SH` / `XXXXXX.SZ` / `XXXXXX.BJ`。
+
+| 输入 | 归一结果 | 说明 |
+|------|----------|------|
+| `000001` / `SZ.000001` | `000001.SZ` | 深市 |
+| `600036` / `SH.600036` | `600036.SH` | 沪市 |
+| `920118` / `BJ.920118` | `920118.BJ` | 北交所 |
+
+北交所 `.BJ` 当前不走 Mootdx 行情兜底；行情源不支持时会保守返回空或跳过。
 
 下列表格中 **🌐 网关** 列含义：
 
@@ -207,6 +223,19 @@ web1.0 网格悬停卡片直接使用该接口。为避免前端重复换算，�
 |------|------|------|--------|
 | GET | `/api/config` | 获取系统配置 | 🔒 只读（返回默认值） |
 | POST | `/api/config/save` | 保存配置（需 Token） | ❌ |
+
+### 配置字段要点
+
+以下字段以 Flask 直连模式的 `/api/config` / `/api/config/save` 为准；网关兼容端点只读，写配置必须回到本机 web1.0 / Flask。
+
+| 字段 | 对应配置 | 说明 |
+|------|----------|------|
+| `globalAllowBuySell` | `ENABLE_AUTO_TRADING` | 动态止盈止损自动执行开关 |
+| `globalAllowGridTrading` | `ENABLE_GRID_TRADING` | 网格模块自动执行开关 |
+| `pauseGridAfterTakeProfitFull` | `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` | 全仓止盈 `take_profit_full` 成交确认后是否暂停同股活跃网格会话，默认 `true` |
+
+!!! note "字段语义  [v3.8.9]"
+    `pauseGridAfterTakeProfitFull` 只控制全仓止盈成交后的网格联动暂停，不会停止或删除网格会话。保存为 `false` 后，`take_profit_full` 成交确认只完成动态止盈流水与持仓刷新，不再改动 `grid_trading_sessions.enabled`。
 
 ---
 

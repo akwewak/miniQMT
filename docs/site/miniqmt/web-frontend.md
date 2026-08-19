@@ -62,6 +62,9 @@ miniQMT 提供**两套**Web 界面，职责明确分工：
 **网关通过反向探测获取它们**：收到 `/api/status` 时调用该账号 Flask 的
 `/api/status`（端口 = `5000 + 账号在 account_config.json 中的索引`，
 带 5 秒缓存、1 秒超时），拿到真实的内存态开关。
+若 Flask 配置了 `QMT_API_TOKEN`，网关会在反向探测中携带同一个 Token：
+优先读取 `config.WEB_API_TOKEN`，其次读取环境变量 `QMT_API_TOKEN`，最后回退网关
+`api_token`，避免开启鉴权后状态探测持续出现 401 告警。
 
 为此，**web2.0 启动模式下 Flask 仍会启动**（只绑 `127.0.0.1`，不对外暴露）：
 launcher 先探测该账号的 Flask 端口，空闲则启动、已被占用则跳过（设 `QMT_NO_FLASK=1`）
@@ -198,6 +201,7 @@ Flask 直连模式下，顶部控制条包含以下控件（部分仅后端存�
 | 允许自动网格 | `ENABLE_GRID_TRADING`（保存配置字段 `globalAllowGridTrading`） | 网格模块自动执行开关，持久化 |
 | 买 / 卖 | `ENABLE_ALLOW_BUY` / `ENABLE_ALLOW_SELL` | 手动和自动交易的方向权限 |
 | 动态止盈（后端配置开关） | `ENABLE_DYNAMIC_STOP_PROFIT` | 控制动态止盈止损模块是否检测信号（此开关仅在后端 config.py 中存在，web1.0 前端无对应 UI 控件；如需切换请直接编辑配置文件） |
+| 全仓止盈后暂停网格（后端配置/API） | `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`（保存配置字段 `pauseGridAfterTakeProfitFull`） | `take_profit_full` 成交确认后暂停同股网格会话，默认启用；当前 web1.0 无独立可视化开关，可通过配置文件、环境变量或 API 调整 |
 | 网格自动/暂停 | `grid_trading_sessions.enabled` | 单只股票网格会话开关，位于**网格配置对话框内**（非顶部控制条），暂停后保留会话但不发新网格单 |
 | 自动止盈（持仓列表末列） | `positions.stop_profit_enabled` | **个股级**动态止盈止损拨动开关，暂停后该股不再检测止盈止损信号，持久化 |
 
@@ -205,6 +209,17 @@ Flask 直连模式下，顶部控制条包含以下控件（部分仅后端存�
     早期前端使用 `isMonitoring` 表示顶部开关状态。为兼容旧接口，字段名保留不变，但当前语义已经是全局自动操作总开关；持仓监控线程状态请看 `positionMonitorRunning`。
 
 Web1.0 参数区中，`API Token` 与"模拟交易模式""允许自动止盈""允许自动网格"位于同一行；Token 值由前端 `localStorage` 持久化，通过 `X-API-Token` 请求头发送，后端与 `QMT_API_TOKEN` 环境变量比对验证。
+
+v3.8.9 起，web1.0 的请求链路统一收口到 `apiFetch`：配置读取、网格悬停卡、模板预览等 GET 请求都会携带 Token；SSE 也从原生 `EventSource` 改为 fetch stream，以便带上 `X-API-Token` 请求头。Token 输入框在 `input` / `change` 时都会即时写入 `localStorage`，刷新页面后无需重新输入。
+
+!!! warning "URL 参数不再作为推荐 Token 通路"
+    Token 应放在 `X-API-Token` 请求头，不要放在 `?token=` 查询参数中。查询参数容易被浏览器历史、代理日志和访问日志记录，且当前 web1.0 前端不会依赖这种形式。
+
+### web1.0 总闸状态同步  [v3.8.9]
+
+顶部“开始/停止自动操作”按钮对应运行时变量 `ENABLE_AUTO_OPERATION`。旧版只在页面初始化时读取一次 `isMonitoring`，如果后端被其他入口切换，总闸状态会长期停留在旧值。
+
+当前 web1.0 会从 `/api/status` 和 SSE 推送持续同步 `isMonitoring`。用户刚点击按钮后的短时间内以前端意图为准，避免刚发出的操作被旧推送覆盖；随后以后端真实状态为准，保证界面不会漂移。
 
 Web2.0 顶部不再有任何控制控件：原先的 7 个开关/按钮已全部替换为**只读状态徽章**
 （开 / 关 / 未知三态），切换请到 web1.0 完成。
@@ -265,6 +280,8 @@ Web2.0 顶部不再有任何控制控件：原先的 7 个开关/按钮已全部
 动态止盈止损卖出委托由后端 `pending_orders` 跟踪。委托超时后，如果启用了自动重挂，系统会先撤销旧委托，再以新价格重新提交；`best` 对手价模式下买三价无效时会降级到买一价、最新价、收盘价或原信号价。
 
 这意味着 Web 中“首次止盈已触发”代表**成交确认后的状态**，不是“委托已提交”。生产排查时应同时查看交易记录、后台日志和 QMT 当日委托，避免把待成交卖单误判为已经落账。
+
+v3.8.9 起，若 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=True`，`take_profit_full` 全仓止盈委托成交确认后，后端会把同股活跃网格会话切到暂停（`grid_trading_sessions.enabled=False`）。web1.0 / web2.0 中该会话仍会显示为 active，但“自动/暂停”状态会变为暂停；用户可在 web1.0 的网格配置对话框中手动恢复自动执行。
 
 ### 网格悬停卡片口径
 
@@ -365,6 +382,10 @@ XtQuantManager：
 
 !!! note "菜单节选说明"
     以上为 `python scripts/_launcher.py menu` 的完整选项。CLAUDE.md 中的菜单概览表仅列出了高频使用的子集，请以本文档为准。
+
+### 控制台编码鲁棒性  [v3.8.9]
+
+`miniqmt.bat` 会设置 `PYTHONIOENCODING=utf-8:replace`，`scripts/_launcher.py` 对控制台 `print` / `input` 做安全包装。旧版 Windows 控制台或 ASCII 输出环境遇到中文、勾选符号等 Unicode 文本时，会以替换字符输出而不是抛 `UnicodeError` 终止菜单；依赖检查同步包含 `python-dotenv`，确保项目根 `.env` 可作为环境变量 fallback 加载。
 
 ### 停止流程  [v3.8.8]
 

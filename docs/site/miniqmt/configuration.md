@@ -13,6 +13,8 @@
 | `ENABLE_AUTO_TRADING` | `False` | 自动止盈分开关（动态止盈止损自动执行，不影响网格）；持久化 |
 | `ENABLE_DYNAMIC_STOP_PROFIT` | `True` | 动态止盈止损功能 |
 | `ENABLE_GRID_TRADING` | `True` | 自动网格分开关；持久化 |
+| `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` | `True` | 全仓止盈成交确认后自动暂停同股网格会话；持久化，可用同名环境变量覆盖 |
+| `ENABLE_MACD_SELL` | `False` | MACD 技术指标卖出开关；`False`（默认）=满足"MACD死叉+均线空头排列"仅记录信号不实盘下单，`True`=执行真实卖出（最新价）；不影响止盈止损/止损补仓/网格；可用同名环境变量覆盖 |
 | `ENABLE_ALLOW_BUY` | `True` | 允许买入 |
 | `ENABLE_ALLOW_SELL` | `True` | 允许卖出 |
 | `ENABLE_STOP_LOSS_BUY` | `True` | 止损补仓功能开关 |
@@ -27,10 +29,10 @@
     5. `account_config.json` 配置正确
 
 !!! info "三层开关关系"
-    自动操作采用“总开关 → 策略分开关 → 个股开关”的结构：`ENABLE_AUTO_OPERATION` 是所有自动策略的新单总闸；`ENABLE_AUTO_TRADING` 只控制动态止盈止损等非网格策略；`ENABLE_GRID_TRADING` 控制网格模块；单个网格会话还可通过 `grid_trading_sessions.enabled` 在 Web 中切换“自动/暂停”。
+    自动操作采用“总开关 → 策略分开关 → 个股开关”的结构：`ENABLE_AUTO_OPERATION` 是所有自动策略的新单总闸；`ENABLE_AUTO_TRADING` 只控制动态止盈止损等非网格策略；`ENABLE_GRID_TRADING` 控制网格模块；单个网格会话还可通过 `grid_trading_sessions.enabled` 在 Web 中切换“自动/暂停”。v3.8.9 起，`take_profit_full` 全仓止盈成交确认后还可由 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` 自动把同股网格会话切到暂停；MACD 技术指标卖出（MACD死叉+均线空头排列）则由 `ENABLE_MACD_SELL` 单独控制，默认关闭（仅记录信号）。
 
 !!! note "持久化规则"
-    Web1.0 的“开始/停止自动操作”按钮对应 `ENABLE_AUTO_OPERATION`，只在当前进程运行时生效；API Token 同一行的“模拟交易模式”“允许自动止盈”“允许自动网格”分别对应 `ENABLE_SIMULATION_MODE`、`ENABLE_AUTO_TRADING`、`ENABLE_GRID_TRADING`，其中自动止盈和自动网格会保存到配置数据库并在下次启动恢复。
+    Web1.0 的“开始/停止自动操作”按钮对应 `ENABLE_AUTO_OPERATION`，只在当前进程运行时生效；API Token 同一行的“模拟交易模式”“允许自动止盈”“允许自动网格”分别对应 `ENABLE_SIMULATION_MODE`、`ENABLE_AUTO_TRADING`、`ENABLE_GRID_TRADING`，其中自动止盈和自动网格会保存到配置数据库并在下次启动恢复。后端配置接口字段 `pauseGridAfterTakeProfitFull` 对应 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`，同样会持久化。
 
 ---
 
@@ -159,8 +161,11 @@ flowchart TD
 |------|--------|------|
 | `ENABLE_XTQUANT_MANAGER` | `False` | 启用后所有交易/行情走 HTTP 网关 |
 | `XTQUANT_MANAGER_URL` | `"http://127.0.0.1:8888"` | 网关服务地址 |
-| `XTQUANT_MANAGER_TOKEN` | `""` | 网关 API Token（空=不验证） |
+| `XTQUANT_MANAGER_TOKEN` | `""` | miniQMT 客户端访问网关时携带的 API Token |
 | `XTQUANT_MANAGER_RATE_LIMIT` | `600` | 速率限制（次/分钟，0=不限速） |
+
+!!! tip "网关服务端 Token 优先级  [v3.8.9]"
+    独立启动 XtQuantManager 网关时，服务端 Token 按 `XQM_API_TOKEN > QMT_API_TOKEN > xtquant_manager_config.json/api_token` 解析。建议把 Token 放在系统环境变量或项目根 `.env`，不要写入 `xtquant_manager_config.json` 明文；如希望 web1.0 与网关共用凭证，只设置 `QMT_API_TOKEN` 即可。
 
 ### 大QMT文件IPC Fallback 参数
 
@@ -170,12 +175,17 @@ flowchart TD
 |------|--------|------|
 | `ENABLE_QMT_IPC_FALLBACK` | `False`（环境变量 `ENABLE_QMT_IPC_FALLBACK`） | 大QMT文件IPC 交易通道总开关；与 `ENABLE_XTQUANT_MANAGER` 互斥 |
 | `QMT_IPC_ROOT` | `"C:\QuantIPC"`（环境变量 `QMT_IPC_ROOT`） | IPC 文件目录，策略端与大QMT端必须一致 |
+| `QMT_IPC_SECRET` | `""`（环境变量 `QMT_IPC_SECRET`） | IPC 可选共享密钥；策略端写入订单 JSON，大 QMT executor 校验，空值保持原本地信任模型 |
 | `QMT_IPC_ORDER_TIMEOUT` | `30` | 下单后等待成交回执最大秒数 |
 | `QMT_IPC_HEARTBEAT_MAX_AGE` | `10` | 心跳超过此秒数判定大QMT离线 |
 | `QMT_IPC_DEAL_POLL_INTERVAL` | `1.0` | 成交回报轮询间隔（秒） |
 | `QMT_IPC_DONE_LOOKBACK_SECONDS` | `86400` | done/ 目录委托查询回溯窗口（秒） |
+| `QMT_IPC_HEARTBEAT_INTERVAL_SEC` | `2.0`（大 QMT executor 环境变量） | `QMT_trade_executor.py` 独立心跳线程刷新间隔；不在主 `config.py`，需在运行大 QMT 脚本的环境中设置 |
 | `QMT_IPC_LOG_MAX_BYTES` | `5242880` | 大QMT端单个日志文件大小上限；设为 `0` 表示关闭大小轮转 |
 | `QMT_IPC_LOG_BACKUP_COUNT` | `5` | 大QMT端每日日志轮转备份数量 |
+
+!!! note "IPC/RPC 订单状态口径  [v3.8.9]"
+    IPC/RPC 交易后端会归一 QMT 委托状态，查询结果补齐 `status_msg`、`order_remark`、`strategy_name` 等字段。RPC 部分成交回调只推新增成交量，`rejected` / `cancelled` 不触发成交回调，避免把废单或撤单误落成真实成交。
 
 !!! tip "控制台快捷配置"
     `miniqmt.bat` 菜单 `[n] Tushare Pro 数据源配置` / `[o] 大QMT IPC Trader 配置` / `[p] XtTrader 通道总控` 可直接切换通道、改 RPC/Redis/目录等配置。
@@ -259,9 +269,13 @@ DYNAMIC_TAKE_PROFIT = [
 | `PENDING_ORDER_AUTO_REORDER` | `True` | 撤单成功后是否自动重新挂单 |
 | `PENDING_ORDER_REORDER_PRICE_MODE` | `"best"` | 重挂价格模式：`market`=最新价，`limit`=原信号价，`best`=对手价 |
 | `ALLOW_TAKE_PROFIT_FULL_WITH_PENDING` | `False` | 全仓止盈是否允许跳过活跃委托检查；生产建议保持 `False` |
+| `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` | `True` | `take_profit_full` 全仓止盈成交确认后暂停该股票活跃网格会话 |
 
 !!! note "首次止盈状态以成交为准"
     实盘 `take_profit_half` 委托提交成功后不会立即标记 `profit_triggered=True`，只有成交回报确认后才写入内存与 SQLite。已有本地跟踪委托或 QMT 活跃委托时，同一股票新的动态止盈止损信号会被阻断，防止重复卖出。
+
+!!! note "全仓止盈后的网格暂停  [v3.8.9]"
+    `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=True` 时，系统只在本地跟踪的 `take_profit_full` 委托收到成交确认后调用网格管理器暂停同股活跃会话。暂停动作等价于把 `grid_trading_sessions.enabled` 置为 `False`：会话、账本、统计和参数都会保留，不会停止或删除网格，也不会影响其他股票。若需要关闭该联动，可设置环境变量 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=false`，或通过 `/api/config/save` 保存 `{"pauseGridAfterTakeProfitFull": false}`。
 
 !!! tip "对手价重挂兜底"
     `PENDING_ORDER_REORDER_PRICE_MODE="best"` 时，卖单优先使用买三价；若买三价为 `0` 或缺失，会按买一价、最新价、收盘价、原信号价逐级降级。`sell_stock(price=0)` 同样会自动改为获取有效买盘/最新价。
@@ -331,7 +345,11 @@ DYNAMIC_TAKE_PROFIT = [
 |------|--------|------|
 | `WEB_SERVER_HOST` | `"127.0.0.1"` | web1.0 Flask 监听地址，默认仅本机访问 |
 | `WEB_SERVER_PORT` | `5000` | 监听端口 |
-| `WEB_API_TOKEN` | `""` | API Token（通过 `QMT_API_TOKEN` 环境变量设置） |
+| `WEB_API_TOKEN` | `""` | Flask API Token，实际从 `QMT_API_TOKEN` 环境变量读取；设置后所有 `/api/*`（含 GET 与 SSE）均需 `X-API-Token` |
+| `WEB_PUBLIC_MODE` | `False` | 公网映射/反向代理 fail-closed 开关；`True` 时即使 `QMT_API_TOKEN` 为空也拒绝 `/api/*` |
+
+!!! warning "Web 暴露面"
+    web1.0 默认只绑定 `127.0.0.1`。只要改为局域网/公网可访问，必须先设置强随机 `QMT_API_TOKEN`；通过宝塔面板、内网穿透或反向代理暴露时建议同时设置 `WEB_PUBLIC_MODE=true`，避免 Token 漏配后变成无鉴权接口。
 
 ---
 
@@ -352,6 +370,18 @@ DYNAMIC_TAKE_PROFIT = [
 | `BAOSTOCK_MAX_CONSECUTIVE_FAILURES` | `3` | 连续失败达到阈值后进入冷却期 |
 
 历史数据源策略分模式处理：标准模式（`ENABLE_XTQUANT_MANAGER=False`）为 `Tushare（日/周/月）→ Mootdx`，分钟线直接走 Mootdx；网关模式会先尝试 `xtdata`，失败或为空后再进入 `Tushare → Mootdx`。baostock 默认不参与常规行情/名称路径。历史日期会做格式规范化和范围过滤，异常或空数据会降级跳过而不阻塞主循环。
+
+### 股票代码与交易所后缀规则  [v3.8.9]
+
+miniQMT 内部统一使用 `000001.SZ` / `600036.SH` / `920118.BJ` 格式。用户输入可为 6 位裸代码、后缀格式或前缀格式，`Methods.add_xt_suffix()` 会在进入行情、交易、Web 与 IPC/RPC 路径前归一：
+
+| 输入示例 | 归一结果 | 说明 |
+|----------|----------|------|
+| `000001` / `SZ.000001` | `000001.SZ` | 深市主板、创业板、深市基金/债券等按本地规则识别 |
+| `600036` / `SH.600036` | `600036.SH` | 沪市股票、ETF/基金、债券等按本地规则识别 |
+| `920118` / `BJ.920118` | `920118.BJ` | 北交所 `920` 段 |
+
+`.BJ` 代码当前不走 Mootdx 实时/历史兜底；当 xtdata 或网关行情不可用时，系统会保守返回空/跳过，而不是用不支持北交所的外部源拼出参考价。
 
 ### Tushare Pro 数据源参数
 
@@ -470,5 +500,7 @@ DYNAMIC_TAKE_PROFIT = [
 ### stock_pool.json
 
 ```json
-["000001.SZ", "600036.SH", "000333.SZ"]
+["000001.SZ", "600036.SH", "920118.BJ"]
 ```
+
+也可写裸代码（如 `000001`、`600036`、`920118`），系统会按上文交易所规则自动补全后缀；发布配置建议仍显式写后缀，方便人工审阅。

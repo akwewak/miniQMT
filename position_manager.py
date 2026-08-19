@@ -592,8 +592,37 @@ class PositionManager:
 
                         # 查询内存数据库中是否已存在该股票的持仓记录
                         # 🔧 修复: 同时查询base_cost_price,用于处理QMT成本价异常的情况
-                        cursor.execute("SELECT profit_triggered, open_date, highest_price, stop_loss_price, base_cost_price FROM positions WHERE stock_code=?", (stock_code,))
+                        # 🔧 修复: 同时查询volume,用于检测持仓清零(见下方清仓删除逻辑)
+                        cursor.execute("SELECT profit_triggered, open_date, highest_price, stop_loss_price, base_cost_price, volume FROM positions WHERE stock_code=?", (stock_code,))
                         result = cursor.fetchone()
+
+                        # 🔧 持仓清零检测(2026-08-18实盘bug): QMT清仓后仍会返回volume=0的残留行,
+                        # 若继续走下方更新分支,profit_triggered/highest_price/open_date等旧状态会
+                        # 残留并持久化到SQLite;清仓后再买入时走更新分支继承旧仓状态,导致新仓
+                        # 永不首次止盈、动态止盈位按旧高点误算(可能触发全仓误卖)。
+                        # 处理: 数量从有到无的转变=清仓事件,直接删除记录(内存+SQLite),
+                        # 再买入时自然走新增分支全新初始化。
+                        # 注意: 不能调用remove_position——其内部get_position会经get_all_positions
+                        # 重入本函数造成无限递归,必须用不查询持仓的_delete_position_direct。
+                        if volume <= 0:
+                            if result is not None:
+                                try:
+                                    mem_volume = float(result[5]) if result[5] is not None else 0.0
+                                except (ValueError, TypeError):
+                                    mem_volume = 0.0
+
+                                if mem_volume > 0:
+                                    # 清仓事件: 删除记录清理持久化止盈状态
+                                    if self._delete_position_direct(stock_code):
+                                        logger.info(f"持仓清零 {stock_code},已删除记录及持久化止盈状态(防清仓再买入继承旧状态)")
+                                        # 已删除,不再属于"内存有QMT无"的P1待删集合
+                                        memory_stock_codes.discard(stock_code)
+                                    # 删除失败时保留在待删集合,由P1路径/15秒同步线程兜底
+                                # 内存记录volume也是0(QMT残留行): 跳过本行,防止反复重建脏记录
+                            else:
+                                # 本地无记录的QMT残留行(volume=0/NaN已被上方清洗为0): 跳过插入
+                                logger.debug(f"跳过QMT残留持仓行 {stock_code}(volume<=0且本地无记录)")
+                            continue
 
                         if result:
                             # 如果存在，则更新持仓信息，但不修改open_date
@@ -938,6 +967,11 @@ class PositionManager:
 
                     if deleted_count > 0:
                         logger.info(f"SQLite同步：删除了 {deleted_count} 个过期的持仓记录")
+                        # 🔧 修复: 删除后立即提交。原实现 commit 位于下方
+                        # "if not memory_positions.empty" 块内，当持仓全部清空
+                        # （内存为空）时 DELETE 不提交、连接关闭时回滚，
+                        # P6 兜底在"最后一笔持仓清零"这一最需要它的场景失效。
+                        sync_db_conn.commit()
 
                 if not memory_positions.empty:
                     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -1806,9 +1840,13 @@ class PositionManager:
                 pass
             return False
 
-    def remove_position(self, stock_code):
+    def _delete_position_direct(self, stock_code):
         """
-        删除持仓记录
+        直接删除内存+SQLite持仓记录，不查询持仓详情
+
+        与 remove_position 的区别：不调用 get_position（避免在持仓同步循环内
+        经 get_all_positions 重入 _sync_real_positions_to_memory 造成无限递归），
+        可安全用于同步行处理循环内。
 
         参数:
         stock_code (str): 股票代码
@@ -1817,17 +1855,6 @@ class PositionManager:
         bool: 是否删除成功
         """
         try:
-
-            position = self.get_position(stock_code)
-            if position:
-                profit_triggered = position.get('profit_triggered', False)
-                profit_ratio = position.get('profit_ratio', 0)
-
-                if profit_triggered:
-                    logger.warning(f"⚠️  删除已触发止盈的持仓 {stock_code}，盈亏率: {profit_ratio:.2f}%")
-                else:
-                    logger.info(f"删除持仓 {stock_code}，盈亏率: {profit_ratio:.2f}%")
-
             with self.memory_conn_lock:
                 cursor = self.memory_conn.cursor()
                 cursor.execute("DELETE FROM positions WHERE stock_code=?", (stock_code,))
@@ -1842,14 +1869,19 @@ class PositionManager:
                     if not getattr(config, 'ENABLE_SIMULATION_MODE', True):
                         try:
                             import sqlite3 as _sq3
-                            with _sq3.connect(config.DB_PATH, timeout=5.0) as _db:
-                                _db.execute(
+                            # 注意: sqlite3.Connection 的 with 只管理事务不关闭连接，
+                            # 必须显式 close，否则 Windows 下文件句柄泄漏
+                            _sq3_db = _sq3.connect(config.DB_PATH, timeout=5.0)
+                            try:
+                                _sq3_db.execute(
                                     "DELETE FROM positions WHERE rowid IN "
                                     "(SELECT rowid FROM positions WHERE stock_code=?)",
                                     (stock_code,)
                                 )
-                                _db.commit()
-                                logger.debug(f"SQLite已即时删除持仓: {stock_code}")
+                                _sq3_db.commit()
+                            finally:
+                                _sq3_db.close()
+                            logger.debug(f"SQLite已即时删除持仓: {stock_code}")
                         except Exception as e:
                             logger.warning(f"SQLite即时删除 {stock_code} 失败，将由同步线程处理: {str(e)}")
 
@@ -1862,6 +1894,33 @@ class PositionManager:
             logger.error(f"删除 {stock_code} 的持仓记录时出错: {str(e)}")
             with self.memory_conn_lock:
                 self.memory_conn.rollback()
+            return False
+
+    def remove_position(self, stock_code):
+        """
+        删除持仓记录
+
+        参数:
+        stock_code (str): 股票代码
+
+        返回:
+        bool: 是否删除成功
+        """
+        try:
+            position = self.get_position(stock_code)
+            if position:
+                profit_triggered = position.get('profit_triggered', False)
+                profit_ratio = position.get('profit_ratio', 0)
+
+                if profit_triggered:
+                    logger.warning(f"⚠️  删除已触发止盈的持仓 {stock_code}，盈亏率: {profit_ratio:.2f}%")
+                else:
+                    logger.info(f"删除持仓 {stock_code}，盈亏率: {profit_ratio:.2f}%")
+
+            return self._delete_position_direct(stock_code)
+
+        except Exception as e:
+            logger.error(f"删除 {stock_code} 的持仓记录时出错: {str(e)}")
             return False
 
 

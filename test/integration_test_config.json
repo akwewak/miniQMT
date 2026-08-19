@@ -209,9 +209,10 @@
     },
     "dual_layer_storage": {
       "name": "双层存储架构专项测试",
-      "description": "验证内存数据库+SQLite双层存储的一致性：P1(INSERT路径available写0防止过期快照)、P4(grid_database建表Schema一致)、P5(UPDATE路径不写available、重启恢复链路、类型边界)",
+      "description": "验证内存数据库+SQLite双层存储的一致性：P1(INSERT路径available写0防止过期快照)、P4(grid_database建表Schema一致)、P5(UPDATE路径不写available、重启恢复链路、类型边界)、持仓清零删除记录防旧止盈状态残留(2026-08-18实盘bug回归)",
       "modules": [
-        "test.test_dual_layer_storage"
+        "test.test_dual_layer_storage",
+        "test.test_position_clear_reset"
       ],
       "priority": "critical"
     },

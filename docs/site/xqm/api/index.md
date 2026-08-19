@@ -4,7 +4,13 @@
 
 ## 认证
 
-请求头 `X-API-Token: <token>`。本机访问（`127.0.0.1`）或未配置 `api_token` 时可省略。
+请求头 `X-API-Token: <token>`。服务端 Token 优先级为：
+
+```text
+XQM_API_TOKEN > QMT_API_TOKEN > xtquant_manager_config.json/api_token
+```
+
+未配置 Token 时，仅本机访问（`127.0.0.1` / `::1`）可省略；非本机访问会被拒绝。对外提供网关服务时必须设置强随机 Token。
 
 ```http
 GET /api/v1/accounts

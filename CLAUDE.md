@@ -82,6 +82,7 @@ python utils/check_dependencies.py
 ### 配置文件
 创建 `account_config.json` 和 `stock_pool.json` (参见文档末尾)。
 配置项可通过 `.env` 文件或 Windows 环境变量覆写，优先级：**环境变量 > .env**。复制 `.env.example` 为 `.env` 并修改即可。
+Web 远程/局域网/公网映射访问前必须设置强随机 `QMT_API_TOKEN`；配置后所有 web1.0 `/api/*`（含 GET/SSE）都需要 `X-API-Token`。公网映射建议同时设置 `WEB_PUBLIC_MODE=true`。
 
 ### 启动系统
 ```bash
@@ -232,6 +233,7 @@ Get-Content logs/qmt_trading.log -Wait  # Windows PowerShell
 - **动态止盈止损信号入队门控**：监控线程仅在 `ENABLE_DYNAMIC_STOP_PROFIT` 且 `ENABLE_AUTO_TRADING` 同时开启、**且该股 `positions.stop_profit_enabled` 为真**时才检测并写入 `latest_signals`（`_detect_and_enqueue_dynamic_signal`）。任一关闭时不检测/不入队，避免"检测→策略因自动交易关闭而清除→再检测"的每 3 秒日志刷屏。网格检测走独立分支（`ENABLE_GRID_TRADING`），不受此门控影响
 - **个股级动态止盈止损开关**：`positions.stop_profit_enabled`（默认 1=开）与全局开关是 AND 关系，可在 web1.0 持仓列表末列拨动开关单独暂停某只股票；写入走 `PositionManager.set_stop_profit_enabled()`（仿 `set_session_enabled`，只更新单列 + `_increment_data_version()`，不动 `update_position`）。网关模式 `xtquant_manager/stop_profit.py` 同样遵守该开关
 - `ENABLE_GRID_TRADING` 控制网格模块，`grid_trading_sessions.enabled` 控制单只股票网格会话“自动/暂停”
+- `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`（默认 True）控制全仓止盈成交确认后的网格联动：`take_profit_full` 成交后只暂停同股活跃网格会话（`enabled=False`），不停止/删除会话
 - 每个信号都要经过 `validate_trading_signal()` 验证,防止重复执行
 
 **2. 双层存储架构**
@@ -309,6 +311,8 @@ ENABLE_AUTO_OPERATION = False   # 全局自动操作总开关 ⚠️
 ENABLE_AUTO_TRADING = False     # 非网格自动策略执行开关
 ENABLE_DYNAMIC_STOP_PROFIT = True  # 止盈止损功能
 ENABLE_GRID_TRADING = True      # 网格交易功能
+ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = True  # 全仓止盈成交后暂停同股网格会话
+ENABLE_MACD_SELL = False     # MACD技术指标卖出开关（False=仅记录信号不实盘卖出，2026-08-19修复price_type后新增）
 ENABLE_THREAD_MONITOR = True    # 线程健康监控（无人值守必需）⭐
 ENABLE_SELL_MONITOR = True      # 卖出委托单超时监控
 ENABLE_XTQUANT_MANAGER = False  # XtQuantManager HTTP网关（多账户时开启）
@@ -782,7 +786,7 @@ thread_monitor.get_status()
 | `p1_fixes` | high | 重连缓存刷新/QMT自恢复探测/信号保活与时效兜底/超时泄漏可观测 |
 | `fast` | critical | 快速验证子集（当前配置 40 个模块、959 个用例） |
 
-**测试统计（当前配置）**: 33组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次（2026-08-13）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 33组、123个模块、2479个用例，100% 通过，耗时 1076.3 秒；具体以本地运行报告为准。
+**测试统计（当前配置）**: 33组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次（2026-08-19）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 33组、123个模块、2548个用例，100% 通过；具体以本地运行报告为准。
 
 ### 编写新测试的规范
 
@@ -828,9 +832,11 @@ class TestMyFeature(TestBase):
 [
   "000001.SZ",
   "600036.SH",
-  "000333.SZ"
+  "920118.BJ"
 ]
 ```
+
+股票池支持 `.SH` / `.SZ` / `.BJ` 后缀，也支持裸代码自动补全；发布配置建议显式写后缀。
 
 ---
 

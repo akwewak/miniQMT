@@ -44,6 +44,8 @@ miniQMT 是一个专为A股市场设计的**无人值守量化交易系统**,集
 - ✅ **网格实盘闭环**: 以成交回报为准的委托确认、对手价下单、涨跌停/停牌防护、启动对账、LIFO 真实盈亏账本
 - ✅ **网格账本详情**: Web 前端和 `/api/grid/ledger/<session_id>` 展示买入批次、LIFO 最近优先配对、已实现/未实现盈亏
 - ✅ **网格状态口径统一**: Web1.0 悬停卡片使用统一 `pnl_snapshot` 真实盈亏，小数比例统一显示；“中心价偏离”按当前网格中心价相对初始中心价漂移计算
+- ✅ **全仓止盈后暂停网格**: `take_profit_full` 成交确认后默认暂停同股网格会话，保留会话与账本，避免清仓后继续发新网格单
+- ✅ **北交所股票代码**: 支持 `.BJ` / `BJ.` / 裸 `920xxx` 自动归一，股票池、Web API、交易执行和网关兼容端点一致识别
 - ✅ **成交确认后写流水**: 实盘动态止盈止损、补仓和网格委托均以成交确认为准写入 `trade_records`，避免未成交委托伪装成成交
 - ✅ **自动买入模块**: 支持候选池多表并集、大盘指数门禁、惰性条件检查、防重买入和复盘日志
 - ✅ **信号验证机制**: 防止重复执行,确保交易安全
@@ -66,6 +68,7 @@ miniQMT 是一个专为A股市场设计的**无人值守量化交易系统**,集
 - ✅ **Web实时监控**: 账户信息、持仓列表、网格会话实时更新
 - ✅ **双版本前端**: web1.0 (Flask 模板) + web2.0 (Vue3 + Vite + TS + PWA)
 - ✅ **网关双模式**: web2.0 支持 Flask 直连（完整功能）/ XtQuantManager 网关（多账号只读监控），持仓涨跌幅兼容股票、ETF 与基金裸代码
+- ✅ **API 统一鉴权**: web1.0 配置 `QMT_API_TOKEN` 后所有 `/api/*`（含 GET/SSE）均需 Token；`WEB_PUBLIC_MODE=true` 可在公网映射时 fail-closed
 - ✅ **SSE推送**: Server-Sent Events实时数据推送
 - ✅ **配置管理**: Web界面动态修改系统配置
 - ✅ **系统诊断**: 内置多个诊断工具,快速定位问题
@@ -110,7 +113,7 @@ python utils/check_dependencies.py
 [
   "000001.SZ",
   "600036.SH",
-  "000333.SZ"
+  "920118.BJ"
 ]
 ```
 
@@ -219,6 +222,8 @@ ENABLE_AUTO_TRADING = False     # 允许自动止盈：动态止盈止损自动�
 # 策略功能
 ENABLE_DYNAMIC_STOP_PROFIT = True  # 止盈止损功能
 ENABLE_GRID_TRADING = True         # 允许自动网格：网格模块自动执行开关（持久化）
+ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = True  # 全仓止盈成交确认后暂停同股网格会话
+ENABLE_MACD_SELL = False           # MACD技术指标卖出：False=满足条件仅记录信号不实盘卖出
 
 # 系统功能
 ENABLE_THREAD_MONITOR = True    # 线程健康监控（无人值守必需）⭐
@@ -264,6 +269,7 @@ GRID_TARGET_PROFIT_RATIO = 0.10              # 目标盈利10%（需买卖配对
 GRID_STOP_LOSS_RATIO = -0.10                 # 止损-10%
 GRID_DEFAULT_DURATION_DAYS = 7               # 默认运行7天
 GRID_REQUIRE_PROFIT_TRIGGERED = False        # 默认不要求先触发首次止盈即可启动网格
+ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = True  # 全仓止盈成交确认后暂停同股网格会话
 
 # 网格实盘交易（仅 ENABLE_SIMULATION_MODE = False 生效）
 GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True       # 实盘以成交回报为准更新统计
@@ -342,7 +348,7 @@ python -m autobuy.app --once        # 单次触发，便于测试配置
 
 ### 回归测试框架（推荐）
 
-项目集成了完整的回归测试框架,支持按模块运行、快速验证和失败重试。当前配置包含 33 个测试组（含 `fast` 快速子集）；`--all` 默认排除重复的 `fast` 组，`--all-with-fast` 会连同快速子集一起运行。最近一次（2026-08-13）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 33 组、123 个模块、2479 个用例，100% 通过。
+项目集成了完整的回归测试框架,支持按模块运行、快速验证和失败重试。当前配置包含 33 个测试组（含 `fast` 快速子集）；`--all` 默认排除重复的 `fast` 组，`--all-with-fast` 会连同快速子集一起运行。最近一次（2026-08-19）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 33 组、123 个模块、2548 个用例，100% 通过。
 
 ```bash
 # 快速验证（5分钟内完成，检查关键功能）
@@ -443,13 +449,15 @@ tail -n 100 logs/qmt_trading.log
 [
   "000001.SZ",  // 深圳交易所
   "600036.SH",  // 上海交易所
-  "新增股票.SZ"
+  "920118.BJ"   // 北京证券交易所
 ]
 ```
 
+也可填写裸代码（如 `000001`、`600036`、`920118`），系统会自动补全 `.SZ` / `.SH` / `.BJ`；发布配置建议显式写后缀，便于人工审阅。
+
 ### Q6: 如何启用网格交易?
 
-**A**: 网格交易默认已启用（`ENABLE_GRID_TRADING = True`），但仍受全局自动操作总开关 `ENABLE_AUTO_OPERATION` 控制。通过 Web 界面创建网格会话即可；每个个股网格会话还可以在 Web 里用“自动/暂停”开关控制 `grid_trading_sessions.enabled`，暂停后保留会话但不再发新网格单。如需全局禁用网格，修改 `config.py`：
+**A**: 网格交易默认已启用（`ENABLE_GRID_TRADING = True`），但仍受全局自动操作总开关 `ENABLE_AUTO_OPERATION` 控制。通过 Web 界面创建网格会话即可；每个个股网格会话还可以在 Web 里用“自动/暂停”开关控制 `grid_trading_sessions.enabled`，暂停后保留会话但不再发新网格单。默认情况下，动态全仓止盈 `take_profit_full` 成交确认后也会自动暂停同股网格会话（`ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = True`）。如需全局禁用网格，修改 `config.py`：
 ```python
 ENABLE_GRID_TRADING = False
 ```
@@ -461,6 +469,8 @@ ENABLE_GRID_TRADING = False
 - 网格交易参数
 - 开始/停止自动操作、允许自动止盈、允许自动网格、个股网格自动/暂停开关
 - 线程监控开关
+
+后端配置接口还支持 `pauseGridAfterTakeProfitFull` 字段，用于持久化“全仓止盈成交后暂停同股网格会话”开关。
 
 所有配置变更会记录到 `system_config` 和 `config_history` 表中，支持审计和回滚。
 

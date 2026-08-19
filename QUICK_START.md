@@ -42,9 +42,11 @@ python utils/check_dependencies.py
 [
   "000001.SZ",
   "600036.SH",
-  "000333.SZ"
+  "920118.BJ"
 ]
 ```
+
+支持 `.SH` / `.SZ` / `.BJ` 后缀，也支持裸代码自动补全（如 `920118` → `920118.BJ`）。发布配置建议显式写后缀。
 
 ---
 
@@ -103,6 +105,8 @@ http://localhost:5000          # web1.0 (Flask)，随系统自动启动
 | `ENABLE_DYNAMIC_STOP_PROFIT` | `True` | 动态止盈止损策略 |
 | `ENABLE_GRID_TRADING` | `True` | 网格交易功能 |
 | `GRID_REQUIRE_PROFIT_TRIGGERED` | `False` | 是否要求持仓已首次止盈后才能启动网格；默认不要求 |
+| `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` | `True` | 全仓止盈成交确认后暂停同股网格会话 |
+| `ENABLE_MACD_SELL` | `False` | MACD 技术指标卖出开关：`False`=满足"MACD死叉+均线空头排列"仅记录信号不实盘下单（默认），`True`=执行真实卖出（最新价）；不影响止盈止损/止损补仓/网格卖出 |
 | `MARKET_HEALTH_ENABLED` | `True` | 行情源健康评分（内存版，不落库） |
 | `MARKET_HEALTH_OBSERVE_ONLY` | `False` | 默认按评分和数据源策略拦截不可信行情；如只观察可显式改为 `True` |
 | `ENABLE_THREAD_MONITOR` | `True` | 线程自愈监控（无人值守必需）⭐ |
@@ -110,6 +114,8 @@ http://localhost:5000          # web1.0 (Flask)，随系统自动启动
 | `ENABLE_XTQUANT_MANAGER` | `False` | 多账户 HTTP 网关（可选） |
 
 交易通道由 `position_manager._create_qmt_trader()` 四选一：默认 xttrader 直连；也可启用 `ENABLE_XTQUANT_MANAGER`、`ENABLE_QMT_IPC_FALLBACK` 或 `ENABLE_QMT_RPC_FALLBACK`。后三个后端互斥，同时开启会启动失败；RPC 默认 `QMT_RPC_ALLOW_ORDER=False`，只读不下单。
+
+Web 安全建议：局域网、远程或公网映射访问前必须设置强随机 `QMT_API_TOKEN`；配置后所有 web1.0 `/api/*` 请求（含 GET 与 SSE）都需要 `X-API-Token`。通过反向代理/内网穿透暴露时建议同时设置 `WEB_PUBLIC_MODE=true`，避免 Token 漏配后无鉴权运行。
 
 ---
 
@@ -168,7 +174,7 @@ python test/run_integration_regression_tests.py --all --verbose        # 详细�
 
 测试报告：`test/integration_test_report.md`
 
-当前回归配置包含 33 个测试组（含 `fast` 快速子集）。`--all` 默认排除重复的 `fast` 组，`--all-with-fast` 会连同快速子集一起运行；最近一次（2026-08-13）`--all-with-fast` 实测为 33 组、123 个模块、2479 个用例，100% 通过。
+当前回归配置包含 33 个测试组（含 `fast` 快速子集）。`--all` 默认排除重复的 `fast` 组，`--all-with-fast` 会连同快速子集一起运行；最近一次（2026-08-19）使用 Anaconda `python39` 实测为 33 组、123 个模块、2548 个用例，100% 通过。
 
 ### 单个测试文件
 
@@ -211,7 +217,7 @@ Get-Content logs/qmt_trading.log -Wait   # Windows PowerShell
 
 ### Q: 如何启用网格交易？
 
-网格交易默认已启用（`ENABLE_GRID_TRADING = True`），但仍受全局自动操作总开关 `ENABLE_AUTO_OPERATION` 控制。通过 Web 界面 (`http://localhost:5000`) 创建网格会话即可；个股网格配置/详情界面里的“自动/暂停”开关对应 `grid_trading_sessions.enabled`，暂停后保留会话但不再发新网格单。如需全局禁用网格，在 `config.py` 中设置：
+网格交易默认已启用（`ENABLE_GRID_TRADING = True`），但仍受全局自动操作总开关 `ENABLE_AUTO_OPERATION` 控制。通过 Web 界面 (`http://localhost:5000`) 创建网格会话即可；个股网格配置/详情界面里的“自动/暂停”开关对应 `grid_trading_sessions.enabled`，暂停后保留会话但不再发新网格单。默认情况下，全仓止盈 `take_profit_full` 成交确认后也会自动暂停同股网格会话。如需全局禁用网格，在 `config.py` 中设置：
 ```python
 ENABLE_GRID_TRADING = False
 ```

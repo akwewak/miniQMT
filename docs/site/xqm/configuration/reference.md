@@ -2,6 +2,8 @@
 
 ## xtquant_manager_config.json 完整字段
 
+`api_token` 可留空；服务启动时会先读取环境变量，优先级为 `XQM_API_TOKEN > QMT_API_TOKEN > xtquant_manager_config.json/api_token`。生产建议不要把真实 Token 写进 JSON 明文配置。
+
 ```json
 {
   "host": "127.0.0.1",
@@ -58,7 +60,7 @@
 |------|------|--------|------|
 | `host` | str | `"127.0.0.1"` | 监听地址，局域网访问改为实际 IP |
 | `port` | int | `8888` | 监听端口 |
-| `api_token` | str | `""` | API Token，空字符串时仅本机可访问（非本机一律拒绝）；对外提供服务必须配置 |
+| `api_token` | str | `""` | API Token 的 JSON 兜底值；实际优先级为 `XQM_API_TOKEN > QMT_API_TOKEN > JSON api_token`。空字符串时仅本机可访问（非本机一律拒绝）；对外提供服务必须配置 |
 | `allowed_ips` | list | `[]` | IP 白名单（支持 CIDR），空列表不限制 |
 | `rate_limit` | int | `60` | 每分钟请求次数上限（按 IP 统计） |
 | `enable_hmac` | bool | `false` | 启用 HMAC 请求签名验证 |

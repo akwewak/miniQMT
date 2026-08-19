@@ -136,6 +136,15 @@ QMT_RPC_ALLOW_ORDER=false
 | `QMT_RPC_REDIS_PASSWORD` | `QMT_RPC_REDIS["password"]` | 空 |
 | `QMT_RPC_ALLOW_ORDER` | `QMT_RPC_ALLOW_ORDER` | `false` |
 
+## 订单状态与回调口径  [v3.8.9]
+
+RPC 交易通道与文件 IPC 共用订单状态归一逻辑，面向 miniQMT 主程序模拟 xttrader 的委托/成交回调：
+
+- 下单时 `wire_remark` 使用 `int_id|order_remark`，既能用合成整数 ID 关联回查结果，也能保留策略备注。
+- 查询委托与成交结果会保留 `status_msg`、`order_remark`、`strategy_name` 等字段，Web 委托队列和策略闭环不再丢失标签。
+- 部分成交按累计成交量计算增量：如果先收到 300 股部分成交，随后全成 1000 股，第二次成交回调只推新增的 700 股。
+- `rejected` / `cancelled` 只更新委托状态，不触发成交回调，避免废单或撤单被误写入 `trade_records` / 网格账本。
+
 ## 第 5 步：配置大QMT 服务端
 
 大QMT 端的私有配置 `bigqmt_signal_trader_local_config.py` 里的 `BIGQMT_REDIS_CONFIG` 必须与客户端**完全一致**（`host`/`port`/`db`/`password`）：

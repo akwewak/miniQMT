@@ -47,9 +47,12 @@ C:\QuantIPC\
 {
   "account_id": "TEST_ACC_2",
   "account_type": "STOCK",
-  "qmt_path": "C:/QMT1/userdata_mini"
+  "qmt_path": "C:/QMT1/userdata_mini",
+  "ipc_secret": ""
 }
 ```
+
+`ipc_secret` 来自策略端环境变量 `QMT_IPC_SECRET`。为空时保持原本地信任模型；非空时，策略端写入每个订单 JSON，大 QMT executor 校验失败会写 `done/error`，不会连接交易 API。跨机器共享目录或多人共用 Windows 主机时建议设置强随机值。
 
 ## 快照口径
 
@@ -92,6 +95,8 @@ C:\QuantIPC\
 - 订单 JSON 无法解析时立即写 `done/error`，并清理 `processing/`，不再等默认 120 秒的残留恢复。
 - `order_stock` 返回空值、负数或 0 时写 `done/rejected`。
 - `query_all_orders()` 返回 QMT 废单状态 `57` 时写 `done/rejected`，避免误判为超时撤单。
+- 查询委托/成交时保留 `status_msg`、`order_remark`、`strategy_name` 等字段，策略端展示和回调可继续识别原始策略标签。
+- `filled` / `partial` / `partial_cancelled` 才触发成交回调；`rejected` / `cancelled` 不触发成交回调，避免废单或撤单被误落账。
 
 ## 运行与日志
 
@@ -115,6 +120,8 @@ C:\QuantIPC\
 - `C:\QuantIPC\{account_id}\status\account.json` 周期更新；休盘时资产字段可能为 0，但持仓市值应能正常返回或兜底。
 - `tick ok accounts=... ticks=...` 中的 `ticks` 持续递增。
 - 在模型交易前台循环形态下，`worker=False` 是正常状态；它表示没有额外后台 worker 参与保活。
+
+v3.8.9 起，executor 额外启动独立心跳线程，并在等待委托终态的阻塞循环中刷新心跳。大 QMT 端可用环境变量 `QMT_IPC_HEARTBEAT_INTERVAL_SEC` 调整刷新间隔，默认 `2.0` 秒；策略端仍用 `QMT_IPC_HEARTBEAT_MAX_AGE`（默认 10 秒）判定离线。
 
 ## 风险控制
 

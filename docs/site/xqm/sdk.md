@@ -12,7 +12,7 @@ from xtquant_manager.client import XtQuantClient, ClientConfig, XtDataAdapter
 client = XtQuantClient(config=ClientConfig(
     base_url="http://127.0.0.1:8888",
     account_id="55009640",
-    api_token="",          # 无 Token 时留空
+    api_token="",          # 本机无 Token 时留空；远程访问必须填写服务端 Token
     timeout=5.0,
     max_retries=2,
     verify_ssl=True,       # HTTPS 时是否验证证书
