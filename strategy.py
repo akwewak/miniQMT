@@ -55,6 +55,13 @@ class TradingStrategy:
 
         # 添加这行 - 重试计数器
         self.retry_counts = {}
+
+        # 信号去重集合所属交易日，跨日时清空，避免无人值守长跑内存单调增长
+        self.signals_date = datetime.now().strftime('%Y%m%d')
+
+        # MACD卖出开关关闭时的"已告知"记录，仅用于日志降噪
+        # 与 processed_signals 分离：开关盘中改为True时当日信号仍可立即执行
+        self.macd_sell_notified = set()
     
     # ===== 旧的网格交易方法已废弃，请使用GridTradingManager =====
     # init_grid_trading(), execute_grid_trading()
@@ -534,7 +541,7 @@ class TradingStrategy:
             if buy_signal:
                 # 检查是否已处理过该信号
                 signal_key = f"buy_{stock_code}_{datetime.now().strftime('%Y%m%d')}"
-                if signal_key in self.processed_signals:
+                if self._is_signal_processed(signal_key):
                     logger.debug(f"{stock_code} 买入信号已处理，跳过")
                     return False
                 
@@ -550,7 +557,7 @@ class TradingStrategy:
 
                     # 🔑 注意: execute_buy_strategy()仅处理技术指标买入信号的首次建仓
                     # 补仓策略已由position_manager.check_add_position_signal()独立处理
-                    self.processed_signals.add(signal_key)  # 日内去重，防止每次循环都打印
+                    self._mark_signal_processed(signal_key)  # 日内去重，防止每次循环都打印
                     logger.info(f"{stock_code} 已有持仓，技术指标买入信号不触发补仓（补仓由独立策略处理）")
                     return False
                 else:
@@ -563,7 +570,7 @@ class TradingStrategy:
                 
                 if order_id:
                     # 记录已处理信号
-                    self.processed_signals.add(signal_key)
+                    self._mark_signal_processed(signal_key)
 
                     # 旧的网格交易初始化已废弃，请使用GridTradingManager
 
@@ -594,33 +601,49 @@ class TradingStrategy:
             if sell_signal:
                 # 检查是否已处理过该信号
                 signal_key = f"sell_{stock_code}_{datetime.now().strftime('%Y%m%d')}"
-                if signal_key in self.processed_signals:
+                if self._is_signal_processed(signal_key):
                     logger.debug(f"{stock_code} 卖出信号已处理，跳过")
                     return False
 
                 # MACD 技术指标卖出开关：默认关闭，满足条件仅记录信号，不执行真实卖出
-                # 注意：关闭期间信号按"已处理"记录，盘中改为 True 需重启进程才会对当日信号重新生效
+                # 降噪记录写入独立的 macd_sell_notified，不污染 processed_signals，
+                # 使得开关盘中改为 True 后当日信号无需重启进程即可立即生效
                 if not config.ENABLE_MACD_SELL:
-                    self.processed_signals.add(signal_key)
-                    logger.info(f"{stock_code} 检测到MACD技术指标卖出信号，但 ENABLE_MACD_SELL=False，仅记录信号不执行卖出")
+                    with self.signal_lock:
+                        already_notified = signal_key in self.macd_sell_notified
+                        self.macd_sell_notified.add(signal_key)
+                    if not already_notified:
+                        logger.info(f"{stock_code} 检测到MACD技术指标卖出信号，但 ENABLE_MACD_SELL=False，仅记录信号不执行卖出")
                     return False
 
                 # 获取持仓
                 position = self.position_manager.get_position(stock_code)
                 if not position:
-                    logger.warning(f"未持有 {stock_code}，无法执行卖出策略")
-                    self.processed_signals.add(signal_key)  # 无持仓也记录，防止重复打印
+                    # 无持仓是暂时状态（盘中可能买入），不写 processed_signals 以免毒化当日信号，
+                    # 仅用降噪集合防止每轮重复打印
+                    with self.signal_lock:
+                        already_warned = signal_key in self.macd_sell_notified
+                        self.macd_sell_notified.add(signal_key)
+                    if not already_warned:
+                        logger.warning(f"未持有 {stock_code}，无法执行卖出策略")
                     return False
-                
-                volume = position['volume']
-                
+
+                # 与止盈止损信号口径一致：使用可用持仓(available)下单，避免 T+1 冻结股份触发拒单
+                volume = int(position.get('available') or 0)
+                if volume <= 0:
+                    logger.warning(
+                        f"{stock_code} 可用持仓为0(总持仓={position.get('volume', 0)})，"
+                        f"跳过MACD卖出，等待股份解冻后重试"
+                    )
+                    return False
+
                 # 执行卖出（price_type=5=LATEST_PRICE；旧值0为非法枚举，QMT客户端会本地拒绝且不产生废单）
                 logger.info(f"执行 {stock_code} 卖出策略，数量: {volume}")
                 order_id = self.trading_executor.sell_stock(stock_code, volume, price_type=5)
-                
+
                 if order_id:
                     # 记录已处理信号
-                    self.processed_signals.add(signal_key)
+                    self._mark_signal_processed(signal_key)
                     return True
             
             return False
@@ -842,7 +865,7 @@ class TradingStrategy:
             buy_signal = self.indicator_calculator.check_buy_signal(stock_code)
             if buy_signal:
                 signal_key = f"buy_{stock_code}_{datetime.now().strftime('%Y%m%d')}"
-                if signal_key in self.processed_signals:
+                if self._is_signal_processed(signal_key):
                     logger.debug(f"{stock_code} 买入信号今日已处理，跳过")
                 else:
                     logger.info(f"{stock_code} 检测到买入信号")
@@ -853,15 +876,19 @@ class TradingStrategy:
                             logger.info(f"{stock_code} 执行买入策略成功")
                             return
                     else:
-                        # 自动交易关闭时也加入已处理集合，防止每循环都打印
-                        self.processed_signals.add(signal_key)
-                        logger.info(f"{stock_code} 检测到买入信号，但自动交易已关闭")
-            
+                        # 开关关闭仅降噪，不写 processed_signals，
+                        # 使开关盘中打开后当日信号仍可执行
+                        with self.signal_lock:
+                            already_notified = signal_key in self.macd_sell_notified
+                            self.macd_sell_notified.add(signal_key)
+                        if not already_notified:
+                            logger.info(f"{stock_code} 检测到买入信号，但自动交易已关闭")
+
             # 6. 检查技术指标卖出信号
             sell_signal = self.indicator_calculator.check_sell_signal(stock_code)
             if sell_signal:
                 sell_key = f"sell_{stock_code}_{datetime.now().strftime('%Y%m%d')}"
-                if sell_key in self.processed_signals:
+                if self._is_signal_processed(sell_key):
                     logger.debug(f"{stock_code} 卖出信号今日已处理，跳过")
                 else:
                     logger.info(f"{stock_code} 检测到卖出信号")
@@ -872,8 +899,12 @@ class TradingStrategy:
                             logger.info(f"{stock_code} 执行卖出策略成功")
                             return
                     else:
-                        self.processed_signals.add(sell_key)
-                        logger.info(f"{stock_code} 检测到卖出信号，但自动交易已关闭")
+                        # 同上：开关关闭仅降噪，不毒化当日信号
+                        with self.signal_lock:
+                            already_notified = sell_key in self.macd_sell_notified
+                            self.macd_sell_notified.add(sell_key)
+                        if not already_notified:
+                            logger.info(f"{stock_code} 检测到卖出信号，但自动交易已关闭")
             
             logger.debug(f"{stock_code} 没有检测到交易信号")
             
@@ -899,10 +930,47 @@ class TradingStrategy:
             self.strategy_thread.join(timeout=5)
             logger.info("策略线程已停止")
     
+    def _is_signal_processed(self, signal_key):
+        """线程安全地判断信号是否已处理。"""
+        with self.signal_lock:
+            return signal_key in self.processed_signals
+
+    def _mark_signal_processed(self, signal_key):
+        """线程安全地标记信号为已处理。"""
+        with self.signal_lock:
+            self.processed_signals.add(signal_key)
+
+    def _rollover_signal_cache_if_new_day(self):
+        """跨交易日清空信号去重集合。
+
+        processed_signals / macd_sell_notified 的 key 带日期后缀，原本只在 close()
+        时清空。系统按无人值守设计长期运行，不清理会导致集合单调增长（每股每日最多
+        新增数个 key），且历史 key 永不释放。
+
+        返回:
+        bool: 本次调用是否发生了跨日清理
+        """
+        today = datetime.now().strftime('%Y%m%d')
+        with self.signal_lock:
+            if today == self.signals_date:
+                return False
+
+            cleared = len(self.processed_signals) + len(self.macd_sell_notified)
+            self.processed_signals.clear()
+            self.macd_sell_notified.clear()
+            self.retry_counts.clear()
+            self.signals_date = today
+
+        logger.info(f"跨交易日清理信号去重集合，共清理 {cleared} 条记录，新交易日: {today}")
+        return True
+
     def _strategy_loop(self):
         """策略运行循环 - 修复版本: 优先处理所有持仓股票"""
         while not self.stop_flag:
             try:
+                # 跨日清理信号去重集合（无论是否交易时段都检查，确保隔夜必然触发）
+                self._rollover_signal_cache_if_new_day()
+
                 # 判断是否在交易时间
                 if config.is_trade_time():
                     if config.VERBOSE_LOOP_LOGGING or config.DEBUG:
@@ -1003,6 +1071,7 @@ class TradingStrategy:
             # 🔒 线程安全：使用锁保护共享数据清理 (修复C1)
             with self.signal_lock:
                 self.processed_signals.clear()
+                self.macd_sell_notified.clear()
                 self.retry_counts.clear()
             self.last_trade_time.clear()
             logger.info("交易策略已关闭")

@@ -310,11 +310,18 @@ class IndicatorCalculator:
     
     def check_buy_signal(self, stock_code):
         """
-        检查买入信号
-        
+        检查买入信号（MACD金叉 + 均线多头排列）
+
+        ⏱️ 时效语义（重要）:
+        本方法基于 stock_indicators 表中**最近两根已收盘日线**判定，不使用盘中未定型
+        数据（data_manager._get_completed_history_end_date() 保证当日日线在
+        HISTORY_TODAY_DAILY_AVAILABLE_AFTER，默认15:30 之后才入库）。
+        而数据更新/策略线程仅在交易时段运行（A股15:00收盘），因此 T 日收盘产生的金叉
+        实际会在 **T+1 开盘后**才被检测并执行。这是日线策略的固有延迟，非缺陷。
+
         参数:
         stock_code (str): 股票代码
-        
+
         返回:
         bool: 是否有买入信号
         """
@@ -357,7 +364,7 @@ class IndicatorCalculator:
                 
                 # 检查是否满足买入条件
                 if macd_cross and ma_alignment:
-                    logger.debug(f"{stock_code} 满足买入条件: MACD金叉 + 均线多头排列")
+                    logger.debug(f"{stock_code} 满足买入条件: MACD金叉 + 均线多头排列 (信号日期={latest.get('date')})")
                     return True
             
             return False
@@ -368,11 +375,14 @@ class IndicatorCalculator:
     
     def check_sell_signal(self, stock_code):
         """
-        检查卖出信号
-        
+        检查卖出信号（MACD死叉 + 均线空头排列）
+
+        ⏱️ 时效语义与 check_buy_signal 一致：基于最近两根**已收盘**日线，
+        T 日收盘产生的死叉在 T+1 开盘后才会被检测执行。
+
         参数:
         stock_code (str): 股票代码
-        
+
         返回:
         bool: 是否有卖出信号
         """
@@ -415,7 +425,8 @@ class IndicatorCalculator:
                 
                 # 检查是否满足卖出条件
                 if macd_cross and ma_alignment:
-                    logger.info(f"{stock_code} 满足卖出条件: MACD死叉 + 均线空头排列")
+                    # 降为 debug: 本方法每轮策略循环都会调用，info 由策略层统一打印避免重复
+                    logger.debug(f"{stock_code} 满足卖出条件: MACD死叉 + 均线空头排列 (信号日期={latest.get('date')})")
                     return True
             
             return False

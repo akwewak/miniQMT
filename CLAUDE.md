@@ -319,6 +319,34 @@ ENABLE_XTQUANT_MANAGER = False  # XtQuantManager HTTP网关（多账户时开启
 DEBUG = False                   # 调试模式
 ```
 
+### MACD 技术指标信号的时效语义 ⏱️
+
+`check_buy_signal()` / `check_sell_signal()`（[indicator_calculator.py](indicator_calculator.py)）基于
+**最近两根已收盘日线**判定「MACD 金叉/死叉 + 均线多头/空头排列」，存在**固有 T+1 延迟**：
+
+- 当日日线要到 `HISTORY_TODAY_DAILY_AVAILABLE_AFTER`（默认 15:30）之后才入库
+  （`data_manager._get_completed_history_end_date()` 保证不用盘中未定型数据）
+- 但数据更新线程与策略线程都只在 `is_trade_time()` 内运行（A股 15:00 收盘）
+- **结论**：T 日收盘产生的死叉，实际在 **T+1 开盘后**才被检测并执行。这是日线策略的
+  正常行为，不是缺陷；但开启 `ENABLE_MACD_SELL=True` 前必须知悉此延迟
+
+**信号去重与开关语义**（2026-08-20 修复）:
+- `processed_signals` **仅作用于 MACD 技术指标信号**（`check_buy_signal`/`check_sell_signal`），
+  按 `buy_/sell_{code}_{YYYYMMDD}` 去重，每股每日各最多执行一次；由
+  `_rollover_signal_cache_if_new_day()` 在**跨交易日时自动清空**（无人值守长跑防内存增长）
+- ⚠️ **止盈/止损/补仓/网格不受 `processed_signals` 约束**，它们走
+  `position_manager.latest_signals` 队列 + `mark_signal_processed()`（仅出队、不写日级标记），
+  基于**实时现价**每 3 秒重新检测。因此同一只股票**同一天内可以先止盈、后止损**——
+  [position_manager.py](position_manager.py) 中 `stop_loss_1`（首次止盈后回落触发止损）
+  正是为该场景设计的分支
+- MACD 之所以按日去重：其信号源是**已收盘日线**柱的符号翻转，盘中不变；不去重会导致
+  同一个死叉被每 10 秒重复执行
+- `ENABLE_MACD_SELL=False` 或 `ENABLE_AUTO_TRADING=False` 期间，信号只写入独立的
+  `macd_sell_notified` 降噪集合，**不写 `processed_signals`** —— 因此盘中把开关改为 True
+  后，当日信号**无需重启进程**即可立即生效
+- MACD 卖出使用 `position['available']`（可用持仓）下单，与止盈止损口径一致，
+  避免 T+1 冻结股份触发 QMT 拒单
+
 **⚠️ 实盘交易前必须检查**:
 1. `ENABLE_SIMULATION_MODE = False` (切换到实盘)
 2. `ENABLE_AUTO_OPERATION = True` (打开全局自动操作总开关)

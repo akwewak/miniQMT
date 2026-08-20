@@ -604,6 +604,10 @@ class DataManager:
         ''')
         
         # 创建指标数据表
+        # ⚠️ 列名与通用MACD术语的映射(历史遗留，勿按字面理解):
+        #   macd        → DIF  = EMA(C,12) - EMA(C,26)
+        #   macd_signal → DEA  = EMA(DIF,9)
+        #   macd_hist   → MACD柱 = (DIF - DEA) * 2
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS stock_indicators (
             stock_code TEXT,

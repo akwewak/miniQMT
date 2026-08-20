@@ -1,3 +1,4 @@
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,9 @@ class TestStrategyBuyPriceType(unittest.TestCase):
         strategy.trading_executor = MagicMock()
         strategy.trading_executor.buy_stock.return_value = "ORDER-1"
         strategy.processed_signals = set()
+        # 信号去重集合改为锁保护后，__new__ 构造需显式装配这两个字段
+        strategy.signal_lock = threading.Lock()
+        strategy.macd_sell_notified = set()
 
         with patch("strategy.config.POSITION_UNIT", 10000):
             ok = strategy.execute_buy_strategy("002815.SZ", buy_signal=True)
