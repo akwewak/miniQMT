@@ -1463,6 +1463,10 @@
         stop_loss: '止损',
         grid: '网格',
         manual: '手动',
+        M_real: '手买',
+        M_simu: '模买',
+        manual_real: '手卖',
+        manual_simu: '模卖',
         external: '外部',
         default: '默认'
     };

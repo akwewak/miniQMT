@@ -6,6 +6,37 @@
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-08-29
+
+> 本版本以**实盘日志驱动的缺陷修复**为主线：从 2026-08-27~28 的运行日志中定位并修复了两个影响实盘风控闭环的问题——网格超时委托**完全无法撤单**（探测的 xtquant 接口早已不存在，属 100% 死代码路径）、止损清仓后同股网格会话**不联动暂停**（与全仓止盈行为不一致）；同时收录 v3.8.9 后主干上的 MACD 信号去重与卖出口径修复，并统一了 Web 界面手动买卖的策略标签显示。
+
+### Fixed
+- **网格超时委托撤单能力全程失效**（2026-08-28 实盘日志暴露，P0）：`TradingExecutor.cancel_order()` 只探测 `self.trader.cancel_order()` 与 `xtt.cancel_order()` 两条路径，但 `xtquant.xttrader` 模块**仅导出 `XtQuantTrader` 类**，既无 `create_trader()` 也无任何函数式 API——因此 `self.trader` 恒为 `None`、`hasattr(xtt,'cancel_order')` 恒为 `False`，撤单**必然**落入 `else` 分支打印“没有找到可用的撤单方法”并返回 `False`。实盘表现为网格卖单挂 91 秒未成交、对账判定超时后撤单失败，pending 单滞留并阻塞该档位后续信号，只能人工介入（本次侥幸在撤单失败 32 秒后自行成交）。现统一委托给 `PositionManager._cancel_order()`——该实现对接真实交易通道（easy_qmt_trader / IPC / RPC）、自带 `MAX_CANCEL_RETRIES` 重试，且已在卖出监控路径长期验证；顺带用 `str(order_id)` 归一，修掉 int 型 `order_id` 触发 `AttributeError` 的隐患。
+  - **该缺陷能进生产的根因**：所有网格撤单测试都把 `self.executor` 整体替换为 `Mock()` 并写死 `cancel_order.return_value = True`，真实 `TradingExecutor.cancel_order` **零覆盖**，测试长期全绿。
+- **止损清仓后网格会话不联动暂停**：`_confirm_filled_order()` 的联动触发条件是单一字符串比较 `signal_type == 'take_profit_full'`，`stop_loss` 完全不触发。但止损与全仓止盈同样卖出 `position['available']` 全量，都是清仓语义。实盘表现为 000620 于 08-27 止损清仓 27300 股、持仓记录已删除，次日重启时网格会话仍以 `enabled=1` 恢复为活跃（“恢复6个, 自动停止0个”），心跳显示“活跃网格会话数:7”而实际持仓仅 4 只。现 `take_profit_full` 与 `stop_loss`（含 `stop_loss_0` 固定止损与 `stop_loss_1` 首次止盈后回落止损）成交确认后均触发暂停；私有方法 `_pause_grid_after_take_profit_full` 泛化为 `_pause_grid_after_full_exit(stock_code, reason)`，`reason` 透传至日志以区分触发来源。
+  - **仍只暂停、不修改任何网格配置**：走 `set_session_enabled(id, False)` 仅翻转 `grid_trading_sessions.enabled` 单列，中心价/档位/投入上限/回调比例/有效期一律保留，会话 `status` 仍为 `active`，人工复核后可原样恢复。
+  - 复用既有开关 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`（默认 `True`），不新增配置项。
+- **MACD 信号去重集合跨日不清理 + 开关关闭毒化当日信号 + 卖出口径不一致**（收录自 v3.8.9 后主干提交）：新增 `_rollover_signal_cache_if_new_day()`，策略循环每轮检查并在跨交易日清空 `processed_signals` / `macd_sell_notified` / `retry_counts`，修复无人值守长跑的内存单调增长；原先 6 处 `processed_signals` 裸读写统一收口到 `_is_signal_processed()` / `_mark_signal_processed()` 并纳入 `signal_lock` 保护；`ENABLE_MACD_SELL` / `ENABLE_AUTO_TRADING` 关闭期间改写入独立的 `macd_sell_notified` 降噪集合，不再污染 `processed_signals`——盘中把开关改为 `True` 后当日信号**无需重启进程**即可生效；MACD 卖出改用 `position['available']`，与止盈止损口径一致，避免 T+1 冻结股份触发 QMT 拒单，可用量为 0 时跳过下单且不标记已处理。
+
+### Changed
+- **Web 界面手动买卖策略标签统一**：`trade_records.strategy` 中的 `M_real` / `M_simu` / `manual_real` / `manual_simu` 此前均未被标签映射覆盖，会以原始英文值直接漏到下单日志界面。现统一显示为**手买 / 模买 / 手卖 / 模卖**。
+  - **仅改显示层，存储值不变**：`strategy.py` 写入的原始值保持不变，历史记录立即正确显示，也不影响任何按原始值匹配的逻辑。
+  - **三处映射表需同步**（缺一不可）：`web_server.py` 的 `strategy_labels` 是服务端 `strategy_label` 字段的源头，**web2.0 在 Flask 直连模式下优先取该值**，只改前端无效；`web1.0/script.js` 的 `LOG_STRATEGY_LABELS` 只认原始 `strategy` 字段；`web2.0/src/components/OrderLog.vue` 的 `strategyLabels` 用于网关模式兜底（XtQuantManager 不下发 `strategy_label`）。三份表现已完全一致（12 个条目）。
+
+### Tests
+- `test/test_executor_cancel_order.py`（11 例，新增 `executor_cancel_order` critical 组）：实盘撤单委托透传、`stock_code` 日志标识降级、撤单失败如实返回、`SIM` 前缀短路不触碰实盘通道、撤单接口缺失安全返回、int 型 `order_id` 兼容、底层异常捕获、**缺陷复现用例**（固化“`xtquant.xttrader` 无 `create_trader`/`cancel_order`”这一前提，并断言 `self.trader=None` 时撤单仍须成功）、网格 `_cancel_grid_order` 接真实 `TradingExecutor` 的端到端链路两例。
+- `test/test_grid_pause_after_full_exit.py`（11 例，新增 `grid_pause_after_full_exit` critical 组）：止损成交暂停（修复点）、全仓止盈成交暂停（防回归）、`take_profit_half` 不暂停、网格自身买卖不暂停、**网格配置字段快照断言未被改写**、会话 `status` 仍为 `active`、开关关闭时双信号均不动、`grid_manager` 缺失/异常不中断成交确认主流程。
+- 两个新测试均已注册进 `fast` 快速子集，并经**证伪验证**：`git stash` 回退实现后重跑，撤单组 6/11 失败、网格联动组 8/11 失败，确认测试确实能捕获对应缺陷（而非陪跑）。
+- 发布验证：2026-08-29 使用 `python39` 环境执行 `test/run_integration_regression_tests.py --all-with-fast` 完整回归，**35 组、130 模块、2622 用例，2622 通过，0 失败，0 错误，0 跳过，成功率 100%**。
+
+### Docs
+- `CLAUDE.md`：`ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` 语义更新为“清仓成交（`take_profit_full` + `stop_loss`）后联动”；`trade_records.strategy` 补全 12 个策略标识全集，并记录 Web 标签映射需三处同步的约束。
+- `docs/site/miniqmt/database.md`：`strategy` 字段补全全部取值及对应界面显示标签。
+- `docs/site/miniqmt/web-api.md`：明确 `M_simu` / `M_real` 为存储值，界面分别显示为「模买」「手买」。
+- `docs/site/miniqmt/grid-trading.md` / `stop-profit-loss.md` / `configuration.md` / `architecture.md` / `web-frontend.md`：同步止损清仓联动暂停与撤单通道修复。
+- `docs/site/miniqmt/testing.md`：更新 v3.9.0 回归统计。
+- `ARCHITECTURE.md`：变更记录追加 v1.8。
+
 ## [3.8.9] - 2026-08-19
 
 > 本版本汇总 **v3.8.8 发布后的全部主干变更**：重点收紧 web1.0 / XtQuantManager 的 API 鉴权，补齐北交所股票代码支持，修复 Web 状态同步、IPC/RPC 委托状态与 Windows 启动器控制台鲁棒性，新增"全仓止盈后暂停同股网格会话"的风险联动；发布前接连修复两个实盘 bug——持仓清零后止盈状态残留（清仓再买入继承脏状态）与 MACD 技术指标卖出 `price_type` 非法值（实盘连续废单循环），并新增 `ENABLE_MACD_SELL` 保守开关。

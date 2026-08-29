@@ -2010,36 +2010,35 @@ class TradingExecutor:
                 logger.error(f"卖出 {stock_code} 时出错: {str(e)}")
                 return None
     
-    def cancel_order(self, order_id):
+    def cancel_order(self, order_id, stock_code=None):
         """
         撤销委托
-        
+
         参数:
         order_id (str): 委托编号
-        
+        stock_code (str): 股票代码，仅用于日志标识，可为None
+
         返回:
         bool: 是否成功发送撤单请求
         """
         try:
+            order_id = str(order_id)
+
             # 检查是否为模拟交易模式下的订单
             if order_id.startswith("SIM"):
                 logger.info(f"[模拟] 撤单请求已处理，委托号: {order_id}")
                 return True
-            
-            # 调用交易API撤单
-            ret = False
-            
-            # 尝试不同的API调用方式
-            if self.trader and hasattr(self.trader, 'cancel_order'):
-                # 如果使用对象API
-                ret = self.trader.cancel_order(order_id)
-            elif hasattr(xtt, 'cancel_order'):
-                # 如果使用函数式API
-                ret = xtt.cancel_order(self.account_id, self.account_type, order_id)
-            else:
-                logger.error("没有找到可用的撤单方法")
+
+            # 撤单统一委托给 PositionManager._cancel_order:
+            # 它对接真实交易通道(easy_qmt_trader / IPC / RPC)并自带重试，
+            # 避免在此维护第二套撤单实现
+            cancel_func = getattr(self.position_manager, '_cancel_order', None)
+            if not callable(cancel_func):
+                logger.error(f"没有找到可用的撤单方法，委托号: {order_id}")
                 return False
-            
+
+            ret = cancel_func(stock_code or f"order#{order_id}", order_id)
+
             if ret:
                 logger.info(f"撤单请求已发送，委托号: {order_id}")
                 return True

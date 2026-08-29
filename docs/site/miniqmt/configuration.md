@@ -274,8 +274,8 @@ DYNAMIC_TAKE_PROFIT = [
 !!! note "首次止盈状态以成交为准"
     实盘 `take_profit_half` 委托提交成功后不会立即标记 `profit_triggered=True`，只有成交回报确认后才写入内存与 SQLite。已有本地跟踪委托或 QMT 活跃委托时，同一股票新的动态止盈止损信号会被阻断，防止重复卖出。
 
-!!! note "全仓止盈后的网格暂停  [v3.8.9]"
-    `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=True` 时，系统只在本地跟踪的 `take_profit_full` 委托收到成交确认后调用网格管理器暂停同股活跃会话。暂停动作等价于把 `grid_trading_sessions.enabled` 置为 `False`：会话、账本、统计和参数都会保留，不会停止或删除网格，也不会影响其他股票。若需要关闭该联动，可设置环境变量 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=false`，或通过 `/api/config/save` 保存 `{"pauseGridAfterTakeProfitFull": false}`。
+!!! note "清仓后的网格暂停  [v3.8.9 / v3.9.0]"
+    `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=True` 时，系统只在本地跟踪的**清仓类**委托收到成交确认后调用网格管理器暂停同股活跃会话。v3.9.0 起清仓类包括 `take_profit_full` 与 `stop_loss`（两者都卖出 `available` 全量）；开关名保留历史命名，但语义已覆盖止损。暂停动作等价于把 `grid_trading_sessions.enabled` 置为 `False`：会话、账本、统计和参数都会保留，不会停止或删除网格，也不会影响其他股票。若需要关闭该联动，可设置环境变量 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=false`，或通过 `/api/config/save` 保存 `{"pauseGridAfterTakeProfitFull": false}`。
 
 !!! tip "对手价重挂兜底"
     `PENDING_ORDER_REORDER_PRICE_MODE="best"` 时，卖单优先使用买三价；若买三价为 `0` 或缺失，会按买一价、最新价、收盘价、原信号价逐级降级。`sell_stock(price=0)` 同样会自动改为获取有效买盘/最新价。

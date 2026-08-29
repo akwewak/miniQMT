@@ -126,6 +126,22 @@
       ],
       "priority": "critical"
     },
+    "executor_cancel_order": {
+      "name": "撤单通道回归",
+      "description": "验证 TradingExecutor.cancel_order 走通真实撤单通道(委托 PositionManager._cancel_order)，不依赖已废弃的 xtt.create_trader/cancel_order",
+      "modules": [
+        "test.test_executor_cancel_order"
+      ],
+      "priority": "critical"
+    },
+    "grid_pause_after_full_exit": {
+      "name": "清仓后网格联动暂停",
+      "description": "验证 take_profit_full / stop_loss 成交确认后暂停同股网格会话，只翻转 enabled 不修改网格配置；take_profit_half 与网格自身成交不联动",
+      "modules": [
+        "test.test_grid_pause_after_full_exit"
+      ],
+      "priority": "critical"
+    },
     "grid_qa_fixes": {
       "name": "网格交易MECE质量审查修复验证测试",
       "description": "验证MECE审查后6个修复：A-1(卖出资金回收语义修正)、A-2(档位冷却键A-2修复有效性)、A-3(死锁预防)、C-3(浮点精度边界)、D-1(SQL注入防护)、D-2(裸except修复)；并覆盖C-1冷却机制、C-2会话重启恢复、C-4 DB失败容错、C-5并发安全",
@@ -346,7 +362,9 @@
         "test.test_simulation_strategy_execution",
         "test.test_simulation_mode_switch",
         "test.test_p1_fixes",
-        "test.test_macd_signal_fixes"
+        "test.test_macd_signal_fixes",
+        "test.test_executor_cancel_order",
+        "test.test_grid_pause_after_full_exit"
       ],
       "priority": "critical"
     },

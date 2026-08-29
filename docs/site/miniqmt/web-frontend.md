@@ -281,7 +281,31 @@ Web2.0 顶部不再有任何控制控件：原先的 7 个开关/按钮已全部
 
 这意味着 Web 中“首次止盈已触发”代表**成交确认后的状态**，不是“委托已提交”。生产排查时应同时查看交易记录、后台日志和 QMT 当日委托，避免把待成交卖单误判为已经落账。
 
-v3.8.9 起，若 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=True`，`take_profit_full` 全仓止盈委托成交确认后，后端会把同股活跃网格会话切到暂停（`grid_trading_sessions.enabled=False`）。web1.0 / web2.0 中该会话仍会显示为 active，但“自动/暂停”状态会变为暂停；用户可在 web1.0 的网格配置对话框中手动恢复自动执行。
+v3.8.9 起，若 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL=True`，`take_profit_full` 全仓止盈委托成交确认后，后端会把同股活跃网格会话切到暂停（`grid_trading_sessions.enabled=False`）。**v3.9.0 起 `stop_loss` 止损清仓成交后同样触发该暂停**（两者都卖出 `available` 全量，属同一清仓语义），复用同一开关。web1.0 / web2.0 中该会话仍会显示为 active，但“自动/暂停”状态会变为暂停；用户可在 web1.0 的网格配置对话框中手动恢复自动执行。
+
+### 下单日志的策略标签  [v3.9.0]
+
+下单日志中每条记录尾部的标签由 `trade_records.strategy` 映射而来，**存储值始终是英文标识，仅显示层做中文映射**：
+
+| 存储值 | 显示 | 来源 |
+|--------|------|------|
+| `simu` | 模拟 | 模拟成交 |
+| `auto_partial` | 浮盈 | 首次止盈（卖 60%） |
+| `auto_full` | 止盈 | 动态止盈清仓 |
+| `stop_loss` | 止损 | 止损清仓 |
+| `grid` | 网格 | 网格买卖 |
+| `manual` | 手动 | XtQuantManager 网关侧手动卖出 |
+| `M_real` / `M_simu` | 手买 / 模买 | `strategy.manual_buy()` 实盘 / 模拟 |
+| `manual_real` / `manual_simu` | 手卖 / 模卖 | `strategy.manual_sell()` 实盘 / 模拟 |
+| `external` | 外部 | QMT 客户端等本机未发的委托 |
+| `default` | 默认 | 未指定策略 |
+
+!!! warning "映射表分散在三处，修改需同步"
+    - `web_server.py` 的 `strategy_labels` —— 服务端下发 `strategy_label` 字段的源头。**web2.0 在 Flask 直连模式下优先取该值**，因此只改前端不生效。
+    - `web1.0/script.js` 的 `LOG_STRATEGY_LABELS` —— web1.0 只读取原始 `strategy` 字段，不使用 `strategy_label`。
+    - `web2.0/src/components/OrderLog.vue` 的 `strategyLabels` —— 网关模式兜底，因为 XtQuantManager 不下发 `strategy_label`。
+
+    取值链为 `t.strategy_label || strategyLabels[t.strategy] || t.strategy`；未命中映射时会直接显示原始英文值。
 
 ### 网格悬停卡片口径
 

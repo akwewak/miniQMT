@@ -663,6 +663,7 @@ def validate_trading_signal(self, stock_code, signal_type, signal_info):
 - 在 `signal_lock` **外部**调用 `grid_manager.stop_grid_session()`，避免 `signal_lock → grid_manager.lock` 潜在死锁
 - 网格会话在止损信号进入策略线程前已被强制停止
 - `take_profit_full` 不强制停止网格；v3.8.9 起仅在成交确认后按 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` 暂停同股网格会话，保留会话与账本，避免清仓后继续发新网格单
+- v3.9.0 起 `stop_loss`（含 `stop_loss_0` / `stop_loss_1`）成交确认后同样触发该暂停——止损与全仓止盈都卖出 `available` 全量，属同一清仓语义
 
 ```python
 # position_manager.py - 监控循环信号检测
@@ -1484,14 +1485,15 @@ logger.info(f"检测到止盈信号: {stock_code}")  # 关键事件
 
 ---
 
-**文档版本**: v1.7
-**最后更新**: 2026-08-17
+**文档版本**: v1.8
+**最后更新**: 2026-08-29
 **维护者**: miniQMT Team
 
 ### 变更记录
 
 | 版本 | 日期 | 变更说明 |
 |------|------|---------|
+| v1.8 | 2026-08-29 | 同步 v3.9.0：修复网格超时委托撤单死代码路径（`TradingExecutor.cancel_order` 统一委托 `PositionManager._cancel_order`）、止损清仓后联动暂停同股网格会话、Web 手动买卖策略标签统一 |
 | v1.7 | 2026-08-17 | 同步 v3.8.9：Web `/api/*` 统一鉴权、`WEB_PUBLIC_MODE`、北交所 `.BJ` 代码归一、网关 Token 环境变量优先级和全仓止盈暂停同股网格会话 |
 | v1.6 | 2026-06-27 | 同步行情源健康评分（内存观察版、不落库、`/api/market/health`）与网格启动条件默认值：`GRID_REQUIRE_PROFIT_TRIGGERED=False` |
 | v1.5 | 2026-06-13 | 新增「网格实盘交易机制」章节（成交确认/对手价/涨跌停防护/信号复核/启动对账/真实盈亏账本）；新增 grid_orders/grid_lots/grid_lot_matches 表及 grid_config_templates；grid_trading_sessions 补 total_buy_volume/total_sell_volume；修正错误表名 grid_sessions→grid_trading_sessions、目标盈利 8%→10%；修正失效文档死链 |

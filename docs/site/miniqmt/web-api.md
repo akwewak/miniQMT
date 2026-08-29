@@ -154,7 +154,7 @@ miniQMT 提供 RESTful API。Flask 直连模式暴露完整 web1.0 API；xtquant
 
     - **股票代码后缀**：模拟模式经 `Methods.add_xt_suffix` **补全**后缀（`000001` → `000001.SZ`）；实盘模式则**去除**后缀。
     - **交易时间**：模拟模式强制放行，不受 `config.is_trade_time()` 限制，非交易时段也能下单。
-    - **策略标识**：写入 `trade_records.strategy` 的值为 `M_simu`（实盘为 `M_real`）。
+    - **策略标识**：写入 `trade_records.strategy` 的值为 `M_simu`（实盘为 `M_real`）；Web 界面分别显示为「模买」「手买」（存储值不变，仅显示层映射）。
 
     `ENABLE_ALLOW_BUY=False` 时，模拟与实盘同样在 `manual_buy` 层被拦截，返回 `success_count=0`。
     模拟成交只写内存持仓与 SQLite `trade_records`，不落 SQLite `positions` 表。

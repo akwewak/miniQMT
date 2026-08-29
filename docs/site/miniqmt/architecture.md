@@ -18,6 +18,7 @@
 - **动态止盈止损信号入队门控**：持仓监控仅在 `ENABLE_DYNAMIC_STOP_PROFIT` 且 `ENABLE_AUTO_TRADING` 同时开启时才检测并写入 `latest_signals`（`_detect_and_enqueue_dynamic_signal`）。任一关闭时不检测、不入队，避免"检测 → 策略因自动交易关闭而清除 → 再检测"的每 3 秒日志刷屏；关闭时会清理残留动态信号（保留 `grid_` 网格信号）。网格检测走独立分支（`ENABLE_GRID_TRADING`），不受此门控影响
 - `ENABLE_GRID_TRADING` 控制网格模块，`grid_trading_sessions.enabled` 控制单只股票网格会话“自动/暂停”
 - v3.8.9 起，`take_profit_full` 全仓止盈委托成交确认后，`ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL` 默认会把同股活跃网格会话切到暂停（保留会话与账本）
+- v3.9.0 起，`stop_loss` 止损清仓成交确认后同样触发该暂停；开关复用同一个 `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`
 - 每个信号经过 `validate_trading_signal()` 验证，防止重复执行
 - **信号保活与时效兜底**（v3.8.6）：`latest_signals` 是覆盖式队列，监控线程 3 秒一轮、策略线程单股消费周期约 `10 + 持仓数 + 股票池数` 秒。首次止盈这类「跨过即触发」的瞬时信号，价格回踩一次就会被原逻辑删除而永久丢失。现由 `ENABLE_DYNAMIC_SIGNAL_KEEPALIVE` 在窗口内保留未消费信号，并由 `validate_trading_signal()` 的年龄检查（`DYNAMIC_SIGNAL_MAX_AGE_SECONDS`）兜底，防止以过旧的价格快照下单。详见[止盈止损 · 信号保活与时效兜底](stop-profit-loss.md)
 

@@ -233,7 +233,7 @@ Get-Content logs/qmt_trading.log -Wait  # Windows PowerShell
 - **动态止盈止损信号入队门控**：监控线程仅在 `ENABLE_DYNAMIC_STOP_PROFIT` 且 `ENABLE_AUTO_TRADING` 同时开启、**且该股 `positions.stop_profit_enabled` 为真**时才检测并写入 `latest_signals`（`_detect_and_enqueue_dynamic_signal`）。任一关闭时不检测/不入队，避免"检测→策略因自动交易关闭而清除→再检测"的每 3 秒日志刷屏。网格检测走独立分支（`ENABLE_GRID_TRADING`），不受此门控影响
 - **个股级动态止盈止损开关**：`positions.stop_profit_enabled`（默认 1=开）与全局开关是 AND 关系，可在 web1.0 持仓列表末列拨动开关单独暂停某只股票；写入走 `PositionManager.set_stop_profit_enabled()`（仿 `set_session_enabled`，只更新单列 + `_increment_data_version()`，不动 `update_position`）。网关模式 `xtquant_manager/stop_profit.py` 同样遵守该开关
 - `ENABLE_GRID_TRADING` 控制网格模块，`grid_trading_sessions.enabled` 控制单只股票网格会话“自动/暂停”
-- `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`（默认 True）控制全仓止盈成交确认后的网格联动：`take_profit_full` 成交后只暂停同股活跃网格会话（`enabled=False`），不停止/删除会话
+- `ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL`（默认 True）控制**清仓成交确认后**的网格联动：`take_profit_full` 与 `stop_loss`（两者都卖出 `available` 全量）成交后只暂停同股活跃网格会话（`enabled=False`），不停止/删除会话，也不修改任何网格配置（中心价/档位/投入上限/有效期），便于人工复核后原样恢复
 - 每个信号都要经过 `validate_trading_signal()` 验证,防止重复执行
 
 **2. 双层存储架构**
@@ -311,7 +311,7 @@ ENABLE_AUTO_OPERATION = False   # 全局自动操作总开关 ⚠️
 ENABLE_AUTO_TRADING = False     # 非网格自动策略执行开关
 ENABLE_DYNAMIC_STOP_PROFIT = True  # 止盈止损功能
 ENABLE_GRID_TRADING = True      # 网格交易功能
-ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = True  # 全仓止盈成交后暂停同股网格会话
+ENABLE_PAUSE_GRID_AFTER_TAKE_PROFIT_FULL = True  # 全仓止盈/止损成交后暂停同股网格会话
 ENABLE_MACD_SELL = False     # MACD技术指标卖出开关（False=仅记录信号不实盘卖出，2026-08-19修复price_type后新增）
 ENABLE_THREAD_MONITOR = True    # 线程健康监控（无人值守必需）⭐
 ENABLE_SELL_MONITOR = True      # 卖出委托单超时监控
@@ -421,7 +421,9 @@ DYNAMIC_SIGNAL_MAX_AGE_SECONDS = 120     # 执行前信号最大年龄(秒)，�
 记录所有买卖交易,包含:
 - `stock_code`, `trade_type` (BUY/SELL), `price`, `volume`
 - `trade_id`: 订单ID (实盘为QMT返回的order_id, 模拟为 `SIM{timestamp}{counter}`)
-- `strategy`: 策略标识 (`simu`/`auto_partial`/`stop_loss`/`grid`)
+- `strategy`: 策略标识 (`simu`/`auto_partial`/`auto_full`/`stop_loss`/`grid`/`manual`/`M_real`/`M_simu`/`manual_real`/`manual_simu`/`external`/`default`)
+  - Web 显示标签映射需**三处同步**：[web_server.py](web_server.py) `strategy_labels`（服务端下发 `strategy_label`，web2.0 Flask 直连模式优先取此值）、[web1.0/script.js](web1.0/script.js) `LOG_STRATEGY_LABELS`（只认原始 `strategy`）、[web2.0/src/components/OrderLog.vue](web2.0/src/components/OrderLog.vue) `strategyLabels`（网关模式兜底，因网关不下发 `strategy_label`）
+  - 手动买卖：`M_real`=手买 / `M_simu`=模买 / `manual_real`=手卖 / `manual_simu`=模卖
 
 ## 无人值守运行 ⭐
 
@@ -812,9 +814,9 @@ thread_monitor.get_status()
 | `qmt_rpc` | high | 大QMT RPC 交易后端（契约兼容、只读门禁、回调/委托映射） |
 | `simulation_trading_e2e` | critical | 模拟交易模式端到端（核心链路/Web下单/策略四分支/模式切换） |
 | `p1_fixes` | high | 重连缓存刷新/QMT自恢复探测/信号保活与时效兜底/超时泄漏可观测 |
-| `fast` | critical | 快速验证子集（当前配置 40 个模块、959 个用例） |
+| `fast` | critical | 快速验证子集（当前配置 43 个模块、1037 个用例） |
 
-**测试统计（当前配置）**: 33组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次（2026-08-19）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 33组、123个模块、2548个用例，100% 通过；具体以本地运行报告为准。
+**测试统计（当前配置）**: 35组（含 `fast`）。`--all` 默认排除重复的 `fast` 组；最近一次（2026-08-29, v3.9.0）使用 Anaconda `python39` 执行 `--all-with-fast` 实测为 35组、130个模块、2622个用例，100% 通过；具体以本地运行报告为准。
 
 ### 编写新测试的规范
 

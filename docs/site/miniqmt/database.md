@@ -44,7 +44,7 @@
 | `price` | 成交价格 |
 | `volume` | 成交数量 |
 | `trade_id` | 成交/流水 ID；模拟为 `SIM{timestamp}{counter}`，普通实盘流水可使用订单 ID，实盘网格确认模式下为券商成交回报 ID |
-| `strategy` | 策略标识（`simu` / `auto_partial` / `stop_loss` / `grid`） |
+| `strategy` | 策略标识：`simu`(模拟) / `auto_partial`(浮盈) / `auto_full`(止盈) / `stop_loss`(止损) / `grid`(网格) / `manual`(手动，网关侧) / `M_real`(手买) / `M_simu`(模买) / `manual_real`(手卖) / `manual_simu`(模卖) / `external`(外部) / `default`(默认)。括号内为 Web 界面显示标签 |
 | `timestamp` | 交易时间 |
 
 实盘网格在 `GRID_CONFIRM_LIVE_ORDER_BY_DEAL = True` 时，委托阶段不会写入本表；只有收到真实成交回报并完成网格账本落账后，才补写 `strategy = grid` 的普通成交流水。
