@@ -617,7 +617,8 @@
 - 模拟交易模式（无需 QMT 即可验证策略）
 - 回归测试框架基础设施
 
-[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.8.9...HEAD
+[Unreleased]: https://github.com/weihong-su/miniQMT/compare/v3.9.0...HEAD
+[3.9.0]: https://github.com/weihong-su/miniQMT/compare/v3.8.9...v3.9.0
 [3.8.9]: https://github.com/weihong-su/miniQMT/compare/v3.8.8...v3.8.9
 [3.8.8]: https://github.com/weihong-su/miniQMT/compare/v3.8.7...v3.8.8
 [3.8.7]: https://github.com/weihong-su/miniQMT/compare/v3.8.6...v3.8.7
