@@ -2128,6 +2128,109 @@ class TestTraderCallback(TestBase):
 
         mock_refresh.assert_not_called()
 
+    def test_h3f_manual_order_placeholder_is_replaced_by_real_deals(self):
+        """手动买入下单时预写的 ORDER_ 占位流水，应被真实成交回报取代而非重复记账。"""
+        executor = self._make_live_executor()
+        order_id = 403701763
+        executor.order_cache[str(order_id)] = {
+            "stock_code": "603757.SH",
+            "strategy": "M_real",
+            "trade_type": "BUY",
+            "price": 69.67,
+            "volume": 1100,
+        }
+
+        # 下单成功时按卖三价预写的占位流水（M_real 不在延迟记账白名单内）
+        self.assertTrue(executor._save_trade_record(
+            stock_code="603757.SH",
+            trade_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            trade_type="BUY",
+            price=69.67,
+            volume=1100,
+            amount=69.67 * 1100,
+            trade_id=f"ORDER_{order_id}",
+            commission=0.0,
+            strategy="M_real",
+        ))
+
+        # 同一委托分两笔成交回报
+        for traded_volume, traded_id in ((1000, "DEAL_1"), (100, "DEAL_2")):
+            trade = _FakeTrade(
+                order_id=order_id,
+                stock_code="603757.SH",
+                traded_volume=traded_volume,
+                traded_price=69.64,
+                traded_id=traded_id,
+                order_type=23,
+            )
+            self.assertTrue(executor.confirm_live_order_filled(order_id, deal_info=trade))
+
+        rows = executor.conn.execute(
+            "SELECT trade_id, trade_type, volume FROM trade_records ORDER BY id"
+        ).fetchall()
+        self.assertEqual([row[0] for row in rows], ["DEAL_1", "DEAL_2"])
+        self.assertEqual({row[1] for row in rows}, {"BUY"})
+        self.assertEqual(sum(row[2] for row in rows), 1100)
+
+    def test_h3g_placeholder_cleanup_keeps_history_with_reused_order_id(self):
+        """QMT order_id 跨日复用，清理占位流水不得误删历史同名 ORDER_ 记录。"""
+        executor = self._make_live_executor()
+        order_id = 1209008130
+
+        # 历史流水：同一 order_id 在更早的日期/别的股票上被复用过
+        self.assertTrue(executor._save_trade_record(
+            stock_code="002674",
+            trade_time="2026-06-04 09:51:33",
+            trade_type="SELL",
+            price=14.16,
+            volume=3200,
+            amount=14.16 * 3200,
+            trade_id=f"ORDER_{order_id}",
+            commission=0.0,
+            strategy="stop_loss",
+        ))
+
+        executor.order_cache[str(order_id)] = {
+            "stock_code": "300122.SZ",
+            "strategy": "M_real",
+            "trade_type": "BUY",
+            "price": 14.26,
+            "volume": 5600,
+        }
+        self.assertTrue(executor._save_trade_record(
+            stock_code="300122.SZ",
+            trade_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            trade_type="BUY",
+            price=14.26,
+            volume=5600,
+            amount=14.26 * 5600,
+            trade_id=f"ORDER_{order_id}",
+            commission=0.0,
+            strategy="M_real",
+        ))
+
+        trade = _FakeTrade(
+            order_id=order_id,
+            stock_code="300122.SZ",
+            traded_volume=5600,
+            traded_price=14.23,
+            traded_id="DEAL_300122",
+            order_type=23,
+        )
+        self.assertTrue(executor.confirm_live_order_filled(order_id, deal_info=trade))
+
+        rows = executor.conn.execute(
+            "SELECT stock_code, trade_time, volume, trade_id FROM trade_records ORDER BY id"
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        # 历史记录原样保留
+        self.assertEqual(rows[0][0], "002674")
+        self.assertEqual(rows[0][3], f"ORDER_{order_id}")
+        # 当天占位记录被真实成交取代
+        self.assertEqual(rows[1][0], "300122")
+        self.assertEqual(rows[1][2], 5600)
+        self.assertEqual(rows[1][3], "DEAL_300122")
+
     def test_h3c_grid_handled_deal_does_not_write_external_record(self):
         """网格管理器已接住的成交回报不应额外补写 external。"""
         executor = self._make_live_executor()

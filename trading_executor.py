@@ -429,6 +429,7 @@ class TradingExecutor:
                 else:
                     self.record_live_deal_after_confirmation(deal_info)
             else:
+                self._drop_placeholder_trade_record(order_id, stock_code, exclude_trade_id=trade_id)
                 self._save_trade_record(
                     stock_code, trade_time, trade_type, price, volume, amount,
                     trade_id, commission, strategy
@@ -771,6 +772,14 @@ class TradingExecutor:
                 )
                 return False
 
+            # 下单时可能已预写 ORDER_{order_id} 占位流水（非延迟记账策略，如手动买卖），
+            # 成交回报到达后必须先清理，否则同一笔委托会被重复记账。
+            self._drop_placeholder_trade_record(
+                record.get('order_id'),
+                record.get('stock_code'),
+                exclude_trade_id=record.get('trade_id')
+            )
+
             return self._save_trade_record(
                 stock_code=record['stock_code'],
                 trade_time=record['trade_time'],
@@ -896,6 +905,62 @@ class TradingExecutor:
         except Exception as e:
             logger.warning(f"检查交易流水是否已存在失败: trade_id={trade_id}, error={e}")
             return False
+
+    def _drop_placeholder_trade_record(self, order_id, stock_code, exclude_trade_id=None):
+        """清理下单时预写的 ORDER_{order_id} 占位流水。
+
+        非延迟记账策略(手动买卖等)在下单成功时即以预估价写入一条流水，成交回报
+        到达后会再按真实成交写一条，同一笔委托因此被记两次。成交回报是准确口径，
+        写入前先删除占位记录；同一委托多笔成交时只有首笔会删到行。
+
+        ⚠️ QMT 的 order_id 会跨日复用，历史流水中存在同名 ORDER_{order_id}。
+        必须同时限定当天 + 同一股票，只删本次委托自己写的那条占位记录。
+        """
+        if order_id in (None, ''):
+            return 0
+        placeholder_id = f"ORDER_{order_id}"
+        if exclude_trade_id is not None and str(exclude_trade_id) == placeholder_id:
+            # 兜底路径本身就以 ORDER_{order_id} 写入，交由 _save_trade_record 判重
+            return 0
+
+        base_code = self._normalize_trade_record_stock_code(stock_code)
+        if not base_code:
+            return 0
+
+        record_lock = getattr(self, '_trade_record_lock', None)
+        if record_lock is None:
+            record_lock = threading.RLock()
+            self._trade_record_lock = record_lock
+
+        try:
+            with record_lock:
+                cursor = self.conn.cursor()
+                cursor.execute("""
+                    DELETE FROM trade_records
+                    WHERE trade_id=?
+                      AND date(trade_time)=date(?)
+                      AND (stock_code=? OR stock_code LIKE ?)
+                """, (
+                    placeholder_id,
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    base_code,
+                    f"{base_code}.%"
+                ))
+                removed = cursor.rowcount or 0
+                self.conn.commit()
+            if removed:
+                logger.info(
+                    f"已清理下单占位流水，改以成交回报为准: trade_id={placeholder_id}, "
+                    f"stock={base_code}, 清理{removed}条"
+                )
+            return removed
+        except Exception as e:
+            logger.warning(f"清理下单占位流水失败: trade_id={placeholder_id}, error={e}")
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            return 0
 
     def _save_trade_record(self, stock_code, trade_time, trade_type, price, volume, amount, trade_id, commission, strategy='default', allow_qmt_name_lookup=True):
         """保存交易记录到数据库"""
