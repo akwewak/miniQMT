@@ -6,6 +6,36 @@
 
 ## [Unreleased]
 
+### Fixed
+- **买入委托超时撤单后被反手卖出**（2026-09-02 日志审查发现，潜伏 P0，实盘未触发）：`PositionManager._reorder_after_cancel()` 全程**无委托方向判断**，无条件取买三价并调用 `sell_stock()`。而 `add_position` 补仓**买单**同样经 `track_order()` 纳入超时跟踪（`trading_executor.py` 买入分支，`signal_info` 已带 `order_side='BUY'`），一旦挂满 `PENDING_ORDER_TIMEOUT_MINUTES`(5 分钟) 未成交，撤单后即以买三价**反手卖出**同等数量。`signal_info` 中的 `order_side` 字段一直存在却从未被读取——设计上本打算区分方向，实现漏了。
+  - 现在 `_reorder_after_cancel()` 入口加方向门控，且**置于取行情之前**（买入委托不再产生无谓的行情查询）。判定分三档：`order_side='SELL'` 放行；缺 `order_side` 但 `signal_type` 属 `stop_loss`/`take_profit_half`/`take_profit_full` 放行（**兼容历史 `signal_info`**——既有用例 `d5b`/`d5c` 传入的正是无该字段的字典，只按“非 SELL 即拒”会连正常止盈重挂一起拦掉）；其余一律放弃重挂并 `WARNING` 提示人工确认是否补单。
+  - **保守策略而非按方向分派**：补仓买单挂不上本身就是需要人工判断的信号（补仓阈值触发时多为急跌行情），自动改价追买风险高于收益。
+  - **已核实历史从未触发**：全部日志中 `reorder_add_position` 命中 0 次，数据库 `trade_records` 里 `reorder_*` 流水仅 09-02 的 4 笔 SELL。未爆发的原因是补仓买单以卖三价挂出几乎必然秒成，撑不到 5 分钟——但这恰恰意味着**它会在急跌行情里首次爆发**。
+- **Web 下单日志显示英文原始策略名**：撤单重挂的 `strategy` 由 `f"reorder_{signal_type}"` **动态拼接**产生（`reorder_take_profit_half` / `reorder_take_profit_full` / `reorder_stop_loss`），三处标签映射表均无对应键，而三处兜底逻辑都是“查不到就原样返回”，于是 24 字符英文串直接漏到界面；又因 `.log-col-tag` 固定 `34px`（按两个中文字设计）且**没有** `overflow`/`text-overflow`（相邻的 `.log-col-name` 有），内容溢出后被行边界裁断，实盘表现为显示成半截词 `reorder_take_profit_hal`。
+  - 三处映射表（`web_server.py` `strategy_labels`、`web1.0/script.js` `LOG_STRATEGY_LABELS`、`web2.0/src/components/OrderLog.vue` `strategyLabels`）各补 3 键，**脚本校验三处完全一致（各 15 条目）**；标签复用原信号文案（浮盈/止盈/止损），顺带让 web1.0 的 `getLogStrategyClass()` 自动获得正确红绿着色（该函数按中文标签而非原始值判断）。
+  - `.log-col-tag` 补 `overflow: hidden` + `text-overflow: ellipsis`，兜住未来任何超长策略名。
+  - **仅改显示层，存储值不变**，历史记录立即正确显示。
+
+### Changed
+- **止盈委托超时阈值由 5 分钟收紧至 30 秒**，与止损对齐：新增 `TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES = 0.5`，覆盖 `take_profit_half` / `take_profit_full`；`stop_loss`(0.5) 与其他信号(`add_position` 等，仍走 5 分钟兜底) 阈值不变。
+  - **动机是 2026-09-02 实盘实测滑点约 455 元**：09:58 603757 触发回撤止盈，以对手价算出 72.56 后按限价提交——`price_type=5` 的语义是“下单前算出买三价、再按**限价**挂”，并非交易所市价单，因此价格一走开即成空转挂单；5.2 分钟后超时撤单，重挂时买三价已跌至 71.48，成交于 71.65，单价差 0.91 元 × 500 股。
+  - 止盈与止损同属“信号已触发、要求确定性离场”，此前却用了 **10 倍于止损**的容忍窗口（网格为 90 秒）。
+  - ⚠️ **实际生效粒度为 30~60 秒**：超时检查由 `PositionManager.order_check_interval`（硬编码 30 秒）轮询驱动，止损的 0.5 分钟一直同样受此限制，两者行为一致。相比原先的 300~330 秒仍改善约 6 倍。
+
+### Added
+- `scripts/restore_line_endings.py`：还原被编辑器规范化的行尾分布。本仓库 HEAD 中多数文件为 **CRLF/LF 混合**行尾且 `core.autocrlf=false`，编辑器保存会把整个文件统一为纯 CRLF，导致 `git diff` 显示全文件重写（本次 `position_manager.py` 一度显示 2728 行改动、`web1.0/script.js` 489 行）。脚本以“去掉行尾后的内容”为基准做 `difflib` 比对，`equal` 块取 HEAD 原始行、改动块沿用上下文行尾，并带正文一致性断言防止误改代码。
+
+### Tests
+- `test/test_trader_callback.py` 新增 5 例（`d5e`~`d5i`）：买入委托被拦截且不触发行情查询、显式 `order_side='SELL'` 正常重挂并校验 `strategy` 拼接、**历史 `signal_info` 缺 `order_side` 时按三种卖出信号类型兜底放行**、方向无法判定时保守放弃、以及从超时撤单到 `54=已撤` 回调的**端到端链路**断言全程无卖出委托。
+- 既有用例 `test_d2_stop_loss_uses_shorter_timeout_than_take_profit` 的前提被本次阈值调整推翻（它以 `take_profit_half` 作为“走 5 分钟全局阈值”的对照组），改名为 `test_d2_stop_loss_and_take_profit_use_shorter_timeout` 并扩展为四方对照：`stop_loss`/`take_profit_half`/`take_profit_full` 均 0.5 分钟触发，`add_position` 5 分钟不触发。
+- **变异验证**：将方向门控临时改为 `if False:` 后重跑，`d5e`/`d5h`/`d5i` 全部失败且报错均为 `Expected 'sell_stock' to not have been called. Called 1 times.`——既证明测试确实能捕获缺陷（而非陪跑），也**实证了原缺陷会真实下出反向卖单**；变异已还原并经 grep 确认无残留。
+- 行尾还原后重跑全部回归，`git diff` 由 2728 行收敛至 24 行，正文未受影响。
+- 完整回归：2026-09-02 使用 `python39` 环境执行 `test/run_integration_regression_tests.py --all-with-fast`，**35 组、2636 用例，2636 通过，0 失败，0 错误，0 跳过，成功率 100%**。
+
+### Docs
+- `CLAUDE.md`：`trade_records.strategy` 取值清单补全（原清单漏 `add_position` 与三个 `reorder_*`），并写明 `reorder_*` 由 `_reorder_after_cancel()` 动态拼接产生——新增卖出信号类型时，三处标签表需同步补 `reorder_` 前缀的键，否则前端会回退显示英文原始值。
+- `docs/site/miniqmt/configuration.md`：补 `TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES`；修正 `PENDING_ORDER_TIMEOUT_MINUTES` 的描述——它不再是“普通止盈委托超时阈值”，而是 `add_position` 等未单列阈值信号的兜底值。
+
 ## [3.9.0] - 2026-08-29
 
 > 本版本以**实盘日志驱动的缺陷修复**为主线：从 2026-08-27~28 的运行日志中定位并修复了两个影响实盘风控闭环的问题——网格超时委托**完全无法撤单**（探测的 xtquant 接口早已不存在，属 100% 死代码路径）、止损清仓后同股网格会话**不联动暂停**（与全仓止盈行为不一致）；同时收录 v3.8.9 后主干上的 MACD 信号去重与卖出口径修复，并统一了 Web 界面手动买卖的策略标签显示。
