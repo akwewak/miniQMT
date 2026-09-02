@@ -733,6 +733,9 @@ def get_trade_records():
                 'manual_simu': '模卖',
                 'external': '外部',
                 'default': '默认',
+                'reorder_take_profit_half': '浮盈',
+                'reorder_take_profit_full': '止盈',
+                'reorder_stop_loss': '止损',
             }
             trades_df['strategy_label'] = trades_df['strategy'].map(
                 lambda value: strategy_labels.get(str(value), value)

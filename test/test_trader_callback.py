@@ -27,6 +27,7 @@
      - 使用正确参数名 volume/price（非 sell_volume/sell_price）
      - volume=0 时放弃挂单
      - 挂单成功后跟踪新委托
+     - 方向门控：买入委托(add_position)撤单后不得被反手卖出
 """
 
 import sys
@@ -545,36 +546,45 @@ class TestTraderCallback(TestBase):
             config.ENABLE_PENDING_ORDER_AUTO_CANCEL = old_flag
             config.ENABLE_SIMULATION_MODE = old_sim
 
-    def test_d2_stop_loss_uses_shorter_timeout_than_take_profit(self):
-        """止损委托应使用更短超时阈值，普通止盈仍使用全局阈值。"""
+    def test_d2_stop_loss_and_take_profit_use_shorter_timeout(self):
+        """止损与止盈委托均使用 30 秒超时阈值，其他信号仍使用全局阈值。"""
         old_sim = config.ENABLE_SIMULATION_MODE
         old_flag = config.ENABLE_PENDING_ORDER_AUTO_CANCEL
         old_stop_loss_timeout = config.STOP_LOSS_PENDING_ORDER_TIMEOUT_MINUTES
+        old_take_profit_timeout = config.TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES
         old_default_timeout = config.PENDING_ORDER_TIMEOUT_MINUTES
         try:
             config.ENABLE_SIMULATION_MODE = False
             config.ENABLE_PENDING_ORDER_AUTO_CANCEL = True
             config.STOP_LOSS_PENDING_ORDER_TIMEOUT_MINUTES = 0.5
+            config.TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES = 0.5
             config.PENDING_ORDER_TIMEOUT_MINUTES = 5
             self.pm.last_order_check_time = 0
 
             self.pm.track_order("301560", 1001, "stop_loss", {})
             self.pm.track_order("301561", 1002, "take_profit_half", {})
+            self.pm.track_order("301562", 1003, "take_profit_full", {})
+            self.pm.track_order("301563", 1004, "add_position", {})
             with self.pm.pending_orders_lock:
-                self.pm.pending_orders["301560"]["submit_time"] = datetime.now() - timedelta(minutes=0.6)
-                self.pm.pending_orders["301561"]["submit_time"] = datetime.now() - timedelta(minutes=0.6)
+                for code in ("301560", "301561", "301562", "301563"):
+                    self.pm.pending_orders[code]["submit_time"] = datetime.now() - timedelta(minutes=0.6)
 
             with patch.object(self.pm, "_handle_timeout_order") as mock_handle:
                 self.pm.check_pending_orders_timeout()
 
-            mock_handle.assert_called_once()
-            handled_order = mock_handle.call_args.args[0]
-            self.assertEqual(handled_order["stock_code"], "301560")
-            self.assertEqual(handled_order["timeout_minutes"], 0.5)
+            handled = {
+                call.args[0]["stock_code"]: call.args[0]["timeout_minutes"]
+                for call in mock_handle.call_args_list
+            }
+            # 止损/止盈已超过 0.5 分钟阈值，应被处理
+            self.assertEqual(handled, {"301560": 0.5, "301561": 0.5, "301562": 0.5})
+            # add_position 仍走 5 分钟全局阈值，0.6 分钟不应触发
+            self.assertNotIn("301563", handled)
         finally:
             config.ENABLE_SIMULATION_MODE = old_sim
             config.ENABLE_PENDING_ORDER_AUTO_CANCEL = old_flag
             config.STOP_LOSS_PENDING_ORDER_TIMEOUT_MINUTES = old_stop_loss_timeout
+            config.TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES = old_take_profit_timeout
             config.PENDING_ORDER_TIMEOUT_MINUTES = old_default_timeout
 
     def test_d3_timeout_check_no_op_after_trade_callback(self):
@@ -770,6 +780,125 @@ class TestTraderCallback(TestBase):
 
         self.assertIn(stock_code, self.pm.pending_orders)
         self.assertEqual(self.pm.pending_orders[stock_code]["order_id"], new_order_id)
+
+    def test_d5e_reorder_rejects_buy_side_order(self):
+        """买入委托(order_side=BUY)撤单后不得被反手卖出"""
+        self.pm.data_manager = MagicMock()
+        mock_executor = MagicMock()
+
+        with patch("trading_executor.get_trading_executor", return_value=mock_executor):
+            self.pm._reorder_after_cancel(
+                "301560",
+                "add_position",
+                {"volume": 600, "current_price": 44.08, "order_side": "BUY"}
+            )
+
+        mock_executor.sell_stock.assert_not_called()
+        mock_executor.buy_stock.assert_not_called()
+        # 门控应在取行情之前拦截，避免无谓的行情查询
+        self.pm.data_manager.get_latest_data.assert_not_called()
+
+    def test_d5f_reorder_allows_explicit_sell_side_order(self):
+        """卖出委托(order_side=SELL)不受方向门控影响，正常重挂"""
+        self.pm.data_manager = MagicMock()
+        self.pm.data_manager.get_latest_data.return_value = {
+            "lastPrice": 44.02,
+            "bid3": 43.95,
+        }
+        mock_executor = MagicMock()
+        mock_executor.sell_stock.return_value = 940572700
+
+        with patch("trading_executor.get_trading_executor", return_value=mock_executor):
+            self.pm._reorder_after_cancel(
+                "301560",
+                "take_profit_half",
+                {"volume": 600, "current_price": 44.08, "order_side": "SELL"}
+            )
+
+        mock_executor.sell_stock.assert_called_once()
+        self.assertEqual(mock_executor.sell_stock.call_args.kwargs["volume"], 600)
+        self.assertEqual(
+            mock_executor.sell_stock.call_args.kwargs["strategy"],
+            "reorder_take_profit_half"
+        )
+
+    def test_d5g_reorder_allows_legacy_sell_signal_without_order_side(self):
+        """历史 signal_info 缺 order_side 时，按卖出信号类型兜底放行"""
+        self.pm.data_manager = MagicMock()
+        self.pm.data_manager.get_latest_data.return_value = {
+            "lastPrice": 44.02,
+            "bid3": 43.95,
+        }
+        mock_executor = MagicMock()
+        mock_executor.sell_stock.return_value = 940572700
+
+        for signal_type in ("take_profit_half", "take_profit_full", "stop_loss"):
+            mock_executor.reset_mock()
+            with patch("trading_executor.get_trading_executor", return_value=mock_executor):
+                self.pm._reorder_after_cancel(
+                    "301560",
+                    signal_type,
+                    {"volume": 600, "current_price": 44.08}
+                )
+            mock_executor.sell_stock.assert_called_once()
+            self.assertEqual(
+                mock_executor.sell_stock.call_args.kwargs["strategy"],
+                f"reorder_{signal_type}"
+            )
+
+    def test_d5h_reorder_rejects_unknown_signal_without_order_side(self):
+        """方向无法判定时保守放弃重挂，不下任何单"""
+        self.pm.data_manager = MagicMock()
+        mock_executor = MagicMock()
+
+        with patch("trading_executor.get_trading_executor", return_value=mock_executor):
+            self.pm._reorder_after_cancel(
+                "301560",
+                "some_unknown_signal",
+                {"volume": 600, "current_price": 44.08}
+            )
+
+        mock_executor.sell_stock.assert_not_called()
+        self.pm.data_manager.get_latest_data.assert_not_called()
+
+    def test_d5i_buy_order_timeout_does_not_trigger_reverse_sell(self):
+        """端到端：补仓买单超时撤单后，全链路不得产生卖出委托"""
+        stock_code = "301560"
+        old_order_id = 940572673
+        self.pm.track_order(
+            stock_code, old_order_id, "add_position",
+            {"volume": 600, "order_side": "BUY"}
+        )
+
+        order_info = {
+            "stock_code": stock_code,
+            "order_id": old_order_id,
+            "signal_type": "add_position",
+            "signal_info": {"volume": 600, "current_price": 44.08, "order_side": "BUY"},
+            "submit_time": datetime.now() - timedelta(minutes=10),
+        }
+        self.pm.data_manager = MagicMock()
+        self.pm.data_manager.get_latest_data.return_value = {
+            "lastPrice": 44.02,
+            "bid3": 43.95,
+        }
+        mock_executor = MagicMock()
+
+        old_reorder = config.PENDING_ORDER_AUTO_REORDER
+        try:
+            config.PENDING_ORDER_AUTO_REORDER = True
+            with patch.object(self.pm, "_query_order_status", return_value=55), \
+                 patch.object(self.pm, "_cancel_order", return_value=True) as mock_cancel, \
+                 patch("trading_executor.get_trading_executor", return_value=mock_executor):
+                # 超时 → 提交撤单请求
+                self.pm._handle_timeout_order(order_info)
+                mock_cancel.assert_called_once()
+                # 撤单成交回报 → 进入重挂分支，但应被方向门控拦截
+                self.pm._on_order_callback(_FakeOrder(stock_code, 54, old_order_id))
+        finally:
+            config.PENDING_ORDER_AUTO_REORDER = old_reorder
+
+        mock_executor.sell_stock.assert_not_called()
 
     def test_d5d_validate_blocks_when_local_pending_order_exists(self):
         """已有本地跟踪委托时，即使可卖数量大于0也应阻断新止盈信号"""

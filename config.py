@@ -455,6 +455,7 @@ DYNAMIC_SIGNAL_MAX_AGE_SECONDS = 120     # 执行前信号最大年龄(秒)，�
 ENABLE_PENDING_ORDER_AUTO_CANCEL = True  # 是否启用委托单超时自动撤单
 PENDING_ORDER_TIMEOUT_MINUTES = 5        # 委托单超时时间（分钟），默认5分钟
 STOP_LOSS_PENDING_ORDER_TIMEOUT_MINUTES = 0.5  # 止损委托单超时时间（分钟），30秒后触发撤单流程
+TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES = 0.5  # 止盈委托单超时时间（分钟），与止损对齐为30秒
 PENDING_ORDER_AUTO_REORDER = True        # 撤单后是否自动重新挂单
 PENDING_ORDER_REORDER_PRICE_MODE = "best"  # 重新挂单价格模式: "market"=市价, "limit"=限价, "best"=对手价
 MAX_CANCEL_RETRIES = 3                   # 撤单最大重试次数

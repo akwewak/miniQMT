@@ -1468,7 +1468,10 @@
         manual_real: '手卖',
         manual_simu: '模卖',
         external: '外部',
-        default: '默认'
+        default: '默认',
+        reorder_take_profit_half: '浮盈',
+        reorder_take_profit_full: '止盈',
+        reorder_stop_loss: '止损'
     };
 
     // 复用顶部已提升的 escapeHtml，避免两份实现各自演进。

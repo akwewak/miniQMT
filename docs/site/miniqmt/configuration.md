@@ -264,8 +264,9 @@ DYNAMIC_TAKE_PROFIT = [
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `ENABLE_PENDING_ORDER_AUTO_CANCEL` | `True` | 启用后，止盈止损卖出委托超时未成交时自动撤单 |
-| `PENDING_ORDER_TIMEOUT_MINUTES` | `5` | 普通止盈委托超时阈值（分钟） |
+| `PENDING_ORDER_TIMEOUT_MINUTES` | `5` | 兜底委托超时阈值（分钟），适用于 `add_position` 等未单列阈值的信号 |
 | `STOP_LOSS_PENDING_ORDER_TIMEOUT_MINUTES` | `0.5` | 止损委托超时阈值（分钟），默认 30 秒后更快撤单重挂 |
+| `TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES` | `0.5` | 止盈委托超时阈值（分钟），覆盖 `take_profit_half` / `take_profit_full`，与止损对齐为 30 秒 |
 | `PENDING_ORDER_AUTO_REORDER` | `True` | 撤单成功后是否自动重新挂单 |
 | `PENDING_ORDER_REORDER_PRICE_MODE` | `"best"` | 重挂价格模式：`market`=最新价，`limit`=原信号价，`best`=对手价 |
 | `ALLOW_TAKE_PROFIT_FULL_WITH_PENDING` | `False` | 全仓止盈是否允许跳过活跃委托检查；生产建议保持 `False` |

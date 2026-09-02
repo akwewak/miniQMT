@@ -23,7 +23,10 @@ const strategyLabels: Record<string, string> = {
   manual_real: '手卖',
   manual_simu: '模卖',
   external: '外部',
-  default: '默认'
+  default: '默认',
+  reorder_take_profit_half: '浮盈',
+  reorder_take_profit_full: '止盈',
+  reorder_stop_loss: '止损'
 }
 
 function strategyLabel(t: any) {

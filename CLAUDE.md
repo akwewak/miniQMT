@@ -421,9 +421,10 @@ DYNAMIC_SIGNAL_MAX_AGE_SECONDS = 120     # 执行前信号最大年龄(秒)，�
 记录所有买卖交易,包含:
 - `stock_code`, `trade_type` (BUY/SELL), `price`, `volume`
 - `trade_id`: 订单ID (实盘为QMT返回的order_id, 模拟为 `SIM{timestamp}{counter}`)
-- `strategy`: 策略标识 (`simu`/`auto_partial`/`auto_full`/`stop_loss`/`grid`/`manual`/`M_real`/`M_simu`/`manual_real`/`manual_simu`/`external`/`default`)
+- `strategy`: 策略标识 (`simu`/`auto_partial`/`auto_full`/`stop_loss`/`grid`/`manual`/`M_real`/`M_simu`/`manual_real`/`manual_simu`/`external`/`default`/`add_position`/`reorder_take_profit_half`/`reorder_take_profit_full`/`reorder_stop_loss`)
   - Web 显示标签映射需**三处同步**：[web_server.py](web_server.py) `strategy_labels`（服务端下发 `strategy_label`，web2.0 Flask 直连模式优先取此值）、[web1.0/script.js](web1.0/script.js) `LOG_STRATEGY_LABELS`（只认原始 `strategy`）、[web2.0/src/components/OrderLog.vue](web2.0/src/components/OrderLog.vue) `strategyLabels`（网关模式兜底，因网关不下发 `strategy_label`）
   - 手动买卖：`M_real`=手买 / `M_simu`=模买 / `manual_real`=手卖 / `manual_simu`=模卖
+  - `reorder_*` 由 `position_manager._reorder_after_cancel()` 以 `f"reorder_{signal_type}"` **动态拼接**产生（委托超时撤单后自动重挂）。新增卖出信号类型时，这三处标签表也要同步补 `reorder_` 前缀的键，否则前端会回退显示英文原始值
 
 ## 无人值守运行 ⭐
 

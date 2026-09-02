@@ -5221,11 +5221,17 @@ class PositionManager:
         return True
 
     def _get_pending_order_timeout_minutes(self, signal_type):
-        """按信号类型获取委托超时阈值，止损单使用更短等待时间。"""
+        """按信号类型获取委托超时阈值，止损/止盈单使用更短等待时间。"""
         if signal_type == 'stop_loss':
             return float(getattr(
                 config,
                 'STOP_LOSS_PENDING_ORDER_TIMEOUT_MINUTES',
+                config.PENDING_ORDER_TIMEOUT_MINUTES
+            ))
+        if signal_type in ('take_profit_half', 'take_profit_full'):
+            return float(getattr(
+                config,
+                'TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES',
                 config.PENDING_ORDER_TIMEOUT_MINUTES
             ))
         return float(config.PENDING_ORDER_TIMEOUT_MINUTES)
@@ -5527,6 +5533,22 @@ class PositionManager:
         signal_info (dict): 原信号信息
         """
         try:
+            # 方向门控：本函数只实现卖出重挂(买三价 + sell_stock)，
+            # 买入委托(如 add_position 补仓)若走到这里会被反向卖出，必须拦截。
+            sell_signal_types = ('stop_loss', 'take_profit_half', 'take_profit_full')
+            order_side = str((signal_info or {}).get('order_side', '')).upper()
+            is_sell_order = (
+                order_side == 'SELL' or
+                (not order_side and signal_type in sell_signal_types)
+            )
+            if not is_sell_order:
+                logger.warning(
+                    f"⚠️ [REORDER] {stock_code} 委托方向非卖出"
+                    f"(order_side={order_side or '未知'}, 信号类型={signal_type})，"
+                    f"自动重挂仅支持卖出委托，已放弃重挂，请人工确认是否需要补单"
+                )
+                return
+
             def _positive_price(value):
                 try:
                     price_value = float(value)
