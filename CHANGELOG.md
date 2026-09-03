@@ -21,6 +21,9 @@
   - **自愈点**：当天一旦产生第一笔新成交，数据变化即触发重绘、标签立即修正——故现象只在隔日开盘前可见，这也是它长期未被发现的原因。
   - **web2.0 不受影响**：同样的日期标签逻辑（`utils/trades.ts` `groupTradesByDay(trades, today = new Date())`），但 store 每轮 `trades.value = await flaskApi.getTradeRecords()` 赋的是新数组，引用变化触发 Vue 响应式重算。同一个逻辑陷阱，web2.0 因按引用失效而免疫，web1.0 因手写 JSON **值比较**而中招。
   - 持仓面板的同款缓存 `_lastHoldingsStr` 已核对，其渲染不含任何日期计算，不受影响。
+- **网格启动与成交补账两处误导性日志**（2026-09-03 日志审查发现，纯可观测性缺陷，不影响交易执行与流水记账）：
+  - `grid_trading_manager.start_grid_session()` 的「启动成功」摘要把中心价打印成 `highest_price`，但该变量只是中心价的**候选之一**——用户自定义中心价优先，缺失时才回退到持仓最高价。001288 会话实测打印「中心价=29.50」而实际生效 28.73，与紧邻下一行的 `center=28.73` 自相矛盾。改为打印真正写入 session 的 `center_price`（该变量在同函数 1281/1322/1323 行本就是建仓依据，if/elif 两分支均赋值、else 分支 raise，读取前必已绑定）。
+  - `PositionManager._record_external_trade_after_callback()` 的补账日志硬编码 `strategy=external`，而该值只是 `order_info` 的**兜底**：`_build_trade_record_from_deal()` 的策略优先级为 `order_cache > fallback_order_info > ...`，本机委托一律命中下单缓存。又因买入委托不进 `pending_orders`（那里只跟踪卖出超时），**手动买入必然走此分支**——001288 实测日志报 `strategy=external`，落库却是正确的 `M_real` 且无重复流水，日志与事实相反，易被误判为记账错误。改为说明「落库策略以下单缓存为准，缺失时才记为 external」，docstring 同步修正（原文「非本机发单」不准确）。前缀 `[外部成交]` 与方法名保持不变，避免牵连另外两处调用点。
 
 ### Changed
 - **止盈委托超时阈值由 5 分钟收紧至 30 秒**，与止损对齐：新增 `TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES = 0.5`，覆盖 `take_profit_half` / `take_profit_full`；`stop_loss`(0.5) 与其他信号(`add_position` 等，仍走 5 分钟兜底) 阈值不变。

@@ -1360,7 +1360,7 @@ class GridTradingManager:
         levels = session.get_grid_levels()
         logger.info(f"[GRID] start_grid_session: ========== 启动成功 ==========")
         logger.info(f"[GRID] start_grid_session: 股票代码={stock_code}, 会话ID={session.id}")
-        logger.info(f"[GRID] start_grid_session: 中心价={highest_price:.2f}, 档位间隔={session.price_interval*100:.1f}%")
+        logger.info(f"[GRID] start_grid_session: 中心价={center_price:.2f}, 档位间隔={session.price_interval*100:.1f}%")
         logger.info(f"[GRID] start_grid_session: 网格档位 lower={levels['lower']:.2f}, center={levels['center']:.2f}, upper={levels['upper']:.2f}")
         logger.info(f"[GRID] start_grid_session: 最大投入={session.max_investment:.2f}, 持仓比例={session.position_ratio*100:.1f}%")
         logger.info(f"[GRID] start_grid_session: 回调比例={session.callback_ratio*100:.2f}%, 最大偏离={session.max_deviation*100:.1f}%")

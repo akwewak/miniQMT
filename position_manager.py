@@ -5099,7 +5099,11 @@ class PositionManager:
             return False
 
     def _record_external_trade_after_callback(self, stock_code, order_id, trade):
-        """补写非本机发单但本机收到的 QMT 成交流水。"""
+        """补写未匹配本机待确认委托的 QMT 成交流水。
+
+        注意 order_info 里的 'external' 只是兜底值：真正落库的策略优先取下单时的
+        委托缓存，手动买入等本机委托仍会记为原策略（如 M_real）。
+        """
         order_info = {
             'stock_code': stock_code,
             'strategy': 'external',
@@ -5107,7 +5111,10 @@ class PositionManager:
         }
         recorded = self._record_trade_after_confirmation(order_id, order_info, trade=trade)
         if recorded:
-            logger.info(f"[外部成交] 已确认交易流水: {stock_code} order_id={order_id}, strategy=external")
+            logger.info(
+                f"[外部成交] 已确认交易流水: {stock_code} order_id={order_id}"
+                f"（未匹配本机待确认委托；落库策略以下单缓存为准，缺失时才记为 external）"
+            )
         self.last_position_update_time = 0
         logger.info(f"[外部成交] {stock_code} 已标记下轮监控强制同步持仓")
         return recorded
