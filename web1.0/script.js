@@ -1499,7 +1499,10 @@
 
     function updateLogs(logEntries) {
         // 检查数据是否实际发生变化
-        const logsStr = JSON.stringify(logEntries);
+        // 缓存键并入当前日期：日期分组标题经 formatLogDayLabel() 渲染为"今天/昨天"，
+        // 取决于当前日期而非数据本身。跨过午夜后数据可能一字未变但标签语义已过期，
+        // 只比数据会跳过重绘，导致昨天的记录一直挂着"今天"。
+        const logsStr = new Date().toDateString() + '|' + JSON.stringify(logEntries);
         if (window._lastLogsStr === logsStr) {
             console.log("Logs data unchanged, skipping update");
             return;

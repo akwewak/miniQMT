@@ -15,6 +15,12 @@
   - 三处映射表（`web_server.py` `strategy_labels`、`web1.0/script.js` `LOG_STRATEGY_LABELS`、`web2.0/src/components/OrderLog.vue` `strategyLabels`）各补 3 键，**脚本校验三处完全一致（各 15 条目）**；标签复用原信号文案（浮盈/止盈/止损），顺带让 web1.0 的 `getLogStrategyClass()` 自动获得正确红绿着色（该函数按中文标签而非原始值判断）。
   - `.log-col-tag` 补 `overflow: hidden` + `text-overflow: ellipsis`，兜住未来任何超长策略名。
   - **仅改显示层，存储值不变**，历史记录立即正确显示。
+- **web1.0 下单日志跨日不刷新日期标签**（目视发现，2026-09-03 定位）：`updateLogs()` 以 `JSON.stringify(logEntries)` 作为重绘缓存键，数据一致即跳过重绘；但日期分组标题经 `formatLogDayLabel()` 渲染为「今天 / 昨天 / MM-DD」，**取决于当前日期而非数据本身**。页面跨过午夜且当日尚无新成交时，后端返回的数据一字未变、缓存命中、不重绘，昨天的成交记录便一直挂着「今天」的标签。
+  - **不在刷新链路上**——排查确认后端 `start_date` 每次请求实时计算（`web_server.py` 无日期固化）、轮询为纯 `setInterval` 无交易时段判断、隔日照常发请求，问题纯粹是前端拿到数据后判定“没变化”而不重画。
+  - 修法是把当前日期并入缓存键（`new Date().toDateString() + '|' + JSON.stringify(...)`），跨日自动失效一次；相比“跨日主动清缓存”不依赖额外定时器或事件，更不易漏。同日仍走缓存，不产生无谓重绘。
+  - **自愈点**：当天一旦产生第一笔新成交，数据变化即触发重绘、标签立即修正——故现象只在隔日开盘前可见，这也是它长期未被发现的原因。
+  - **web2.0 不受影响**：同样的日期标签逻辑（`utils/trades.ts` `groupTradesByDay(trades, today = new Date())`），但 store 每轮 `trades.value = await flaskApi.getTradeRecords()` 赋的是新数组，引用变化触发 Vue 响应式重算。同一个逻辑陷阱，web2.0 因按引用失效而免疫，web1.0 因手写 JSON **值比较**而中招。
+  - 持仓面板的同款缓存 `_lastHoldingsStr` 已核对，其渲染不含任何日期计算，不受影响。
 
 ### Changed
 - **止盈委托超时阈值由 5 分钟收紧至 30 秒**，与止损对齐：新增 `TAKE_PROFIT_PENDING_ORDER_TIMEOUT_MINUTES = 0.5`，覆盖 `take_profit_half` / `take_profit_full`；`stop_loss`(0.5) 与其他信号(`add_position` 等，仍走 5 分钟兜底) 阈值不变。
@@ -30,7 +36,9 @@
 - 既有用例 `test_d2_stop_loss_uses_shorter_timeout_than_take_profit` 的前提被本次阈值调整推翻（它以 `take_profit_half` 作为“走 5 分钟全局阈值”的对照组），改名为 `test_d2_stop_loss_and_take_profit_use_shorter_timeout` 并扩展为四方对照：`stop_loss`/`take_profit_half`/`take_profit_full` 均 0.5 分钟触发，`add_position` 5 分钟不触发。
 - **变异验证**：将方向门控临时改为 `if False:` 后重跑，`d5e`/`d5h`/`d5i` 全部失败且报错均为 `Expected 'sell_stock' to not have been called. Called 1 times.`——既证明测试确实能捕获缺陷（而非陪跑），也**实证了原缺陷会真实下出反向卖单**；变异已还原并经 grep 确认无残留。
 - 行尾还原后重跑全部回归，`git diff` 由 2728 行收敛至 24 行，正文未受影响。
-- 完整回归：2026-09-02 使用 `python39` 环境执行 `test/run_integration_regression_tests.py --all-with-fast`，**35 组、2636 用例，2636 通过，0 失败，0 错误，0 跳过，成功率 100%**。
+- `test/test_web1_grid_dialog_static.py` 新增 2 例（归入既有 `web_api` critical 组）：断言 `updateLogs` 缓存键含当前日期且**不得退回**纯数据比较、缓存键须先于比较构造；并固化 `formatLogDayLabel` 对 `new Date()` 的依赖——后者是前者的前提，若日期标签改为纯数据映射，缓存键要求即可放宽。两例均用 `assertTrue/assertFalse` 而非 `assertIn`，避免失败时 dump 整个 160KB+ 的 `script.js` 淹没失败信息。
+  - 该缺陷另经 node 行为验证（非测试套件依赖，一次性）：从真实 `script.js` 抽取 `formatLogDayLabel` 与缓存键构造行、mock 系统日期跨日调用。修复前 `9-03 隔日再拉 -> SKIP`（复现缺陷），修复后 `-> REDRAW` 且标签翻转为「昨天」，同日仍为 `SKIP`（确认未把节流缓存废掉）。
+- 完整回归：2026-09-03 使用 `python39` 环境执行 `test/run_integration_regression_tests.py --all-with-fast`，**35 组、2638 用例，2638 通过，0 失败，0 错误，0 跳过，成功率 100%**。
 
 ### Docs
 - `CLAUDE.md`：`trade_records.strategy` 取值清单补全（原清单漏 `add_position` 与三个 `reorder_*`），并写明 `reorder_*` 由 `_reorder_after_cancel()` 动态拼接产生——新增卖出信号类型时，三处标签表需同步补 `reorder_` 前缀的键，否则前端会回退显示英文原始值。

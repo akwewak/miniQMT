@@ -100,5 +100,49 @@ class TestWeb1GridDialogStatic(unittest.TestCase):
         )
 
 
+    def test_order_log_cache_key_includes_current_date(self):
+        """下单日志重绘缓存键必须并入当前日期，否则跨日不刷新日期标签。
+
+        日期分组标题由 formatLogDayLabel() 渲染为"今天/昨天"，取决于当前日期
+        而非数据本身。缓存键只比数据时，跨过午夜且当日尚无新成交，
+        updateLogs 会命中缓存跳过重绘，昨天的记录一直显示为"今天"。
+        """
+        script = self._read_web1_file("script.js")
+
+        cache_key = "const logsStr = new Date().toDateString() + '|' + JSON.stringify(logEntries)"
+        # 用 assertTrue 而非 assertIn：后者失败时会 dump 整个 script.js(160KB+)，淹没失败信息
+        self.assertTrue(
+            cache_key in script,
+            "updateLogs 缓存键必须包含当前日期，否则跨日日期标签不刷新；"
+            f"未找到: {cache_key}"
+        )
+        # 防回归：不得退回只比较数据的旧写法
+        self.assertFalse(
+            "const logsStr = JSON.stringify(logEntries);" in script,
+            "缓存键退回了纯数据比较(const logsStr = JSON.stringify(logEntries);)，跨日重绘会再次失效"
+        )
+        # 缓存键必须在比较之前构造
+        self.assertLess(
+            script.index(cache_key),
+            script.index("if (window._lastLogsStr === logsStr)"),
+            "缓存键须先于比较构造"
+        )
+
+    def test_order_log_day_label_depends_on_current_date(self):
+        """固化 formatLogDayLabel 对当前日期的依赖——这正是缓存键需含日期的前提。
+
+        若其改为纯数据映射（不再读 new Date()），上面的缓存键要求即可放宽；
+        本用例失败时应一并复查 test_order_log_cache_key_includes_current_date。
+        """
+        script = self._read_web1_file("script.js")
+
+        start = script.index("function formatLogDayLabel(")
+        end = script.index("function ", start + 1)
+        body = script[start:end]
+
+        for token in ("const today = new Date();", "return '今天'", "return '昨天'"):
+            self.assertTrue(token in body, f"formatLogDayLabel 中未找到: {token}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
