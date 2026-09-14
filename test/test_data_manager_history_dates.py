@@ -101,7 +101,7 @@ class TestHistoryDateNormalization(unittest.TestCase):
         })
 
         with patch("config.HISTORY_INVALID_DATE_LOG_INTERVAL", 600), \
-             self.assertLogs("miniQMT.dm", level="DEBUG") as cm:
+             self.assertLogs("miniQMT.dbm", level="DEBUG") as cm:
             self.dm._normalize_history_dates(df, "003025", source="Mootdx")
             self.dm._normalize_history_dates(df, "003025", source="Mootdx")
 
@@ -222,7 +222,7 @@ class TestHistoryDateNormalization(unittest.TestCase):
 
         with patch("config.HISTORY_UPDATE_THROTTLE_SECONDS", 300), \
              patch.object(self.dm, "_get_completed_history_end_date", return_value="20260722"), \
-             self.assertLogs("miniQMT.dm", level="DEBUG") as cm:
+             self.assertLogs("miniQMT.dbm", level="DEBUG") as cm:
             self.dm.update_stock_data("002440")
             self.dm.update_stock_data("002440")
 
@@ -336,7 +336,7 @@ class TestStockDailyDataDedup(unittest.TestCase):
         self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sdd_pk ON stock_daily_data(stock_code, date)")
         self.conn.commit()
 
-        with self.assertLogs("miniQMT.dm", level="WARNING") as cm:
+        with self.assertLogs("miniQMT.dbm", level="WARNING") as cm:
             self.dm._repair_indexes_if_needed()
 
         warning_logs = [m for m in cm.output if "已清理 stock_daily_data 重复日线记录" in m]

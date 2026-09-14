@@ -166,7 +166,7 @@ class TestIndicatorIncrementalFix(unittest.TestCase):
         calc = _make_calc(conn, mock_dm)
 
         warn_handler = _WarnCapture()
-        ic_logger = logging.getLogger('miniQMT.ic')
+        ic_logger = logging.getLogger('miniQMT.cal')
         ic_logger.addHandler(warn_handler)
         try:
             result = calc.calculate_all_indicators(stock_code)
@@ -218,7 +218,7 @@ class TestIndicatorIncrementalFix(unittest.TestCase):
         calc = _make_calc(conn, mock_dm)
 
         warn_handler = _WarnCapture()
-        ic_logger = logging.getLogger('miniQMT.ic')
+        ic_logger = logging.getLogger('miniQMT.cal')
         ic_logger.addHandler(warn_handler)
         try:
             result = calc.calculate_all_indicators(stock_code, force_update=True)
@@ -246,7 +246,7 @@ class TestIndicatorIncrementalFix(unittest.TestCase):
         calc = _make_calc(conn, mock_dm)
 
         warn_handler = _WarnCapture()
-        ic_logger = logging.getLogger('miniQMT.ic')
+        ic_logger = logging.getLogger('miniQMT.cal')
         ic_logger.addHandler(warn_handler)
         try:
             calc.calculate_all_indicators(stock_code, force_update=True)
@@ -269,7 +269,7 @@ class TestIndicatorIncrementalFix(unittest.TestCase):
         calc = _make_calc(conn, mock_dm)
 
         warn_handler = _WarnCapture()
-        ic_logger = logging.getLogger('miniQMT.ic')
+        ic_logger = logging.getLogger('miniQMT.cal')
         ic_logger.addHandler(warn_handler)
         try:
             result = calc.calculate_all_indicators(stock_code)
@@ -303,7 +303,7 @@ class TestIndicatorIncrementalFix(unittest.TestCase):
         calc = _make_calc(conn, mock_dm)
 
         warn_handler = _WarnCapture()
-        ic_logger = logging.getLogger('miniQMT.ic')
+        ic_logger = logging.getLogger('miniQMT.cal')
         ic_logger.addHandler(warn_handler)
         try:
             result = calc.calculate_all_indicators(stock_code)

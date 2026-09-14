@@ -224,7 +224,7 @@ class TestCalculateAllIndicators(unittest.TestCase):
         calc = _make_calc(conn)
 
         with patch("config.INDICATOR_EMPTY_DATA_LOG_INTERVAL_SECONDS", 300), \
-             self.assertLogs("miniQMT.ic", level="DEBUG") as cm:
+             self.assertLogs("miniQMT.cal", level="DEBUG") as cm:
             self.assertFalse(calc.calculate_all_indicators(sc))
             self.assertFalse(calc.calculate_all_indicators(sc))
 
@@ -239,7 +239,7 @@ class TestCalculateAllIndicators(unittest.TestCase):
         calc = _make_calc(conn)
 
         with patch("config.INDICATOR_EMPTY_DATA_LOG_INTERVAL_SECONDS", 300), \
-             self.assertLogs("miniQMT.ic", level="DEBUG") as cm:
+             self.assertLogs("miniQMT.cal", level="DEBUG") as cm:
             self.assertFalse(calc.check_buy_signal(sc))
             self.assertFalse(calc.check_buy_signal(sc))
             self.assertFalse(calc.check_sell_signal(sc))

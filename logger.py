@@ -52,21 +52,23 @@ log_file = _resolve_log_file_path(os.environ.get("MINIQMT_LOG_FILE", config.LOG_
 
 # 模块名称映射(精简日志输出)
 MODULE_NAME_MAP = {
-    'position_manager': 'pm',
-    'data_manager': 'dm',
-    'trading_executor': 'te',
-    'strategy': 'st',
-    'web_server': 'ws',
-    'thread_monitor': 'tm',
-    'premarket_sync': 'ps',
-    'config_manager': 'cm',
-    'indicator_calculator': 'ic',
-    'sell_monitor': 'sm',
+    'position_manager': 'pos',
+    'data_manager': 'dbm',
+    'trading_executor': 'exe',
+    'strategy': 'stg',
+    'web_server': 'srv',
+    'thread_monitor': 'thd',
+    'premarket_sync': 'syn',
+    'config_manager': 'cfg',
+    'indicator_calculator': 'cal',
+    'sell_monitor': 'sel',
     'grid_trading_manager': 'gtm',
     'grid_database': 'gdb',
     'main': 'main',
-    'easy_qmt_trader': 'qt',
-    'maintenance': 'mt',
+    'easy_qmt_trader': 'qmt',
+    'maintenance': 'mtn',
+    'settlement_db': 'set',
+    'db_migrate': 'mig',
 }
 
 # ============ 颜色化Formatter ============
