@@ -470,6 +470,29 @@ miniQMT 内部统一使用 `000001.SZ` / `600036.SH` / `920118.BJ` 格式。用�
 | `SETTLEMENT_STAMP_DUTY_RATE` | `0.0005` | 印花税 0.05%（仅卖出方缴纳） |
 | `SETTLEMENT_TRANSFER_FEE_RATE` | `0.00001` | 过户费 0.001%（买卖双边） |
 
+## 持仓同步与数据库锁参数  [v3.9.2]
+
+内存持仓同步到 SQLite 的重试与锁等待策略。相关故障复盘见
+[变更日志](../changelog.md)。
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `POSITION_SYNC_INTERVAL` | `15.0` | 内存 → SQLite 同步间隔（秒） |
+| `POSITION_SYNC_MAX_RETRY` | `2` | **单次故障内**最多重试次数（不是进程生命周期累计） |
+| `POSITION_SYNC_RETRY_DELAY` | `5.0` | 重试延迟（秒） |
+| `POSITION_SYNC_BUSY_TIMEOUT_MS` | `8000` | 同步连接等待写锁的超时（毫秒） |
+
+!!! warning "`busy_timeout` 不要设得比同步周期长"
+    原值硬编码 30 秒，远超 15 秒的同步周期：锁竞争时单轮同步要卡满 30 秒才失败，
+    持仓监控循环随之被拖慢，实盘曾告警 `MONITOR_SLOW 31.02 秒`。
+    该值应显著小于 `POSITION_SYNC_INTERVAL`。
+
+!!! danger "写库失败必须能被调用方感知"
+    `_sync_memory_to_db()` **自己吞异常不外抛**，调用方无法靠 `try/except` 判成败——
+    必须读 `_sync_last_error`。v3.9.2 之前 `_retry_sync` 靠 `try/except` 判定，
+    导致「重试成功」恒真、计数器每轮清零、重试上限从未生效：
+    实盘 41 分钟刷了 **1586 轮**重试，每轮派生一个 `Timer` 线程（线程数 18 → 41）。
+
 !!! note "`snapshot_type` 只有 `open` / `close` 两种"
     09:25 的 `open` 快照是当日持仓对账与日内盈亏的**唯一基准**；
     15:05 的 `close` 为收盘净值。曾经的 `intraday`（心跳采样）已删除——

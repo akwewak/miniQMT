@@ -1493,6 +1493,7 @@ logger.info(f"检测到止盈信号: {stock_code}")  # 关键事件
 
 | 版本 | 日期 | 变更说明 |
 |------|------|---------|
+| v2.0 | 2026-09-14 | 同步 v3.9.2：修复 v3.9.1 引入的**成交流水漏提交共享连接**缺陷（`record_trade(conn=...)` 契约为 `owns_conn` 才提交，调用方未接手，写事务永久悬在 `data_manager` 共享连接上持有 RESERVED 锁，全库写入 `database is locked`）；修复四处 SQLite 连接泄漏（`close()` 在 `try` 主体内，traceback 留存时击穿引用计数回收）、网格落账嵌套事务被内层 `commit` 截断、持仓同步重试上限失效导致刷屏与线程泄漏；日志模块别名统一为三字母并补齐 `stl`/`mig`/`gvd` |
 | v1.9 | 2026-09-12 | 同步 v3.9.1：新增**交割单数据管道**（`trade_records` 扩展 17 列 + 新增 position_snapshot / account_equity_daily / run_events / trade_records_sim / broker_deals / broker_orders 六张表；成交写入收敛为 `settlement_db.record_trade()` 单一入口；`time_source` 四态语义；券商对账单三级匹配导入；历史回填；导出脚本重写）；总控制台改**分页菜单**；修复 deal 唯一键丢单、全零净值落库、非交易日写收盘快照、模拟单误标实盘四项缺陷 |
 | v1.8 | 2026-08-29 | 同步 v3.9.0：修复网格超时委托撤单死代码路径（`TradingExecutor.cancel_order` 统一委托 `PositionManager._cancel_order`）、止损清仓后联动暂停同股网格会话、Web 手动买卖策略标签统一 |
 | v1.7 | 2026-08-17 | 同步 v3.8.9：Web `/api/*` 统一鉴权、`WEB_PUBLIC_MODE`、北交所 `.BJ` 代码归一、网关 Token 环境变量优先级和全仓止盈暂停同股网格会话 |

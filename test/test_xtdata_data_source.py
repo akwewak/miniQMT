@@ -247,7 +247,7 @@ class TestGetLatestDataFallback(TestBase):
         mock_df = self._make_mootdx_df(13.59)
         with patch('config.is_trade_time', return_value=True), \
              patch('Methods.getStockData', return_value=mock_df) as mock_mootdx, \
-             self.assertLogs('miniQMT.dbm', level='WARNING') as cm:
+             self.assertLogs('miniQMT.dat', level='WARNING') as cm:
             self.dm.get_latest_data('000920.SZ')
         mock_mootdx.assert_called_once()
         self.assertTrue(any('已订阅但 lastPrice=0' in m for m in cm.output))
@@ -364,7 +364,7 @@ class TestGetLatestDataFallback(TestBase):
         mock_df = self._make_mootdx_df(13.59)
         with patch('config.is_trade_time', return_value=True), \
              patch('Methods.getStockData', return_value=mock_df), \
-             self.assertLogs('miniQMT.dbm', level='INFO') as cm:
+             self.assertLogs('miniQMT.dat', level='INFO') as cm:
             self.dm.get_latest_data('000920.SZ')
         self.assertIn('000920.SZ', self.dm.subscribed_stocks,
                       "未订阅股票 lastPrice=0 时应触发 ensure_subscribed")
@@ -378,7 +378,7 @@ class TestGetLatestDataFallback(TestBase):
              patch('Methods.getStockData', return_value=mock_df):
             # 不应产生 WARNING 级别日志
             import logging
-            with self.assertLogs('miniQMT.dbm', level='DEBUG') as cm:
+            with self.assertLogs('miniQMT.dat', level='DEBUG') as cm:
                 self.dm.get_latest_data('000920.SZ')
             warning_logs = [m for m in cm.output if 'WARNING' in m and '000920' in m]
             self.assertEqual(warning_logs, [], f"空 dict 不应产生 WARNING，但有: {warning_logs}")

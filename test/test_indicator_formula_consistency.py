@@ -268,14 +268,14 @@ class TestIndicatorFormulas(unittest.TestCase):
     def setUp(self):
         # 测试执行期间抑制日志噪声，但不影响其他测试文件的 logger 行为
         self._ic_orig_level = logging.getLogger('miniQMT.cal').level
-        self._dm_orig_level = logging.getLogger('miniQMT.dbm').level
+        self._dm_orig_level = logging.getLogger('miniQMT.dat').level
         logging.getLogger('miniQMT.cal').setLevel(logging.CRITICAL)
-        logging.getLogger('miniQMT.dbm').setLevel(logging.CRITICAL)
+        logging.getLogger('miniQMT.dat').setLevel(logging.CRITICAL)
 
     def tearDown(self):
         # 恢复 logger 级别，避免影响其他测试
         logging.getLogger('miniQMT.cal').setLevel(self._ic_orig_level)
-        logging.getLogger('miniQMT.dbm').setLevel(self._dm_orig_level)
+        logging.getLogger('miniQMT.dat').setLevel(self._dm_orig_level)
 
     # ────────────────────────────────────────────────── 场景 A ──────────────
     def test_A_monotonic_all_columns(self):

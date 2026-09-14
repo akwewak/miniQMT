@@ -6,6 +6,119 @@
 
 ## [Unreleased]
 
+## [3.9.2] - 2026-09-14
+
+> 本版本是一次**故障驱动**的修复：v3.9.1 上线后实盘出现持续 `database is locked`，
+一天内两次发作、单次持续 41 分钟与 63 分钟。根因是 v3.9.1 自己引入的——成交流水改走
+`settlement_db.record_trade(conn=self.conn)` 后，**没人履行提交责任**。
+第一轮修复只压住了刷屏症状（错误 3176 → 321 条）而没碰到锁本身，
+第二轮才定位到真正的根因。这个「修了一轮仍复发」的过程本身值得记录。
+
+### Fixed
+
+- **【本次发布最值得记录】成交流水漏提交共享连接，导致全库写入持续 `database is locked`**
+  （2026-09-14 实盘两次发作）：
+
+  **为什么 v3.9.0 之前从未出现、v3.9.1 起频发**——v3.9.0 之前
+  `trading_executor._save_trade_record` 用自己的 cursor 写 `trade_records`，
+  写完显式 `self.conn.commit()`；v3.9.1 把写入收口到
+  `settlement_db.record_trade(record, conn=self.conn)`，而该函数的契约是
+  **「`owns_conn`（自建连接）才提交并关闭」**——传入外部 conn 时 commit 与 close
+  全部跳过，提交责任转移给调用方，**但调用方没接**。
+
+  而 `self.conn = self.data_manager.conn`，是进程级长生命周期共享连接
+  （`check_same_thread=False`）。于是**每笔实盘成交后写事务就永久悬在这条连接上
+  持有 RESERVED 锁**，此后全库写入一律 `database is locked`。
+
+  定位过程中的关键证据是 `py-spy dump`：**18 个线程全部 idle**——没有任何线程在等锁，
+  说明不是「谁在争抢」而是「谁遗弃了事务」。配合「读正常 / 写被锁 / WAL 涨到 3.4 MB
+  且主库 mtime 停滞」这组 RESERVED 锁特征，方向才从争抢扭到悬空事务。
+  - 修复：`record_trade(conn=self.conn)` 之后由调用方 `self.conn.commit()`。
+    全项目仅此一处传外部 conn。
+  - 代价记录：日志当时明明打印「保存交易记录成功」——因为 `record_trade` 确实返回了
+    `inserted`，只是事务从未提交、最终随连接回滚。**成功日志不等于数据落库**。
+
+- **四处 SQLite 连接泄漏**（同类模式）：`conn.close()` 写在 `try` 主体末尾，
+  中途抛异常时被跳过。平时靠 CPython 引用计数兜底不暴露，但**异常的 traceback 会引用
+  frame 进而引用 conn**，遇到 `logger.exception` / `exc_info=True`（这两个模块里共 8 处）
+  连接就不被回收，同样带着写事务持锁。全部改为 `finally` 显式关闭：
+  - `position_manager.get_position` 止损价修正写入
+  - `position_manager._sync_profit_triggered_to_sqlite`
+  - `premarket_sync.save_persisted_schedule` / `record_sync_history`
+
+- **网格落账嵌套事务被内层 `commit` 截断**：`record_grid_trade_and_update_session`
+  用显式 `BEGIN` 包住多步写入，但它调用的 `stop_grid_session` / `create_grid_order` /
+  `create_grid_session` 是**无条件** `self.conn.commit()`，内层提交会提前结束外层事务，
+  后续步骤裸奔在自动提交模式，异常时 `rollback` 已无事务可回滚 → 半截数据落库。
+  改为与同文件 `update_grid_session` / `record_grid_trade` 一致的
+  `should_commit = not self.conn.in_transaction` 条件提交。
+
+- **持仓同步重试上限从未生效，刷屏并泄漏线程**：`_sync_memory_to_db` 自己吞异常不外抛，
+  而 `_retry_sync` 靠 `try/except` 判成败 → 「同步重试成功」**恒真**、计数器每轮清零，
+  「最多重试 2 次」形同虚设。实盘 41 分钟刷了 **1586 轮**重试，每轮
+  `threading.Timer` 派生新线程（线程数 18 → 41，句柄 1035 → 1170）。
+  改为经 `_sync_last_error` 标志传递失败状态，抽出 `_schedule_sync_retry()`
+  统一受限排程，Timer 置 daemon；定时同步成功时重置计数器，使上限按
+  **每次故障**而非进程生命周期累计。
+
+- **补录 2026-09-14 13:29:33 301085.SZ 网格买入的缺失流水**：该笔成交的网格侧数据
+  （`grid_trades` / `grid_lots` / `grid_orders` / 会话汇总）**均完整**，唯独
+  `trade_records` 缺失——正是上述漏提交缺陷的直接受害者。补录前与 `grid_trades`
+  逐字段交叉核对，价量不符即拒绝写入；`time_source` 标 `exchange`（成交回报确有到达，
+  日志 13:29:33,690），手续费保持 `0.0 + commission_source='unknown'`
+  （券商未回传，**绝不臆造费用**）。同时修正 `session 27` 的
+  `current_center_price`（73.40 → 70.34，当时因 locked 写库失败导致内存与 DB 劈叉）。
+  脚本见 `scripts/backfill_20260914_grid_buy.py`，支持 `--dry-run` 预演。
+
+### Changed
+
+- **同步连接 `busy_timeout` 由硬编码 30 秒改为可配 8 秒**
+  （`POSITION_SYNC_BUSY_TIMEOUT_MS`）：原值远超 15 秒的同步周期，锁竞争时单轮同步
+  要卡满 30 秒才失败，监控循环随之被拖慢——实盘曾告警 `MONITOR_SLOW 31.02 秒`。
+  新增 `POSITION_SYNC_MAX_RETRY` / `POSITION_SYNC_RETRY_DELAY`。
+
+- **日志模块别名统一为三字母**：原缩写多为两字母，辨识度低且易混淆
+  （`st` 策略 vs `sm` 卖出监控、`mt` 维护 vs `tm` 线程监控）。现与既有的
+  `gtm` / `gdb` / `main` 对齐：
+
+  | 模块 | 旧 | 新 | 模块 | 旧 | 新 |
+  |---|---|---|---|---|---|
+  | position_manager | `pm` | `pos` | web_server | `ws` | `web` |
+  | data_manager | `dm` | `dat` | thread_monitor | `tm` | `thd` |
+  | trading_executor | `te` | `tra` | premarket_sync | `ps` | `syn` |
+  | strategy | `st` | `stg` | config_manager | `cm` | `cfg` |
+  | indicator_calculator | `ic` | `cal` | sell_monitor | `sm` | `mon` |
+  | easy_qmt_trader | `qt` | `qmt` | maintenance | `mt` | `mtn` |
+
+  并补上此前未映射、日志里显示为全名的三个模块：
+  `settlement_db → stl`、`db_migrate → mig`、`grid_validation → gvd`。
+  映射表现覆盖全部 18 个使用 `get_logger(__name__)` 的模块，无重复、无遗漏。
+  同步更新 5 个测试文件中硬编码的 logger 名（`assertLogs` / `getLogger`
+  按 logger 名精确匹配，不改会因取不到日志而失败）。
+
+### Added
+
+- `test/test_grid_db_lock_safety.py`（20 用例，注册进 `db_thread_safety` 组与
+  `fast` 子集），按根因分五组：
+  - **E 组**（锁定本次根因）：外部 conn 提交契约确认、调用方必须 commit、
+    提交后写锁立即释放。E2 在回退 `trading_executor.py` 后稳定复现
+  - **D 组**：四处连接泄漏护栏，含 D5 直接验证
+    「traceback 留存击穿引用计数回收」这一机制
+  - **A 组**：嵌套事务原子性（内层不得截断外层、中途失败整体回滚、
+    落账后无悬空事务、独立连接可立即写入）
+  - **B 组**：重试有界（上限生效、静默失败不误判为成功、Timer 不堆积），
+    含真实锁占用下的端到端链路验证
+  - **C 组**：悬空写事务阻塞机制的回归护栏
+
+- `scripts/backfill_20260914_grid_buy.py`：单次性补录脚本，内置交叉核对与
+  `--dry-run`，与 `grid_trades` 价量不符即拒绝写入。
+
+### 验证
+
+端到端：20 笔成交经 `record_trade` + 并发独立连接持续写入，**零 `database is locked`**，
+共享连接无残留事务；30 笔网格落账并发场景同样零复现。
+完整集成回归 `--all-with-fast`：**36 组、148 模块、3166 用例、100% 通过**。
+
 ## [3.9.1] - 2026-09-12
 
 > 本版本以**交割单数据管道**为主线：把归因所需的一切（交易所成交时间、真实手续费来源、

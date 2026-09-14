@@ -230,3 +230,77 @@ QMT 未连接时 `balance()` 返回整行 0，而**资产恒等式拦不住它**
 - 内存数据库存储高频更新数据（价格、市值、盈亏比例）
 - SQLite 持久化关键状态，系统重启后自动恢复
 - 修改内存数据后必须调用 `_increment_data_version()` 触发前端更新
+---
+
+## 连接与事务约定 ⚠️（v3.9.2）
+
+本库为 **WAL 模式、单写者**。以下三条是 2026-09-14 实盘故障
+（持续 `database is locked`，单次发作 41 与 63 分钟）换来的硬约束。
+
+### 1. 传入外部连接时，提交责任归调用方
+
+`settlement_db.record_trade(record, conn=...)` 的契约是
+**`owns_conn = conn is None`——只有自建连接才 `commit` 并 `close`**。
+这是刻意设计（便于调用方把多步写入并进一个事务），但传外部 conn 时
+**调用方必须自己提交**：
+
+```python
+result = settlement_db.record_trade(record, conn=self.conn)
+self.conn.commit()      # ← 不可省略
+```
+
+`trading_executor.self.conn` 是 `data_manager.conn`——**进程级长生命周期共享连接**。
+漏提交会让写事务永久悬在该连接上持有 RESERVED 锁，此后全库写入一律失败。
+
+!!! danger "成功日志不等于数据落库"
+    故障期间日志明明打印「保存交易记录成功」——`record_trade` 确实返回了 `inserted`，
+    只是事务从未提交、最终随连接回滚。排查落库问题时**必须查库，不能只看日志**。
+
+### 2. `conn.close()` 必须放在 `finally`
+
+```python
+conn = None
+try:
+    conn = sqlite3.connect(config.DB_PATH)
+    conn.execute("UPDATE ...")
+    conn.commit()
+except Exception as e:
+    logger.error(...)
+finally:
+    if conn is not None:
+        conn.close()      # ← 不能写在 try 主体末尾
+```
+
+写在 `try` 主体末尾时，中途抛异常就会跳过。平时靠 CPython 引用计数兜底看不出问题，
+但**异常的 traceback 会引用 frame 进而引用 conn**——遇到 `logger.exception`
+或 `exc_info=True`，连接就不被回收，带着未提交的写事务常驻持锁。
+
+### 3. 嵌套事务中，内层写方法不得无条件 `commit`
+
+`grid_database` 的写方法统一用条件提交，否则内层 `commit` 会提前结束外层显式事务，
+后续步骤裸奔在自动提交模式，异常时 `rollback` 已无事务可回滚：
+
+```python
+with self.lock:
+    should_commit = not self.conn.in_transaction
+    ...
+    if should_commit:
+        self.conn.commit()
+```
+
+### 排查手册：锁被谁占了
+
+| 现象 | 结论 |
+|------|------|
+| 读正常、写 `locked` | RESERVED 锁被占（悬空写事务），不是读写冲突 |
+| `py-spy dump` 显示线程全 idle | **没人在等锁**，是被遗弃的事务，不是争抢 |
+| WAL 持续增长、主库 mtime 停滞 | checkpoint 被阻塞，佐证长事务 |
+| `pragma wal_checkpoint(TRUNCATE)` 返回 `busy=1` | 确有其它连接持锁 |
+
+```bash
+# 探测写锁是否空闲（不等待，立即返回）
+python -c "import sqlite3,time; c=sqlite3.connect(r'data_<账号>/trading.db',timeout=0.5); t=time.time(); exec('try:
+ c.execute('begin immediate'); print('空闲'); c.rollback()
+except Exception as e: print('被占:',e)')"
+```
+

@@ -53,21 +53,22 @@ log_file = _resolve_log_file_path(os.environ.get("MINIQMT_LOG_FILE", config.LOG_
 # 模块名称映射(精简日志输出)
 MODULE_NAME_MAP = {
     'position_manager': 'pos',
-    'data_manager': 'dbm',
-    'trading_executor': 'exe',
+    'data_manager': 'dat',
+    'trading_executor': 'tra',
     'strategy': 'stg',
-    'web_server': 'srv',
+    'web_server': 'web',
     'thread_monitor': 'thd',
     'premarket_sync': 'syn',
     'config_manager': 'cfg',
     'indicator_calculator': 'cal',
-    'sell_monitor': 'sel',
+    'sell_monitor': 'mon',
     'grid_trading_manager': 'gtm',
     'grid_database': 'gdb',
+    'grid_validation': 'gvd',
     'main': 'main',
     'easy_qmt_trader': 'qmt',
     'maintenance': 'mtn',
-    'settlement_db': 'set',
+    'settlement_db': 'stl',
     'db_migrate': 'mig',
 }
 

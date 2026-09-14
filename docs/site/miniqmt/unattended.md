@@ -256,3 +256,42 @@ python -m unittest test.test_system_integration -v
 # QMT 连接诊断
 python -m unittest test.test_qmt_connection -v
 ```
+
+## 日志模块别名  [v3.9.2]
+
+日志行格式为 `时间 [级别] miniQMT.<别名> - 消息`，别名定义见
+[logger.py](https://github.com/weihong-su/miniQMT/blob/main/logger.py) 的
+`MODULE_NAME_MAP`。v3.9.2 起统一为三字母（此前两字母缩写辨识度低，
+`st` 策略与 `sm` 卖出监控、`mt` 维护与 `tm` 线程监控极易混淆）：
+
+| 别名 | 模块 | 别名 | 模块 |
+|------|------|------|------|
+| `pos` | position_manager（持仓核心） | `web` | web_server |
+| `dat` | data_manager（行情数据） | `thd` | thread_monitor |
+| `tra` | trading_executor（下单执行） | `syn` | premarket_sync |
+| `stg` | strategy（策略） | `cfg` | config_manager |
+| `cal` | indicator_calculator（指标） | `mon` | sell_monitor |
+| `gtm` | grid_trading_manager（网格） | `gdb` | grid_database |
+| `gvd` | grid_validation（网格校验） | `qmt` | easy_qmt_trader |
+| `stl` | settlement_db（交割单） | `mig` | db_migrate |
+| `mtn` | maintenance | `main` | main |
+
+排日志常用组合：
+
+```bash
+# 只看交易执行与持仓（Windows PowerShell）
+Select-String -Path logsccount_*.log -Pattern 'miniQMT\.(tra|pos)'
+
+# 只看错误
+Select-String -Path logsccount_*.log -Pattern '\[E\]'
+
+# 按模块统计错误分布（定位故障源头最快的一招）
+Select-String -Path logsccount_*.log -Pattern '\[E\].*miniQMT\.(\w+)' |
+  ForEach-Object { $_.Matches.Groups[1].Value } | Group-Object | Sort-Object Count -Descending
+```
+
+!!! tip "升级后旧日志仍是旧别名"
+    `MODULE_NAME_MAP` 只影响新写入的日志行。排查 v3.9.2 之前的历史日志时，
+    对照关系为：`pm`→`pos`、`dm`→`dat`、`te`→`tra`、`st`→`stg`、`ws`→`web`、
+    `tm`→`thd`、`ps`→`syn`、`cm`→`cfg`、`ic`→`cal`、`sm`→`mon`、
+    `qt`→`qmt`、`mt`→`mtn`。
