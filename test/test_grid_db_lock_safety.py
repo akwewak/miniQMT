@@ -416,6 +416,296 @@ class TestSyncRetryStorm(unittest.TestCase):
 
 
 # ============================================================
+# D组：SQLite 连接泄漏（永久持锁的根因）
+# ============================================================
+class TestConnectionLeakHoldsLock(unittest.TestCase):
+    """写路径异常时连接必须关闭，否则带 RESERVED 锁泄漏，全库写入永久 locked。
+
+    2026-09-14 二次故障：重启后 13:29 起 63 分钟持续 locked，
+    py-spy 显示 18 个线程全部 idle —— 无人在等锁，是一条被遗弃的连接
+    带着未提交的写事务常驻。根因是 conn.close() 写在 try 主体末尾，
+    UPDATE 成功后若 commit/后续语句抛异常，close() 被跳过。
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, 'pos.db')
+        c = sqlite3.connect(self.db_path)
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("""CREATE TABLE positions(
+            stock_code TEXT PRIMARY KEY, stop_loss_price REAL,
+            profit_triggered INTEGER DEFAULT 0, last_update TEXT)""")
+        c.execute("INSERT INTO positions VALUES ('301085', 68.42, 0, '2026-09-14')")
+        c.commit()
+        c.close()
+
+    def _write_lock_free(self):
+        """独立连接能否立刻拿到写锁。"""
+        c = sqlite3.connect(self.db_path, timeout=0.4)
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.rollback()
+            return True
+        except sqlite3.OperationalError:
+            return False
+        finally:
+            c.close()
+
+    def _leak_probe(self, func, *args):
+        """在真实锁竞争下调用 func，返回调用结束后写锁是否已释放。
+
+        用一条外部连接占住写锁，让被测代码的 UPDATE/commit 真实失败。
+        不能 mock conn.commit —— sqlite3.Connection.commit 是只读属性，
+        赋值会抛 AttributeError，UPDATE 根本没机会执行，测试会假通过。
+        """
+        blocker = sqlite3.connect(self.db_path)
+        blocker.execute("PRAGMA busy_timeout = 60000")
+        blocker.execute(
+            "UPDATE positions SET stop_loss_price=99 WHERE stock_code='301085'")
+        self.assertTrue(blocker.in_transaction, "未能制造锁竞争")
+        try:
+            with patch.object(config, 'DB_PATH', self.db_path):
+                func(*args)
+        finally:
+            blocker.rollback()
+            blocker.close()
+        return self._write_lock_free()
+
+    def test_d1_sync_profit_triggered_closes_conn_on_error(self):
+        """D1: _sync_profit_triggered_to_sqlite 写入失败时必须显式关闭连接。
+
+        不能依赖引用计数回收：异常 traceback 引用当前 frame，frame 引用 conn，
+        只要异常对象被留存（日志系统/上层缓存/sys.exc_info）连接就不会被回收，
+        写事务持续持有 RESERVED 锁 —— 这正是 2026-09-14 二次故障中
+        "18 个线程全 idle 却锁了 63 分钟"的成因。
+        """
+        from position_manager import PositionManager
+
+        class FakePM:
+            pass
+        pm = FakePM()
+        pm._sync_profit_triggered_to_sqlite =             PositionManager._sync_profit_triggered_to_sqlite.__get__(pm, FakePM)
+
+        released = self._leak_probe(pm._sync_profit_triggered_to_sqlite, '301085')
+        self.assertTrue(
+            released,
+            "写入失败后连接未关闭，带写事务泄漏 → 全库写入将永久 locked"
+        )
+
+    def test_d2_stop_loss_fix_closes_conn_on_error(self):
+        """D2: 止损价修正写入必须有 finally 保护。
+
+        对应 position_manager.get_position 中"动态止损脏数据已修正并持久化"
+        那段：conn.close() 原本是 try 主体最后一行，异常时被跳过。
+        """
+        import inspect
+        from position_manager import PositionManager
+        src = inspect.getsource(PositionManager.get_position)
+        idx = src.find('动态止损脏数据已修正并持久化')
+        self.assertGreater(idx, 0, "未找到止损价修正代码段")
+        seg = src[max(0, idx - 1500):idx + 600]
+        self.assertIn(
+            'finally', seg,
+            "止损价修正的 SQLite 写入缺少 finally 保护 → 异常时连接泄漏持锁"
+        )
+
+    def test_d4_premarket_record_history_closes_conn_on_error(self):
+        """D4: premarket_sync 写同步历史失败时必须关闭连接。"""
+        import premarket_sync
+
+        c = sqlite3.connect(self.db_path)
+        c.execute("""CREATE TABLE premarket_sync_history(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, sync_time TEXT,
+            configs_synced INTEGER, switches_synced INTEGER,
+            xtdata_reconnected INTEGER, xttrader_reconnected INTEGER,
+            connection_status TEXT, positions_synced INTEGER,
+            errors TEXT, execution_time_ms INTEGER)""")
+        c.commit()
+        c.close()
+
+        results = {
+            'timestamp': '2026-09-14 09:25:00', 'configs_synced': 1,
+            'switches_synced': 1, 'xtdata_reconnected': 1,
+            'xttrader_reconnected': 1, 'connection_status': {},
+            'positions_synced': 3, 'errors': [], 'execution_time_ms': 120,
+        }
+        released = self._leak_probe(premarket_sync.record_sync_history, results)
+        self.assertTrue(released, "连接泄漏导致写锁未释放")
+
+    def test_d5_traceback_retention_defeats_refcount_cleanup(self):
+        """D5: 异常 traceback 被留存时，引用计数回收救不了场 —— 必须 finally。
+
+        这是 D1/D4 那两个护栏的存在理由，也是二次故障的真实成因：
+        CPython 通常在函数返回时就把 conn 引用计数归零并关闭，所以"忘了
+        close"平时看不出问题；一旦异常对象被留存（logger.exception /
+        exc_info=True / sys.exc_info 缓存），traceback 会引用 frame，
+        frame 引用 conn，连接连同未提交的写事务常驻，永久持有 RESERVED 锁。
+        """
+        import sys as _sys
+
+        def leaky_write(keep_exc):
+            """复刻"close() 写在 try 主体末尾"的老写法。"""
+            held = None
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.execute("PRAGMA busy_timeout = 200")
+                conn.execute(
+                    "UPDATE positions SET stop_loss_price=67.9 "
+                    "WHERE stock_code='301085'")
+                raise sqlite3.OperationalError('database is locked')
+                conn.commit()      # noqa: 不可达，模拟老代码结构
+                conn.close()
+            except Exception:
+                if keep_exc:
+                    held = _sys.exc_info()   # traceback → frame → conn
+            return held
+
+        # 不留存异常：引用计数顺手回收，锁被释放（所以平时不暴露）
+        leaky_write(keep_exc=False)
+        self.assertTrue(
+            self._write_lock_free(),
+            "未留存异常时本应由引用计数回收连接"
+        )
+
+        # 留存异常：连接不回收，写锁被永久占住
+        held = leaky_write(keep_exc=True)
+        self.assertIsNotNone(held)
+        self.assertFalse(
+            self._write_lock_free(),
+            "traceback 留存时连接本应仍持锁（这正是故障机制）"
+        )
+        del held
+        import gc
+        gc.collect()
+        self.assertTrue(self._write_lock_free(), "释放异常引用后锁应恢复")
+
+    def test_d3_leaked_conn_blocks_all_writes(self):
+        """D3: 机制护栏 —— 带写事务的泄漏连接会让所有后续写入 locked。"""
+        leaked = sqlite3.connect(self.db_path)
+        leaked.execute("PRAGMA busy_timeout = 200")
+        leaked.execute("UPDATE positions SET stop_loss_price=67.9 WHERE stock_code='301085'")
+        self.assertTrue(leaked.in_transaction)
+        try:
+            self.assertFalse(
+                self._write_lock_free(),
+                "泄漏连接持有写事务时，其它连接本应拿不到写锁"
+            )
+        finally:
+            leaked.rollback()
+            leaked.close()
+        self.assertTrue(self._write_lock_free(), "连接关闭后写锁应立即释放")
+
+
+# ============================================================
+# E组：record_trade 外部连接的提交责任（v3.9.1 引入的真正根因）
+# ============================================================
+class TestRecordTradeCommitOwnership(unittest.TestCase):
+    """传入外部连接时 record_trade 不 commit，调用方必须自己提交。
+
+    这是 2026-09-14 故障"为什么 v3.9.0 之前从未出现、v3.9.1 起频发"的答案：
+    v3.9.0 之前 trading_executor 用自己的 cursor 写流水并显式
+    self.conn.commit()；v3.9.1 改走 settlement_db.record_trade(conn=self.conn)，
+    而 record_trade 只在 owns_conn（自建连接）时提交，传外部 conn 时
+    commit/close 全部跳过。self.conn 又是 data_manager 的长生命周期共享连接，
+    于是每笔实盘成交后写事务就永久悬在该连接上持有 RESERVED 锁 ——
+    与实盘"10:08 卖出后、13:29 买入后立刻开始 locked 且线程全 idle"完全吻合。
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, 'te.db')
+        c = sqlite3.connect(self.db_path)
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("""CREATE TABLE trade_records(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, stock_code TEXT, stock_name TEXT,
+            trade_time TEXT, trade_type TEXT, price REAL, volume REAL, amount REAL,
+            commission REAL, trade_id TEXT, strategy TEXT)""")
+        c.commit()
+        c.close()
+
+        import db_migrate
+        import settlement_db
+        db_migrate.migrate_settlement_schema(db_path=self.db_path, do_backup=False)
+        # 扩展列由独立入口添加；不加则 record_trade 走 legacy 降级路径
+        # （legacy 分支无条件 commit，测不到本组要验的契约）
+        db_migrate.apply_trade_records_extension(db_path=self.db_path,
+                                                 do_backup=False)
+        settlement_db._SCHEMA_CACHE.clear()
+        self.settlement_db = settlement_db
+
+    def tearDown(self):
+        self.settlement_db._SCHEMA_CACHE.clear()
+
+    def _record(self, trade_id='T1'):
+        return {
+            'stock_code': '301085.SZ', 'stock_name': '亚康股份',
+            'trade_time': '2026-09-14 13:29:33', 'trade_type': 'BUY',
+            'price': 70.34, 'volume': 200, 'amount': 14068.0,
+            'trade_id': trade_id, 'strategy': 'grid', 'commission': 4.2,
+            'deal_time_str': '2026-09-14 13:29:33',
+        }
+
+    def test_e1_external_conn_leaves_txn_open_by_contract(self):
+        """E1: 契约确认 —— 传外部 conn 时 record_trade 不提交（责任在调用方）。
+
+        这不是缺陷，是设计（便于调用方把多步写入合并进一个事务）；
+        但调用方必须承担提交责任，见 E2。
+        """
+        shared = sqlite3.connect(self.db_path, timeout=30.0,
+                                 check_same_thread=False)
+        try:
+            res = self.settlement_db.record_trade(
+                self._record(), conn=shared, db_path=self.db_path)
+            self.assertEqual(res, 'inserted')
+            self.assertTrue(
+                shared.in_transaction,
+                "契约已变：record_trade 现在会自行提交外部连接"
+            )
+        finally:
+            shared.rollback()
+            shared.close()
+
+    def test_e2_executor_commits_after_record_trade(self):
+        """E2: _save_trade_record 调用 record_trade 后必须提交共享连接。
+
+        漏提交 → data_manager 共享连接持锁 → 全库写入 database is locked。
+        """
+        import inspect
+        from trading_executor import TradingExecutor
+        src = inspect.getsource(TradingExecutor._save_trade_record)
+        idx = src.find('record_trade(record, conn=self.conn)')
+        self.assertGreater(idx, 0, "未找到 record_trade 调用点")
+        after = src[idx:idx + 600]
+        self.assertIn(
+            'self.conn.commit()', after,
+            "record_trade(conn=self.conn) 之后没有 commit → "
+            "写事务悬在 data_manager 共享连接上，全库写入将持续 locked"
+        )
+
+    def test_e3_shared_conn_released_after_commit(self):
+        """E3: 按 E2 的修复方式提交后，其它连接必须能立刻拿到写锁。"""
+        shared = sqlite3.connect(self.db_path, timeout=30.0,
+                                 check_same_thread=False)
+        try:
+            self.settlement_db.record_trade(
+                self._record('T2'), conn=shared, db_path=self.db_path)
+            shared.commit()          # 调用方履行提交责任
+
+            other = sqlite3.connect(self.db_path, timeout=0.5)
+            try:
+                other.execute("BEGIN IMMEDIATE")
+                other.rollback()
+            except sqlite3.OperationalError:
+                self.fail("提交后写锁仍被占用")
+            finally:
+                other.close()
+        finally:
+            shared.close()
+
+
+# ============================================================
 # C组：悬空事务阻塞机制（回归护栏）
 # ============================================================
 class TestDanglingTransactionBlocks(unittest.TestCase):

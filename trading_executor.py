@@ -1045,6 +1045,11 @@ class TradingExecutor:
                     record.update(deal_meta)
 
                 result = settlement_db.record_trade(record, conn=self.conn)
+                # 传入外部连接时 record_trade 内部 owns_conn=False，不会 commit，
+                # 提交责任归调用方。self.conn 是 data_manager 的长生命周期共享连接，
+                # 漏提交会让写事务悬在该连接上并持有 RESERVED 锁，
+                # 导致全库写入持续 database is locked（2026-09-14 实盘故障）。
+                self.conn.commit()
 
                 if result == 'duplicate':
                     logger.info(

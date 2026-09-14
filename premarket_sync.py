@@ -86,6 +86,7 @@ class PreMarketSyncScheduler:
         参数:
             next_time: datetime对象
         """
+        conn = None
         try:
             conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
             cursor = conn.cursor()
@@ -96,9 +97,16 @@ class PreMarketSyncScheduler:
             ''', (next_time.isoformat(),))
 
             conn.commit()
-            conn.close()
         except Exception as e:
             logger.error(f"保存持久化调度时间失败: {e}")
+        finally:
+            # 异常 traceback 会引用本 frame 进而拖住连接，靠 GC 回收不可靠；
+            # 带写事务泄漏的连接会持有 RESERVED 锁，导致全库写入 locked。
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def start(self):
         """启动调度器"""
@@ -707,6 +715,7 @@ def trigger_web_data_refresh(sync_results):
 
 def record_sync_history(results):
     """记录同步历史到数据库"""
+    conn = None
     try:
         conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
@@ -730,9 +739,15 @@ def record_sync_history(results):
         ))
 
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.error(f"记录同步历史失败: {e}")
+    finally:
+        # 见 save_persisted_schedule 中同类修复：不显式关闭会泄漏写事务并持锁。
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def start_premarket_sync_scheduler():

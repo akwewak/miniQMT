@@ -1499,16 +1499,25 @@ class PositionManager:
                             cursor.execute("UPDATE positions SET stop_loss_price=? WHERE stock_code=?",
                                          (new_slp, stock_code))
                             self.memory_conn.commit()
+                        sqlite_conn = None
                         try:
                             sqlite_conn = sqlite3.connect(config.DB_PATH)
                             sqlite_conn.execute("PRAGMA busy_timeout = 5000")
                             sqlite_conn.execute("UPDATE positions SET stop_loss_price=? WHERE stock_code=?",
                                                (new_slp, stock_code))
                             sqlite_conn.commit()
-                            sqlite_conn.close()
                             logger.info(f"{stock_code} 动态止损脏数据已修正并持久化: {stop_loss_price:.2f} -> {new_slp:.2f}")
                         except Exception as e:
                             logger.warning(f"{stock_code} 修正止损价写入SQLite失败(内存已修正): {e}")
+                        finally:
+                            # 必须显式关闭：异常的 traceback 会引用当前 frame 进而引用
+                            # 该连接，靠引用计数回收并不可靠。连接一旦带着未提交的写
+                            # 事务泄漏，会持有 RESERVED 锁，全库写入永久 database is locked。
+                            if sqlite_conn is not None:
+                                try:
+                                    sqlite_conn.close()
+                                except Exception:
+                                    pass
                     # else: 动态止盈价正常，不警告
                 else:
                     # 固定止损场景：止损价应该在成本价的0.85-1.0倍之间（0-15%止损）
@@ -5050,6 +5059,7 @@ class PositionManager:
 
     def _sync_profit_triggered_to_sqlite(self, stock_code):
         """P1修复: 立即将内存中的profit_triggered=True同步到SQLite，不等待定时同步"""
+        conn = None
         try:
             import sqlite3 as _sqlite3
             conn = _sqlite3.connect(config.DB_PATH)
@@ -5060,10 +5070,17 @@ class PositionManager:
                 (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), stock_code)
             )
             conn.commit()
-            conn.close()
             logger.info(f"[P1修复] {stock_code} profit_triggered=True 已立即同步到SQLite")
         except Exception as e:
             logger.error(f"_sync_profit_triggered_to_sqlite 失败: {e}")
+        finally:
+            # 见 get_position 中同类修复：异常 traceback 会拖住连接，
+            # 不显式关闭会导致写事务泄漏并永久持有 RESERVED 锁。
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def track_order(self, stock_code, order_id, signal_type, signal_info):
         """
