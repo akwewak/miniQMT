@@ -528,6 +528,7 @@ class DatabaseManager:
         logger.debug(f"[GRID-DB] create_grid_session: session_data={session_data}")
 
         with self.lock:
+            should_commit = not self.conn.in_transaction
             cursor = self.conn.cursor()
 
             # 检查是否已存在active session
@@ -572,7 +573,8 @@ class DatabaseManager:
                 session_data.get('risk_level', 'moderate'),
                 session_data.get('template_name')
             ))
-            self.conn.commit()
+            if should_commit:
+                self.conn.commit()
             session_id = cursor.lastrowid
             logger.info(f"[GRID-DB] create_grid_session: 创建成功 session_id={session_id}, stock_code={stock_code}")
             return session_id
@@ -613,13 +615,15 @@ class DatabaseManager:
         logger.info(f"[GRID-DB] stop_grid_session: session_id={session_id}, reason={reason}")
 
         with self.lock:
+            should_commit = not self.conn.in_transaction
             cursor = self.conn.cursor()
             cursor.execute("""
                 UPDATE grid_trading_sessions
                 SET status=?, stop_time=?, stop_reason=?, updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
             """, ('stopped', datetime.now().isoformat(), reason, session_id))
-            self.conn.commit()
+            if should_commit:
+                self.conn.commit()
             logger.debug(f"[GRID-DB] stop_grid_session: 停止完成 session_id={session_id}, affected_rows={cursor.rowcount}")
 
     def get_all_grid_sessions(self) -> list:
@@ -712,6 +716,7 @@ class DatabaseManager:
     def create_grid_order(self, order_data: dict) -> None:
         """持久化网格委托，用于重启恢复和撤废单处理"""
         with self.lock:
+            should_commit = not self.conn.in_transaction
             cursor = self.conn.cursor()
             cursor.execute("""
                 INSERT INTO grid_orders
@@ -755,7 +760,8 @@ class DatabaseManager:
                 order_data.get('parent_order_id'),
                 order_data.get('cancel_requested_at')
             ))
-            self.conn.commit()
+            if should_commit:
+                self.conn.commit()
 
     def update_grid_order(self, order_id: str, updates: dict) -> None:
         """更新网格委托状态"""

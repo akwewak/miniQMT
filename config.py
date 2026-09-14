@@ -855,6 +855,15 @@ REAL_POSITION_EMPTY_CONFIRM_COUNT = 3
 # SQLite同步间隔(秒) - 从5秒延长到15秒
 POSITION_SYNC_INTERVAL = 15.0       # ↓87% I/O操作
 
+# SQLite同步失败后的重试策略。
+# 2026-09-14 实盘故障：写锁竞争时重试上限失效，41分钟刷了1586轮重试、
+# 派生同等数量 Timer 线程（线程数 18→41）。上限必须真实生效。
+POSITION_SYNC_MAX_RETRY = 2         # 单次故障内最多重试次数
+POSITION_SYNC_RETRY_DELAY = 5.0     # 重试延迟(秒)
+# 同步连接等待写锁的超时(毫秒)。原硬编码 30 秒，远超 15 秒的同步周期，
+# 锁竞争时单轮同步要卡满 30 秒才失败，监控循环随之被拖慢（实盘曾告警 31.02 秒）。
+POSITION_SYNC_BUSY_TIMEOUT_MS = 8000
+
 # 清仓残留持仓成本价告警限频(秒)。券商 miniQMT 在非交易时段可能仍返回已清仓行。
 # 0 表示不限制频率；默认 30 分钟只告警一次，其余降为 DEBUG。
 CLEARED_POSITION_WARNING_INTERVAL = 1800

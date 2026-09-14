@@ -219,10 +219,11 @@
     },
     "db_thread_safety": {
       "name": "数据库线程安全与缓存验证测试",
-      "description": "验证 data_manager.py 数据库访问加锁保护（防止多线程SQLite事务冲突）及 web_server.py 账户信息缓存机制（防止阻塞8秒超时）",
+      "description": "验证 data_manager.py 数据库访问加锁保护（防止多线程SQLite事务冲突）、web_server.py 账户信息缓存机制（防止阻塞8秒超时），及网格落账嵌套事务原子性与持仓同步重试有界（2026-09-14 database is locked 实盘故障回归）",
       "modules": [
         "test.test_db_op_safety_verification",
-        "test.test_maintenance"
+        "test.test_maintenance",
+        "test.test_grid_db_lock_safety"
       ],
       "priority": "critical"
     },
@@ -340,6 +341,7 @@
         "test.test_baostock_helper",
         "test.test_db_op_safety_verification",
         "test.test_maintenance",
+        "test.test_grid_db_lock_safety",
         "test.test_dual_layer_storage",
         "test.test_web_api_complete",
         "test.test_indicator_all_methods",
